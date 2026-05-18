@@ -43,7 +43,7 @@ class RoomManager {
     return randomUUID().slice(0, 6).toUpperCase()
   }
 
-  createRoom(hostSocketId, username) {
+  createRoom(hostSocketId, username, { password = null, maxParticipants = 8 } = {}) {
     const roomId = randomUUID()
     const shortCode = this._allocateShortCode()
     const room = {
@@ -51,6 +51,8 @@ class RoomManager {
       shortCode,
       hostSocketId,
       createdAt: Date.now(),
+      password,
+      maxParticipants,
       participants: new Map(),
       syncState: {
         bpm: 120,
@@ -79,7 +81,7 @@ class RoomManager {
     return this.rooms.get(roomId) || null
   }
 
-  joinRoom(roomId, socketId, username) {
+  joinRoom(roomId, socketId, username, password = null) {
     const room = this.rooms.get(roomId)
     if (!room) {
       return { ok: false, error: 'ROOM_NOT_FOUND' }
@@ -87,6 +89,14 @@ class RoomManager {
 
     if (room.participants.has(socketId)) {
       return { ok: true, room }
+    }
+
+    if (room.password !== null && room.password !== password) {
+      return { ok: false, error: 'WRONG_PASSWORD' }
+    }
+
+    if (room.participants.size >= room.maxParticipants) {
+      return { ok: false, error: 'ROOM_FULL' }
     }
 
     room.participants.set(socketId, {

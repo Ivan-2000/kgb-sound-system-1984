@@ -44,6 +44,9 @@ type SyncListener = (event: SyncEvent) => void
 type ParticipantListener = (event: ParticipantEvent) => void
 type RtcSignalListener = (event: RtcSignalEvent) => void
 
+type RttEvent = { socketId: string; rtt: number }
+type RttListener = (event: RttEvent) => void
+
 type AckResponse = {
   ok: boolean
   error?: string
@@ -76,11 +79,14 @@ class RoomSyncClient {
 
   // Set when we disconnect while in a room — triggers auto-rejoin on reconnect
   private pendingRejoin = false
+  private roomPassword: string | null = null
 
   private stateListeners = new Set<RoomStateListener>()
   private syncListeners = new Set<SyncListener>()
   private participantListeners = new Set<ParticipantListener>()
   private rtcSignalListeners = new Set<RtcSignalListener>()
+  private rttListeners = new Set<RttListener>()
+  private pingInterval: ReturnType<typeof setInterval> | null = null
 
   constructor() {
     this.socket = io(SERVER_URL, {
@@ -95,11 +101,12 @@ class RoomSyncClient {
       this.state.reconnecting = false
       this.state.socketId = this.socket.id ?? null
       this.emitState()
+      this.startPingInterval()
 
       // Auto-rejoin room after socket reconnect
       if (this.pendingRejoin && this.state.roomId && this.state.username) {
         this.pendingRejoin = false
-        void this.joinRoom(this.state.roomId, this.state.username).catch(() => {
+        void this.joinRoom(this.state.roomId, this.state.username, this.roomPassword ?? undefined).catch(() => {
           // Room no longer exists on server — clear local room state
           this.state.roomId = null
           this.state.isHost = false
@@ -110,6 +117,7 @@ class RoomSyncClient {
     })
 
     this.socket.on('disconnect', () => {
+      this.stopPingInterval()
       if (this.state.roomId) {
         this.pendingRejoin = true
       }
@@ -157,6 +165,10 @@ class RoomSyncClient {
     this.socket.on('rtc:signal', (event: RtcSignalEvent) => {
       this.rtcSignalListeners.forEach((l) => l(event))
     })
+
+    this.socket.on('participant:rtt', (event: RttEvent) => {
+      this.rttListeners.forEach((l) => l(event))
+    })
   }
 
   subscribeRoomState(listener: RoomStateListener) {
@@ -180,12 +192,21 @@ class RoomSyncClient {
     return () => { this.rtcSignalListeners.delete(listener) }
   }
 
+  subscribeRtt(listener: RttListener) {
+    this.rttListeners.add(listener)
+    return () => { this.rttListeners.delete(listener) }
+  }
+
   getState() {
     return { ...this.state }
   }
 
-  async createRoom(username: string) {
-    const response = await this.emitWithAck('room:create', { username })
+  async createRoom(username: string, options: { password?: string; maxParticipants?: number } = {}) {
+    const response = await this.emitWithAck('room:create', {
+      username,
+      password: options.password,
+      maxParticipants: options.maxParticipants,
+    })
     if (!response.ok || !response.roomId) {
       throw new Error(response.error || 'FAILED_TO_CREATE_ROOM')
     }
@@ -195,6 +216,7 @@ class RoomSyncClient {
     this.state.username = username
     this.state.isHost = true
     this.state.hostSocketId = this.socket.id || null
+    this.roomPassword = options.password ?? null
     this.emitState()
 
     return {
@@ -206,9 +228,9 @@ class RoomSyncClient {
     }
   }
 
-  async joinByCode(shortCode: string, username: string) {
+  async joinByCode(shortCode: string, username: string, password?: string) {
     const code = shortCode.trim().toUpperCase()
-    const response = await this.emitWithAck('room:join-by-code', { shortCode: code, username })
+    const response = await this.emitWithAck('room:join-by-code', { shortCode: code, username, password })
     if (!response.ok || !response.roomId) {
       throw new Error(response.error || 'FAILED_TO_JOIN_ROOM')
     }
@@ -221,6 +243,7 @@ class RoomSyncClient {
     this.state.username = username
     this.state.hostSocketId = hostSocketId || null
     this.state.isHost = Boolean(hostSocketId && hostSocketId === this.socket.id)
+    this.roomPassword = password ?? null
     this.emitState()
 
     return {
@@ -230,8 +253,8 @@ class RoomSyncClient {
     }
   }
 
-  async joinRoom(roomId: string, username: string) {
-    const response = await this.emitWithAck('room:join', { roomId, username })
+  async joinRoom(roomId: string, username: string, password?: string) {
+    const response = await this.emitWithAck('room:join', { roomId, username, password })
     if (!response.ok) {
       throw new Error(response.error || 'FAILED_TO_JOIN_ROOM')
     }
@@ -243,6 +266,7 @@ class RoomSyncClient {
     this.state.username = username
     this.state.hostSocketId = hostSocketId || null
     this.state.isHost = Boolean(hostSocketId && hostSocketId === this.socket.id)
+    this.roomPassword = password ?? null
     this.emitState()
 
     return {
@@ -263,6 +287,31 @@ class RoomSyncClient {
     return new Promise<RtcSignalAck>((resolve) => {
       this.socket.emit('rtc:signal', { targetSocketId, signal }, (response: RtcSignalAck) => {
         resolve(response ?? { ok: false, error: 'NO_ACK' })
+      })
+    })
+  }
+
+  private startPingInterval() {
+    this.stopPingInterval()
+    this.pingInterval = setInterval(() => { void this.sendPing() }, 2000)
+  }
+
+  private stopPingInterval() {
+    if (this.pingInterval !== null) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
+  }
+
+  private sendPing() {
+    return new Promise<void>((resolve) => {
+      const t1 = Date.now()
+      this.socket.emit('ping', { t1 }, () => {
+        const rtt = Date.now() - t1
+        if (this.state.roomId) {
+          this.socket.emit('participant:rtt', { rtt })
+        }
+        resolve()
       })
     })
   }

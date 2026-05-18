@@ -4,6 +4,8 @@ const {
   joinByCodeSchema,
   rtcSignalSchema,
   clientEventSchema,
+  pingSchema,
+  participantRttSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -54,7 +56,10 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
-      const room = roomManager.createRoom(socket.id, parsed.data.username)
+      const room = roomManager.createRoom(socket.id, parsed.data.username, {
+        password: parsed.data.password,
+        maxParticipants: parsed.data.maxParticipants,
+      })
       socket.join(room.id)
 
       const participants = roomManager.getParticipants(room.id)
@@ -77,7 +82,7 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
-      const result = roomManager.joinRoom(parsed.data.roomId, socket.id, parsed.data.username)
+      const result = roomManager.joinRoom(parsed.data.roomId, socket.id, parsed.data.username, parsed.data.password)
       if (!result.ok) {
         ack?.({ ok: false, error: result.error })
         return
@@ -113,7 +118,7 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
-      const result = roomManager.joinRoom(room.id, socket.id, parsed.data.username)
+      const result = roomManager.joinRoom(room.id, socket.id, parsed.data.username, parsed.data.password)
       if (!result.ok) {
         ack?.({ ok: false, error: result.error })
         return
@@ -202,6 +207,28 @@ function registerSocketHandlers(io, roomManager) {
       })
 
       ack?.({ ok: true })
+    })
+
+    socket.on('ping', (rawPayload, ack) => {
+      const parsed = pingSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ error: 'INVALID_PAYLOAD' })
+        return
+      }
+      ack?.({ serverTime: Date.now() })
+    })
+
+    socket.on('participant:rtt', (rawPayload) => {
+      const parsed = participantRttSchema.safeParse(rawPayload)
+      if (!parsed.success) return
+
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) return
+
+      io.to(roomId).emit('participant:rtt', {
+        socketId: socket.id,
+        rtt: parsed.data.rtt,
+      })
     })
 
     socket.on('disconnect', () => {

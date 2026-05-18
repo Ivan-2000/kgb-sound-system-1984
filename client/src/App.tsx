@@ -25,6 +25,37 @@ const trackLabels: Record<DrumTrack, string> = {
 
 type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean }
 
+type RoomHistoryEntry = {
+  shortCode: string
+  lastUsername: string
+  lastJoinedAt: number
+}
+
+function loadRoomHistory(): RoomHistoryEntry[] {
+  try {
+    return JSON.parse(localStorage.getItem('kgb_room_history') ?? '[]') as RoomHistoryEntry[]
+  } catch {
+    return []
+  }
+}
+
+function addToRoomHistory(shortCode: string, username: string) {
+  const history = loadRoomHistory()
+  const next = [
+    { shortCode, lastUsername: username, lastJoinedAt: Date.now() },
+    ...history.filter((h) => h.shortCode !== shortCode),
+  ].slice(0, 10)
+  localStorage.setItem('kgb_room_history', JSON.stringify(next))
+}
+
+function friendlyError(code: string): string {
+  if (code === 'WRONG_PASSWORD') return 'Wrong password'
+  if (code === 'ROOM_FULL') return 'Room is full'
+  if (code === 'ROOM_NOT_FOUND') return 'Room not found'
+  if (code === 'USERNAME_REQUIRED') return 'Enter your name first'
+  return code
+}
+
 function App() {
   const [machineState, setMachineState] = useState<DrumMachineState>(() => drumMachine.getState())
   const [bpm, setBpm] = useState(() => audioEngine.getBpm())
@@ -50,6 +81,11 @@ function App() {
   const [fullscreenSocketId, setFullscreenSocketId] = useState<string | null>(null)
   const [masterVolume, setMasterVolume] = useState(100)
   const [activeSpeakerSocketId, setActiveSpeakerSocketId] = useState<string | null>(null)
+  const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
+  const [hostPassword, setHostPassword] = useState('')
+  const [joinPassword, setJoinPassword] = useState('')
+  const [maxParticipants, setMaxParticipants] = useState(8)
+  const [roomHistory, setRoomHistory] = useState<RoomHistoryEntry[]>(() => loadRoomHistory())
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -145,6 +181,29 @@ function App() {
 
   useEffect(() => drumMachine.subscribe(setMachineState), [])
   useEffect(() => roomSyncClient.subscribeRoomState(setRoomState), [])
+
+  // Auto-fill code from invite hash: #join/ABCD
+  useEffect(() => {
+    const hash = window.location.hash
+    if (hash.startsWith('#join/')) {
+      const code = hash.slice(6, 10).toUpperCase()
+      if (/^[A-Z0-9]{4}$/.test(code)) {
+        setCodeInput(code)
+      }
+    }
+  }, [])
+
+  useEffect(
+    () =>
+      roomSyncClient.subscribeRtt(({ socketId, rtt }) => {
+        setRtts((prev) => {
+          const next = new Map(prev)
+          next.set(socketId, rtt)
+          return next
+        })
+      }),
+    [],
+  )
 
   useEffect(
     () =>
@@ -281,17 +340,23 @@ function App() {
 
   const handleCreateRoom = async () => {
     if (!username.trim()) {
-      setNetworkError('USERNAME_REQUIRED')
+      setNetworkError(friendlyError('USERNAME_REQUIRED'))
       return
     }
     setNetworkError(null)
     await acquireLocalStream()
 
     try {
-      const result = await roomSyncClient.createRoom(username.trim())
+      const result = await roomSyncClient.createRoom(username.trim(), {
+        password: hostPassword.trim() || undefined,
+        maxParticipants,
+      })
       setInviteLink(result.inviteLink)
+      if (result.shortCode) {
+        addToRoomHistory(result.shortCode, username.trim())
+        setRoomHistory(loadRoomHistory())
+      }
       const selfSocketId = roomSyncClient.getState().socketId
-      // Filter self out — host is shown via localStream tile
       setParticipants(
         result.participants
           .filter((p) => p.socketId !== selfSocketId)
@@ -299,16 +364,18 @@ function App() {
       )
       await applySyncSnapshot(result.syncState)
     } catch (error) {
-      setNetworkError(error instanceof Error ? error.message : 'FAILED_TO_CREATE_ROOM')
+      const msg = error instanceof Error ? error.message : 'FAILED_TO_CREATE_ROOM'
+      setNetworkError(friendlyError(msg))
     }
   }
 
-  const handleJoinByCode = async () => {
-    if (!username.trim()) {
-      setNetworkError('USERNAME_REQUIRED')
+  const handleJoinByCode = async (overrideCode?: string, overrideUsername?: string, overridePassword?: string) => {
+    const name = (overrideUsername ?? username).trim()
+    if (!name) {
+      setNetworkError(friendlyError('USERNAME_REQUIRED'))
       return
     }
-    const code = codeInput.trim().toUpperCase()
+    const code = (overrideCode ?? codeInput).trim().toUpperCase()
     if (code.length !== 4) {
       setNetworkError('Enter a 4-character room code')
       return
@@ -317,7 +384,10 @@ function App() {
     await acquireLocalStream()
 
     try {
-      const result = await roomSyncClient.joinByCode(code, username.trim())
+      const pw = overridePassword ?? (joinPassword.trim() || undefined)
+      const result = await roomSyncClient.joinByCode(code, name, pw)
+      addToRoomHistory(code, name)
+      setRoomHistory(loadRoomHistory())
       const selfSocketId = roomSyncClient.getState().socketId
       setParticipants(
         result.participants
@@ -326,7 +396,8 @@ function App() {
       )
       await applySyncSnapshot(result.syncState)
     } catch (error) {
-      setNetworkError(error instanceof Error ? error.message : 'FAILED_TO_JOIN_ROOM')
+      const msg = error instanceof Error ? error.message : 'FAILED_TO_JOIN_ROOM'
+      setNetworkError(friendlyError(msg))
     }
   }
 
@@ -381,6 +452,13 @@ function App() {
   const inRoom = Boolean(roomState.roomId)
   const selfSocketId = roomState.socketId
 
+  // Client-side invite link for web deployments (not file:// Electron)
+  const clientInviteLink =
+    roomState.shortCode && window.location.protocol !== 'file:'
+      ? `${window.location.href.split('#')[0]}#join/${roomState.shortCode}`
+      : null
+  const displayInviteLink = inviteLink || clientInviteLink
+
   // Build video grid tiles
   const remoteTiles = participants.map((p) => ({
     participant: p,
@@ -423,7 +501,29 @@ function App() {
               value={username}
             />
           </div>
+
           <div className="lobby-host">
+            <div className="lobby-host-options">
+              <input
+                aria-label="Room password (optional)"
+                onChange={(e) => setHostPassword(e.target.value)}
+                placeholder="Password (optional)"
+                type="password"
+                value={hostPassword}
+              />
+              <label className="lobby-limit-label">
+                <span>Max</span>
+                <select
+                  aria-label="Max participants"
+                  value={maxParticipants}
+                  onChange={(e) => setMaxParticipants(Number(e.target.value))}
+                >
+                  {[2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
             <button
               type="button"
               className="primary-action"
@@ -433,7 +533,9 @@ function App() {
               Host Room
             </button>
           </div>
+
           <div className="lobby-divider">or</div>
+
           <div className="lobby-join">
             <input
               aria-label="Room code"
@@ -444,6 +546,13 @@ function App() {
               type="text"
               value={codeInput}
             />
+            <input
+              aria-label="Room password (optional)"
+              onChange={(e) => setJoinPassword(e.target.value)}
+              placeholder="Password"
+              type="password"
+              value={joinPassword}
+            />
             <button
               type="button"
               className="ghost-action"
@@ -453,6 +562,35 @@ function App() {
               Connect
             </button>
           </div>
+
+          {roomHistory.length > 0 && (
+            <div className="lobby-history">
+              <p className="eyebrow">Recent rooms</p>
+              <ul className="history-list">
+                {roomHistory.map((entry) => (
+                  <li key={entry.shortCode} className="history-entry">
+                    <div className="history-entry-info">
+                      <strong className="history-code">{entry.shortCode}</strong>
+                      <span>{entry.lastUsername}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="ghost-action ghost-action--sm"
+                      disabled={!roomState.connected}
+                      onClick={() => {
+                        setCodeInput(entry.shortCode)
+                        setUsername(entry.lastUsername)
+                        void handleJoinByCode(entry.shortCode, entry.lastUsername)
+                      }}
+                    >
+                      Join
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <span className="socket-status">
             {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
           </span>
@@ -475,8 +613,24 @@ function App() {
               <strong className="room-code">{roomState.shortCode ?? '…'}</strong>
             </div>
           )}
-          {inviteLink ? (
-            <a className="invite-link" href={inviteLink} target="_blank" rel="noreferrer">{inviteLink}</a>
+          {displayInviteLink ? (
+            <div className="invite-link-row">
+              <a className="invite-link" href={displayInviteLink} target="_blank" rel="noreferrer">
+                {displayInviteLink}
+              </a>
+              <button
+                type="button"
+                className="ghost-action ghost-action--sm"
+                onClick={() => {
+                  void navigator.clipboard.writeText(displayInviteLink).then(() => {
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  })
+                }}
+              >
+                {copied ? 'Copied!' : 'Copy link'}
+              </button>
+            </div>
           ) : null}
           <span className="socket-status" style={{ marginLeft: 'auto' }}>
             {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
@@ -493,6 +647,7 @@ function App() {
             stream={fullscreenTile.stream}
             label={fullscreenTile.participant.username}
             sublabel={fullscreenTile.participant.isHost ? 'Host' : 'Guest'}
+            rtt={rtts.get(fullscreenTile.participant.socketId)}
             muteAudio
             cameraEnabled={fullscreenTile.participant.cameraEnabled}
             isActiveSpeaker={activeSpeakerSocketId === fullscreenTile.participant.socketId}
@@ -503,6 +658,7 @@ function App() {
               stream={localStream}
               label={username}
               sublabel={roomState.isHost ? 'Host (you)' : 'You'}
+              rtt={selfSocketId ? rtts.get(selfSocketId) : undefined}
               isLocal
               cameraEnabled={cameraEnabled}
               isActiveSpeaker={activeSpeakerSocketId === roomState.socketId}
@@ -515,6 +671,7 @@ function App() {
                   stream={t.stream}
                   label={t.participant.username}
                   sublabel={t.participant.isHost ? 'Host' : 'Guest'}
+                  rtt={rtts.get(t.participant.socketId)}
                   muteAudio
                   cameraEnabled={t.participant.cameraEnabled}
                   isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}
@@ -529,6 +686,7 @@ function App() {
             stream={localStream}
             label={username}
             sublabel={roomState.isHost ? 'Host (you)' : inRoom ? 'Guest (you)' : 'Local'}
+            rtt={selfSocketId ? rtts.get(selfSocketId) : undefined}
             isLocal
             cameraEnabled={cameraEnabled}
             isActiveSpeaker={activeSpeakerSocketId === roomState.socketId}
@@ -539,6 +697,7 @@ function App() {
               stream={t.stream}
               label={t.participant.username}
               sublabel={t.participant.isHost ? 'Host' : 'Guest'}
+              rtt={rtts.get(t.participant.socketId)}
               muteAudio
               cameraEnabled={t.participant.cameraEnabled}
               isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}
@@ -710,6 +869,9 @@ function App() {
                 <div>
                   <strong>{username}</strong>
                   <span>{roomState.isHost ? 'Host (you)' : 'Guest (you)'}</span>
+                  {selfSocketId && rtts.has(selfSocketId) ? (
+                    <span className="rtt-badge">{rtts.get(selfSocketId)} ms</span>
+                  ) : null}
                 </div>
                 <span aria-label="Media status">
                   {micEnabled ? '🎤' : '🔇'} {cameraEnabled ? '📷' : '📵'}
@@ -722,6 +884,9 @@ function App() {
                     <div>
                       <strong>{p.username}</strong>
                       <span>{p.isHost ? 'Host' : 'Guest'}</span>
+                      {rtts.has(p.socketId) ? (
+                        <span className="rtt-badge">{rtts.get(p.socketId)} ms</span>
+                      ) : null}
                     </div>
                     <span aria-label="Media status">
                       <span

@@ -4,6 +4,7 @@ type VideoTileProps = {
   stream: MediaStream | null
   label: string
   sublabel?: string
+  rtt?: number
   isLocal?: boolean
   /** Mute audio on the video element — use when Web Audio mixer handles output */
   muteAudio?: boolean
@@ -17,6 +18,7 @@ export function VideoTile({
   stream,
   label,
   sublabel,
+  rtt,
   isLocal,
   muteAudio,
   cameraEnabled = true,
@@ -62,6 +64,7 @@ export function VideoTile({
       <footer>
         <strong>{label}</strong>
         {sublabel ? <span>{sublabel}</span> : null}
+        {rtt !== undefined ? <span className="rtt-badge">{rtt} ms</span> : null}
       </footer>
     </article>
   )

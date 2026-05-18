@@ -8,18 +8,24 @@ const usernameSchema = z
 
 const roomIdSchema = z.uuid()
 
+const passwordSchema = z.string().max(64).optional()
+
 const createRoomSchema = z.object({
   username: usernameSchema,
+  password: passwordSchema,
+  maxParticipants: z.number().int().min(2).max(8).optional(),
 })
 
 const joinRoomSchema = z.object({
   roomId: roomIdSchema,
   username: usernameSchema,
+  password: passwordSchema,
 })
 
 const joinByCodeSchema = z.object({
   shortCode: z.string().trim().length(4),
   username: usernameSchema,
+  password: passwordSchema,
 })
 
 const eventBaseSchema = z.object({
@@ -73,10 +79,20 @@ const rtcSignalSchema = z.object({
   signal: z.unknown(),
 })
 
+const pingSchema = z.object({
+  t1: z.number().nonnegative(),
+})
+
+const participantRttSchema = z.object({
+  rtt: z.number().int().nonnegative().max(60_000),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
   joinByCodeSchema,
   rtcSignalSchema,
   clientEventSchema,
+  pingSchema,
+  participantRttSchema,
 }
