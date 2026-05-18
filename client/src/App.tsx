@@ -26,7 +26,7 @@ const trackLabels: Record<DrumTrack, string> = {
   crash: 'Crash',
 }
 
-type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean }
+type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean; hostMuted: boolean }
 
 type RoomHistoryEntry = {
   shortCode: string
@@ -177,7 +177,7 @@ function App() {
         const { socketId, username: joinedUsername } = event.payload
         setParticipants((prev) => {
           if (prev.some((p) => p.socketId === socketId)) return prev
-          return [...prev, { socketId, username: joinedUsername, isHost: false, micEnabled: true, cameraEnabled: true }]
+          return [...prev, { socketId, username: joinedUsername, isHost: false, micEnabled: true, cameraEnabled: true, hostMuted: false }]
         })
         // Existing participant initiates WebRTC with the newcomer
         peerManager.addPeer(socketId, true)
@@ -239,6 +239,32 @@ function App() {
           next.set(socketId, rtt)
           return next
         })
+      }),
+    [],
+  )
+
+  useEffect(
+    () =>
+      roomSyncClient.subscribeHostMuted(({ socketId, muted }) => {
+        const self = roomSyncClient.getState().socketId
+        if (socketId === self) {
+          // Forced mute/unmute of our own mic by the host
+          micEnabledRef.current = !muted
+          setMicEnabled(!muted)
+          peerManager.setMicEnabled(!muted)
+        }
+        setParticipants((prev) =>
+          prev.map((p) => (p.socketId === socketId ? { ...p, hostMuted: muted } : p)),
+        )
+      }),
+    [],
+  )
+
+  useEffect(
+    () =>
+      roomSyncClient.subscribeKicked(() => {
+        setNetworkError('You were removed from the room by the host.')
+        setParticipants([])
       }),
     [],
   )
@@ -471,6 +497,22 @@ function App() {
     await emitSyncEvent({ type: 'step_toggle', payload: { track, step, value }, timestamp })
   }
 
+  const handleHostMute = async (targetSocketId: string) => {
+    try {
+      await roomSyncClient.sendHostMute(targetSocketId)
+    } catch (error) {
+      setNetworkError(error instanceof Error ? error.message : 'MUTE_FAILED')
+    }
+  }
+
+  const handleHostKick = async (targetSocketId: string) => {
+    try {
+      await roomSyncClient.sendHostKick(targetSocketId)
+    } catch (error) {
+      setNetworkError(error instanceof Error ? error.message : 'KICK_FAILED')
+    }
+  }
+
   const handleClear = () => {
     drumMachine.clearPattern()
   }
@@ -507,7 +549,7 @@ function App() {
       setParticipants(
         result.participants
           .filter((p) => p.socketId !== selfSocketId)
-          .map((p) => ({ ...p, micEnabled: true, cameraEnabled: true })),
+          .map((p) => ({ ...p, micEnabled: true, cameraEnabled: true, hostMuted: p.muted ?? false })),
       )
       await applySyncSnapshot(result.syncState)
     } catch (error) {
@@ -539,7 +581,7 @@ function App() {
       setParticipants(
         result.participants
           .filter((p) => p.socketId !== selfSocketId)
-          .map((p) => ({ ...p, micEnabled: true, cameraEnabled: true })),
+          .map((p) => ({ ...p, micEnabled: true, cameraEnabled: true, hostMuted: p.muted ?? false })),
       )
       await applySyncSnapshot(result.syncState)
     } catch (error) {
@@ -810,6 +852,11 @@ function App() {
             muteAudio
             cameraEnabled={fullscreenTile.participant.cameraEnabled}
             isActiveSpeaker={activeSpeakerSocketId === fullscreenTile.participant.socketId}
+            isHost={fullscreenTile.participant.isHost}
+            isHostMuted={fullscreenTile.participant.hostMuted}
+            canControl={roomState.isHost}
+            onHostMute={() => void handleHostMute(fullscreenTile.participant.socketId)}
+            onHostKick={() => void handleHostKick(fullscreenTile.participant.socketId)}
             onClick={() => setFullscreenSocketId(null)}
           />
           <div className="video-sidebar">
@@ -819,6 +866,7 @@ function App() {
               sublabel={roomState.isHost ? 'Host (you)' : 'You'}
               rtt={selfSocketId ? rtts.get(selfSocketId) : undefined}
               isLocal
+              isHost={roomState.isHost}
               cameraEnabled={cameraEnabled}
               isActiveSpeaker={activeSpeakerSocketId === roomState.socketId}
             />
@@ -834,6 +882,11 @@ function App() {
                   muteAudio
                   cameraEnabled={t.participant.cameraEnabled}
                   isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}
+                  isHost={t.participant.isHost}
+                  isHostMuted={t.participant.hostMuted}
+                  canControl={roomState.isHost}
+                  onHostMute={() => void handleHostMute(t.participant.socketId)}
+                  onHostKick={() => void handleHostKick(t.participant.socketId)}
                   onClick={() => setFullscreenSocketId(t.participant.socketId)}
                 />
               ))}
@@ -847,6 +900,7 @@ function App() {
             sublabel={roomState.isHost ? 'Host (you)' : inRoom ? 'Guest (you)' : 'Local'}
             rtt={selfSocketId ? rtts.get(selfSocketId) : undefined}
             isLocal
+            isHost={inRoom ? roomState.isHost : undefined}
             cameraEnabled={cameraEnabled}
             isActiveSpeaker={activeSpeakerSocketId === roomState.socketId}
           />
@@ -860,6 +914,11 @@ function App() {
               muteAudio
               cameraEnabled={t.participant.cameraEnabled}
               isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}
+              isHost={t.participant.isHost}
+              isHostMuted={t.participant.hostMuted}
+              canControl={roomState.isHost}
+              onHostMute={() => void handleHostMute(t.participant.socketId)}
+              onHostKick={() => void handleHostKick(t.participant.socketId)}
               onClick={() => setFullscreenSocketId(t.participant.socketId)}
             />
           ))}
@@ -1279,8 +1338,11 @@ function App() {
             <ul>
               <li>
                 <div>
+                  <span className={roomState.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
+                    {roomState.isHost ? '★ Host' : '· Guest'}
+                  </span>
                   <strong>{username}</strong>
-                  <span>{roomState.isHost ? 'Host (you)' : 'Guest (you)'}</span>
+                  <span className="participant-you">(you)</span>
                   {selfSocketId && rtts.has(selfSocketId) ? (
                     <span className="rtt-badge">{rtts.get(selfSocketId)} ms</span>
                   ) : null}
@@ -1292,24 +1354,49 @@ function App() {
               {participants.map((p) => {
                 const isConnected = remoteStreams.has(p.socketId)
                 return (
-                  <li key={p.socketId}>
+                  <li key={p.socketId} className={p.hostMuted ? 'participant-host-muted' : ''}>
                     <div>
+                      <span className={p.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
+                        {p.isHost ? '★ Host' : '· Guest'}
+                      </span>
                       <strong>{p.username}</strong>
-                      <span>{p.isHost ? 'Host' : 'Guest'}</span>
+                      {p.hostMuted && <span className="muted-badge">Muted</span>}
                       {rtts.has(p.socketId) ? (
                         <span className="rtt-badge">{rtts.get(p.socketId)} ms</span>
                       ) : null}
                     </div>
-                    <span aria-label="Media status">
-                      <span
-                        className={isConnected ? 'status-online' : 'status-offline'}
-                        title={isConnected ? 'Stream connected' : 'Connecting…'}
-                      >
-                        {isConnected ? '●' : '○'}
+                    <div className="participant-right">
+                      {roomState.isHost && !p.isHost && (
+                        <div className="participant-controls">
+                          <button
+                            type="button"
+                            className={['host-ctrl-btn', p.hostMuted ? 'host-ctrl-btn--active' : ''].filter(Boolean).join(' ')}
+                            onClick={() => void handleHostMute(p.socketId)}
+                            aria-label={p.hostMuted ? 'Unmute participant' : 'Mute participant'}
+                          >
+                            {p.hostMuted ? 'Unmute' : 'Mute'}
+                          </button>
+                          <button
+                            type="button"
+                            className="host-ctrl-btn host-ctrl-btn--kick"
+                            onClick={() => void handleHostKick(p.socketId)}
+                            aria-label="Kick participant"
+                          >
+                            Kick
+                          </button>
+                        </div>
+                      )}
+                      <span aria-label="Media status">
+                        <span
+                          className={isConnected ? 'status-online' : 'status-offline'}
+                          title={isConnected ? 'Stream connected' : 'Connecting…'}
+                        >
+                          {isConnected ? '●' : '○'}
+                        </span>
+                        {' '}
+                        {p.micEnabled && !p.hostMuted ? '🎤' : '🔇'} {p.cameraEnabled ? '📷' : '📵'}
                       </span>
-                      {' '}
-                      {p.micEnabled ? '🎤' : '🔇'} {p.cameraEnabled ? '📷' : '📵'}
-                    </span>
+                    </div>
                   </li>
                 )
               })}

@@ -7,6 +7,7 @@ const {
   pingSchema,
   participantRttSchema,
   chatMessageSchema,
+  hostTargetSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -243,6 +244,79 @@ function registerSocketHandlers(io, roomManager) {
         text: parsed.data.text,
         ts: Date.now(),
       })
+
+      ack?.({ ok: true })
+    })
+
+    socket.on('host_mute', (rawPayload, ack) => {
+      const parsed = hostTargetSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+
+      const room = roomManager.getRoom(roomId)
+      if (!room || room.hostSocketId !== socket.id) {
+        ack?.({ ok: false, error: 'HOST_AUTHORITY_REQUIRED' })
+        return
+      }
+
+      const targetRoomId = roomManager.getRoomIdBySocket(parsed.data.targetSocketId)
+      if (targetRoomId !== roomId) {
+        ack?.({ ok: false, error: 'TARGET_NOT_IN_ROOM' })
+        return
+      }
+
+      const newMuted = roomManager.toggleMuted(roomId, parsed.data.targetSocketId)
+      if (newMuted === null) {
+        ack?.({ ok: false, error: 'TARGET_NOT_FOUND' })
+        return
+      }
+
+      io.to(roomId).emit('participant:muted', {
+        socketId: parsed.data.targetSocketId,
+        muted: newMuted,
+      })
+
+      ack?.({ ok: true, muted: newMuted })
+    })
+
+    socket.on('host_kick', (rawPayload, ack) => {
+      const parsed = hostTargetSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+
+      const room = roomManager.getRoom(roomId)
+      if (!room || room.hostSocketId !== socket.id) {
+        ack?.({ ok: false, error: 'HOST_AUTHORITY_REQUIRED' })
+        return
+      }
+
+      const targetRoomId = roomManager.getRoomIdBySocket(parsed.data.targetSocketId)
+      if (targetRoomId !== roomId) {
+        ack?.({ ok: false, error: 'TARGET_NOT_IN_ROOM' })
+        return
+      }
+
+      const targetSocket = io.sockets.sockets.get(parsed.data.targetSocketId)
+      if (targetSocket) {
+        targetSocket.emit('room:kicked')
+        targetSocket.disconnect(true)
+      }
 
       ack?.({ ok: true })
     })

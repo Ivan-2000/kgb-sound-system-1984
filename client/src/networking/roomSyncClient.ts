@@ -5,6 +5,7 @@ type RoomParticipant = {
   socketId: string
   username: string
   isHost: boolean
+  muted?: boolean
 }
 
 type PatternSlotSnapshot = {
@@ -62,6 +63,10 @@ type ChatMessage = {
 }
 type ChatMessageListener = (message: ChatMessage) => void
 
+type HostMutedEvent = { socketId: string; muted: boolean }
+type HostMutedListener = (event: HostMutedEvent) => void
+type KickedListener = () => void
+
 type AckResponse = {
   ok: boolean
   error?: string
@@ -102,6 +107,9 @@ class RoomSyncClient {
   private rtcSignalListeners = new Set<RtcSignalListener>()
   private rttListeners = new Set<RttListener>()
   private chatListeners = new Set<ChatMessageListener>()
+  private hostMutedListeners = new Set<HostMutedListener>()
+  private kickedListeners = new Set<KickedListener>()
+  private wasKicked = false
   private pingInterval: ReturnType<typeof setInterval> | null = null
 
   constructor() {
@@ -134,9 +142,10 @@ class RoomSyncClient {
 
     this.socket.on('disconnect', () => {
       this.stopPingInterval()
-      if (this.state.roomId) {
+      if (this.state.roomId && !this.wasKicked) {
         this.pendingRejoin = true
       }
+      this.wasKicked = false
       this.state.connected = false
       this.state.socketId = null
       this.emitState()
@@ -189,6 +198,19 @@ class RoomSyncClient {
     this.socket.on('chat_message', (message: ChatMessage) => {
       this.chatListeners.forEach((l) => l(message))
     })
+
+    this.socket.on('participant:muted', (event: HostMutedEvent) => {
+      this.hostMutedListeners.forEach((l) => l(event))
+    })
+
+    this.socket.on('room:kicked', () => {
+      this.wasKicked = true
+      this.state.roomId = null
+      this.state.shortCode = null
+      this.state.isHost = false
+      this.state.hostSocketId = null
+      this.kickedListeners.forEach((l) => l())
+    })
   }
 
   subscribeRoomState(listener: RoomStateListener) {
@@ -220,6 +242,16 @@ class RoomSyncClient {
   subscribeChatMessages(listener: ChatMessageListener) {
     this.chatListeners.add(listener)
     return () => { this.chatListeners.delete(listener) }
+  }
+
+  subscribeHostMuted(listener: HostMutedListener) {
+    this.hostMutedListeners.add(listener)
+    return () => { this.hostMutedListeners.delete(listener) }
+  }
+
+  subscribeKicked(listener: KickedListener) {
+    this.kickedListeners.add(listener)
+    return () => { this.kickedListeners.delete(listener) }
   }
 
   getState() {
@@ -308,6 +340,24 @@ class RoomSyncClient {
     if (!response.ok) throw new Error(response.error || 'SYNC_EVENT_REJECTED')
   }
 
+  async sendHostMute(targetSocketId: string) {
+    return new Promise<boolean>((resolve, reject) => {
+      this.socket.emit('host_mute', { targetSocketId }, (response: { ok: boolean; muted?: boolean; error?: string }) => {
+        if (response?.ok) resolve(response.muted ?? false)
+        else reject(new Error(response?.error ?? 'HOST_MUTE_FAILED'))
+      })
+    })
+  }
+
+  async sendHostKick(targetSocketId: string) {
+    return new Promise<void>((resolve, reject) => {
+      this.socket.emit('host_kick', { targetSocketId }, (response: { ok: boolean; error?: string }) => {
+        if (response?.ok) resolve()
+        else reject(new Error(response?.error ?? 'HOST_KICK_FAILED'))
+      })
+    })
+  }
+
   async sendChatMessage(text: string) {
     const trimmed = text.trim()
     if (!trimmed || trimmed.length > 500) throw new Error('INVALID_MESSAGE')
@@ -367,4 +417,4 @@ class RoomSyncClient {
 }
 
 export const roomSyncClient = new RoomSyncClient()
-export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot, ChatMessage }
+export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot, ChatMessage, HostMutedEvent }

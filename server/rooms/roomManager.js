@@ -110,6 +110,7 @@ class RoomManager {
       username,
       joinedAt: Date.now(),
       isHost: true,
+      muted: false,
     })
 
     this.rooms.set(roomId, room)
@@ -132,7 +133,7 @@ class RoomManager {
     if (room.participants.size >= room.maxParticipants) return { ok: false, error: 'ROOM_FULL' }
 
     room.participants.set(socketId, {
-      socketId, username, joinedAt: Date.now(), isHost: socketId === room.hostSocketId,
+      socketId, username, joinedAt: Date.now(), isHost: socketId === room.hostSocketId, muted: false,
     })
     this.socketToRoom.set(socketId, roomId)
     return { ok: true, room }
@@ -167,11 +168,20 @@ class RoomManager {
   getRoom(roomId) { return this.rooms.get(roomId) }
   getRoomIdBySocket(socketId) { return this.socketToRoom.get(socketId) || null }
 
+  toggleMuted(roomId, socketId) {
+    const room = this.rooms.get(roomId)
+    if (!room) return null
+    const p = room.participants.get(socketId)
+    if (!p) return null
+    p.muted = !p.muted
+    return p.muted
+  }
+
   getParticipants(roomId) {
     const room = this.rooms.get(roomId)
     if (!room) return []
     return Array.from(room.participants.values()).map((p) => ({
-      socketId: p.socketId, username: p.username, isHost: p.isHost,
+      socketId: p.socketId, username: p.username, isHost: p.isHost, muted: p.muted,
     }))
   }
 

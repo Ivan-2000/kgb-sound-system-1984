@@ -12,6 +12,14 @@ type VideoTileProps = {
   /** Highlights the tile border when this participant is actively speaking */
   isActiveSpeaker?: boolean
   onClick?: () => void
+  /** True if this participant is the room host (shows crown badge) */
+  isHost?: boolean
+  /** True if this participant has been muted by the host */
+  isHostMuted?: boolean
+  /** Show host-control buttons (Mute/Kick) — only for non-local tiles when viewer is host */
+  canControl?: boolean
+  onHostMute?: () => void
+  onHostKick?: () => void
 }
 
 export function VideoTile({
@@ -24,6 +32,11 @@ export function VideoTile({
   cameraEnabled = true,
   isActiveSpeaker = false,
   onClick,
+  isHost,
+  isHostMuted,
+  canControl,
+  onHostMute,
+  onHostKick,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
 
@@ -41,13 +54,14 @@ export function VideoTile({
   const classes = [
     'video-tile',
     isActiveSpeaker ? 'video-tile--speaking' : '',
+    isHostMuted ? 'video-tile--host-muted' : '',
   ].filter(Boolean).join(' ')
 
   return (
     <article
       className={classes}
-      onClick={onClick}
-      style={onClick ? { cursor: 'pointer' } : undefined}
+      onClick={canControl ? undefined : onClick}
+      style={(!canControl && onClick) ? { cursor: 'pointer' } : undefined}
     >
       <div className="video-signal">
         <video
@@ -60,11 +74,45 @@ export function VideoTile({
         {!showVideo && (
           <span className="video-avatar">{label.slice(0, 2).toUpperCase()}</span>
         )}
+        {isHostMuted && (
+          <span className="video-muted-overlay" aria-label="Muted by host">🔇</span>
+        )}
       </div>
       <footer>
-        <strong>{label}</strong>
-        {sublabel ? <span>{sublabel}</span> : null}
-        {rtt !== undefined ? <span className="rtt-badge">{rtt} ms</span> : null}
+        <div className="video-footer-left">
+          {isHost !== undefined && (
+            <span className={isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
+              {isHost ? '★ Host' : '· Guest'}
+            </span>
+          )}
+          <strong>{label}</strong>
+          {sublabel && !isHost !== undefined ? <span>{sublabel}</span> : null}
+        </div>
+        <div className="video-footer-right">
+          {rtt !== undefined ? <span className="rtt-badge">{rtt} ms</span> : null}
+          {canControl && (
+            <div className="video-host-controls" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className={['host-ctrl-btn', isHostMuted ? 'host-ctrl-btn--active' : ''].filter(Boolean).join(' ')}
+                onClick={onHostMute}
+                aria-label={isHostMuted ? 'Unmute participant' : 'Mute participant'}
+                title={isHostMuted ? 'Unmute' : 'Mute'}
+              >
+                {isHostMuted ? 'Unmute' : 'Mute'}
+              </button>
+              <button
+                type="button"
+                className="host-ctrl-btn host-ctrl-btn--kick"
+                onClick={onHostKick}
+                aria-label="Kick participant"
+                title="Kick from room"
+              >
+                Kick
+              </button>
+            </div>
+          )}
+        </div>
       </footer>
     </article>
   )

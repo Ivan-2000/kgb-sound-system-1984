@@ -585,6 +585,7 @@ h2 {
   inset-inline: 0;
   bottom: 0;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
@@ -915,7 +916,7 @@ input[type='range'] {
 
 .participants-panel li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 86px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 10px;
@@ -972,6 +973,135 @@ input[type='range'] {
 meter {
   width: 86px;
   height: 10px;
+}
+
+/* ── Role badges ─────────────────────────────────────────── */
+.role-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+
+.role-badge--host {
+  border: 1px solid rgba(218, 178, 91, 0.55);
+  background: rgba(218, 178, 91, 0.1);
+  color: var(--gold);
+}
+
+.role-badge--guest {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+}
+
+/* ── Host-control buttons (Mute / Kick) ───────────────────── */
+.host-ctrl-btn {
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--line-soft);
+  background: var(--control);
+  color: var(--text-muted);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: border-color 0.1s, color 0.1s;
+}
+
+.host-ctrl-btn:hover:not(:disabled) {
+  border-color: rgba(218, 178, 91, 0.5);
+  color: var(--text-strong);
+}
+
+.host-ctrl-btn--active {
+  border-color: rgba(218, 178, 91, 0.55);
+  background: rgba(218, 178, 91, 0.1);
+  color: var(--gold);
+}
+
+.host-ctrl-btn--kick {
+  border-color: rgba(240, 64, 64, 0.3);
+  color: #f08080;
+}
+
+.host-ctrl-btn--kick:hover:not(:disabled) {
+  border-color: rgba(240, 64, 64, 0.7);
+  background: rgba(240, 64, 64, 0.1);
+  color: #f08080;
+}
+
+/* ── Muted badge in participant list ──────────────────────── */
+.muted-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid rgba(240, 64, 64, 0.4);
+  background: rgba(240, 64, 64, 0.08);
+  color: #f08080;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.participant-you {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.participant-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.participant-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.participant-host-muted {
+  opacity: 0.7;
+}
+
+/* ── VideoTile host controls overlay ──────────────────────── */
+.video-host-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.video-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.video-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.video-muted-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 18px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+}
+
+.video-tile--host-muted {
+  opacity: 0.75;
 }
 
 /* ── Chat panel ──────────────────────────────────────────── */

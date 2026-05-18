@@ -136,6 +136,10 @@ const chatMessageSchema = z.object({
   text: z.string().trim().min(1).max(500),
 })
 
+const hostTargetSchema = z.object({
+  targetSocketId: z.string().min(1),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
@@ -145,4 +149,5 @@ module.exports = {
   pingSchema,
   participantRttSchema,
   chatMessageSchema,
+  hostTargetSchema,
 }
