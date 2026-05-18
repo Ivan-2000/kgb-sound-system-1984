@@ -92,6 +92,12 @@ function App() {
   const [roomHistory, setRoomHistory] = useState<RoomHistoryEntry[]>(() => loadRoomHistory())
   const [prerollBars, setPrerollBars] = useState(2)
 
+  const metroSettingsRef = useRef<HTMLDivElement>(null)
+  const [showDrumMachine, setShowDrumMachine] = useState(true)
+  const [showArrange, setShowArrange] = useState(false)
+  const [showMetroSettings, setShowMetroSettings] = useState(false)
+  const [syncOnly, setSyncOnly] = useState(false)
+
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
 
@@ -189,6 +195,18 @@ function App() {
   useEffect(() => metronome.subscribe((state) => {
     setMetronomeState(state)
   }), [])
+
+  // Close metro settings popover on outside click
+  useEffect(() => {
+    if (!showMetroSettings) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (metroSettingsRef.current && !metroSettingsRef.current.contains(e.target as Node)) {
+        setShowMetroSettings(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showMetroSettings])
 
   // Short visual flash on each beat tick
   useEffect(() => {
@@ -410,6 +428,12 @@ function App() {
     if (roomState.roomId && !roomState.isHost) return
     metronome.setTimeSignature(ts)
     await emitSyncEvent({ type: 'time_signature_change', payload: { beats: ts.beats, division: ts.division } })
+  }
+
+  const handleSyncOnlyToggle = () => {
+    const next = !syncOnly
+    setSyncOnly(next)
+    metronome.setSoundEnabled(!next)
   }
 
   const handleSwingChange = async (swing: number) => {
@@ -875,49 +899,94 @@ function App() {
           disabled={inRoom && !roomState.isHost}
         />
 
+        <div className="metro-btn-group" ref={metroSettingsRef}>
+          <button
+            type="button"
+            className={['ghost-action', metronomeState.enabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+            onClick={() => void handleMetronomeToggle()}
+            disabled={inRoom && !roomState.isHost}
+            aria-pressed={metronomeState.enabled}
+            aria-label={metronomeState.enabled ? 'Disable metronome' : 'Enable metronome'}
+          >
+            Click
+          </button>
+          <button
+            type="button"
+            className={['ghost-action ghost-action--sm metro-settings-btn', showMetroSettings ? 'is-active' : ''].filter(Boolean).join(' ')}
+            onClick={() => setShowMetroSettings((v) => !v)}
+            aria-label="Metronome settings"
+            aria-expanded={showMetroSettings}
+          >
+            ▾
+          </button>
+          {showMetroSettings && (
+            <div className="metro-settings-popover" role="dialog" aria-label="Metronome settings">
+              <label className="metro-settings-row">
+                <span>Time sig</span>
+                <select
+                  aria-label="Time signature"
+                  className="time-sig-select"
+                  disabled={inRoom && !roomState.isHost}
+                  value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
+                  onChange={(e) => {
+                    const [b, d] = e.target.value.split('/').map(Number)
+                    void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
+                  }}
+                >
+                  {COMMON_TIME_SIGNATURES.map((ts) => (
+                    <option key={`${ts.beats}/${ts.division}`} value={`${ts.beats}/${ts.division}`}>
+                      {ts.beats}/{ts.division}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="metro-settings-row">
+                <span>Preroll</span>
+                <select
+                  aria-label="Preroll bars"
+                  className="preroll-select"
+                  value={prerollBars}
+                  onChange={(e) => setPrerollBars(Number(e.target.value))}
+                  disabled={isPlaying || isStarting}
+                >
+                  <option value={0}>Off</option>
+                  <option value={1}>1 bar</option>
+                  <option value={2}>2 bars</option>
+                  <option value={4}>4 bars</option>
+                </select>
+              </label>
+              <label className="metro-settings-row metro-settings-check">
+                <input
+                  type="checkbox"
+                  checked={syncOnly}
+                  onChange={handleSyncOnlyToggle}
+                  disabled={inRoom && !roomState.isHost}
+                />
+                <span>Sync only</span>
+              </label>
+            </div>
+          )}
+        </div>
+
         <button
           type="button"
-          className={['ghost-action', metronomeState.enabled ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => void handleMetronomeToggle()}
-          disabled={inRoom && !roomState.isHost}
-          aria-pressed={metronomeState.enabled}
-          aria-label={metronomeState.enabled ? 'Disable metronome' : 'Enable metronome'}
+          className={['ghost-action', showArrange ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => setShowArrange((v) => !v)}
+          aria-pressed={showArrange}
+          aria-label={showArrange ? 'Hide arrange panel' : 'Show arrange panel'}
         >
-          Click
+          Arrange
         </button>
 
-        <select
-          aria-label="Time signature"
-          className="time-sig-select"
-          disabled={inRoom && !roomState.isHost}
-          value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
-          onChange={(e) => {
-            const [b, d] = e.target.value.split('/').map(Number)
-            void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
-          }}
+        <button
+          type="button"
+          className={['ghost-action', showDrumMachine ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => setShowDrumMachine((v) => !v)}
+          aria-pressed={showDrumMachine}
+          aria-label={showDrumMachine ? 'Hide drum machine' : 'Show drum machine'}
         >
-          {COMMON_TIME_SIGNATURES.map((ts) => (
-            <option key={`${ts.beats}/${ts.division}`} value={`${ts.beats}/${ts.division}`}>
-              {ts.beats}/{ts.division}
-            </option>
-          ))}
-        </select>
-
-        <label className="preroll-control">
-          <span>Pre</span>
-          <select
-            aria-label="Preroll bars"
-            className="preroll-select"
-            value={prerollBars}
-            onChange={(e) => setPrerollBars(Number(e.target.value))}
-            disabled={isPlaying || isStarting}
-          >
-            <option value={0}>Off</option>
-            <option value={1}>1 bar</option>
-            <option value={2}>2 bars</option>
-            <option value={4}>4 bars</option>
-          </select>
-        </label>
+          Drums
+        </button>
 
         <button
           type="button"
@@ -944,7 +1013,22 @@ function App() {
         </button>
       </section>
 
-      <section className="workspace-grid">
+      {showArrange && (
+        <section className="arrange-panel" aria-label="Arrange">
+          <div className="section-heading compact">
+            <div>
+              <p className="eyebrow">Arrange</p>
+              <h2>Timeline</h2>
+            </div>
+          </div>
+          <div className="arrange-placeholder">
+            <span>Arrange — coming in Phase 3</span>
+          </div>
+        </section>
+      )}
+
+      <section className={['workspace-grid', !showDrumMachine ? 'workspace-grid--sidebar-only' : ''].filter(Boolean).join(' ')}>
+        {showDrumMachine && (
         <section className="sequencer-section" aria-label="Drum machine">
           <div className="section-heading">
             <div>
@@ -1107,6 +1191,7 @@ function App() {
           </div>
 
         </section>
+        )}
 
         <aside className="side-stack">
           <section className="mixer-panel" aria-label="Mixer">

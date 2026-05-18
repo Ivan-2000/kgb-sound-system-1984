@@ -23,6 +23,7 @@ export type MetronomeListener = (state: MetronomeState) => void
 
 class Metronome {
   private enabled = false
+  private soundEnabled = true
   private timeSignature: TimeSignature = DEFAULT_TIME_SIGNATURE
   private currentBeat = 0
   private isPreroll = false
@@ -56,6 +57,11 @@ class Metronome {
     this.emitChange()
   }
 
+  setSoundEnabled(next: boolean) {
+    this.soundEnabled = next
+    this.emitChange()
+  }
+
   setTimeSignature(ts: TimeSignature) {
     this.timeSignature = { ...ts }
     this.currentBeat = 0
@@ -67,7 +73,7 @@ class Metronome {
     const beat = beatIndex % this.timeSignature.beats
     this.currentBeat = beat
 
-    if (this.enabled) {
+    if (this.enabled && this.soundEnabled) {
       this.playClick(beat === 0, time)
     }
 
@@ -82,7 +88,7 @@ class Metronome {
     const beatDuration = this.beatDurationNotation()
     this.scheduleId = Tone.Transport.scheduleRepeat((time) => {
       const beat = this.currentBeat
-      if (this.enabled) {
+      if (this.enabled && this.soundEnabled) {
         this.playClick(beat === 0, time)
       }
       this.currentBeat = (beat + 1) % this.timeSignature.beats
