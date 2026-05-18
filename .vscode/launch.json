@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Electron (dev)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "${workspaceFolder}/client/node_modules/.bin/electron",
+      "runtimeArgs": [".", "--dev-server=http://127.0.0.1:5173"],
+      "cwd": "${workspaceFolder}/client",
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "preLaunchTask": "Start Vite dev server",
+      "presentation": {
+        "hidden": false,
+        "group": "",
+        "order": 1
+      }
+    }
+  ]
+}

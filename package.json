@@ -1,0 +1,17 @@
+{
+  "name": "kgb-sound-system-85",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "build-win": "npm --prefix client run build-win",
+    "start": "npm --prefix client run start",
+    "lint": "npm --prefix client run lint"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "zod": "^4.4.3"
+  }
+}

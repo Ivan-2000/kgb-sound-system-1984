@@ -1,0 +1,41 @@
+:root {
+  --bg: #07080b;
+  --panel: rgba(20, 22, 27, 0.94);
+  --control: rgba(255, 255, 255, 0.045);
+  --line: rgba(218, 178, 91, 0.28);
+  --line-soft: rgba(255, 255, 255, 0.1);
+  --gold: #dab25b;
+  --amber: #f08a3c;
+  --crystal: #7ee4dc;
+  --rose: #bf6b83;
+  --text: #d6d0c4;
+  --text-muted: #8f8d93;
+  --text-strong: #fff7df;
+  --panel-shadow: 0 22px 60px rgba(0, 0, 0, 0.32);
+  --sans: Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, Arial, sans-serif;
+
+  font: 15px/1.45 var(--sans);
+  color: var(--text);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(218, 178, 91, 0.1), transparent 34%),
+    linear-gradient(140deg, rgba(126, 228, 220, 0.05), transparent 35%),
+    var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+

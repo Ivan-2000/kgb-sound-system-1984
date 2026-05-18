@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: kgb-sound-signaling
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: INVITE_BASE_URL
+        # Replace with your deployed Electron download URL or leave blank
+        value: ""

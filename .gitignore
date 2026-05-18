@@ -1,0 +1,9 @@
+node_modules/
+node_modules/
+**/node_modules/
+
+# Claude Code local settings
+.claude/
+*.local.json
+.DS_Store
+dist/
