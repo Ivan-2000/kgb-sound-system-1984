@@ -38,20 +38,20 @@ const clientEventSchema = z.discriminatedUnion('type', [
     type: z.literal('step_toggle'),
     payload: z.object({
       track: z.enum(['kick', 'snare', 'hat', 'crash']),
-      step: z.number().int().min(0).max(15),
+      step: z.number().int().min(0).max(31),
       value: z.boolean(),
     }),
   }),
   eventBaseSchema.extend({
     type: z.literal('transport_play'),
     payload: z.object({
-      step: z.number().int().min(0).max(15),
+      step: z.number().int().min(0).max(31),
     }),
   }),
   eventBaseSchema.extend({
     type: z.literal('transport_stop'),
     payload: z.object({
-      step: z.number().int().min(0).max(15),
+      step: z.number().int().min(0).max(31),
     }),
   }),
   eventBaseSchema.extend({
@@ -70,6 +70,51 @@ const clientEventSchema = z.discriminatedUnion('type', [
     type: z.literal('camera_toggle'),
     payload: z.object({
       enabled: z.boolean(),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('step_count_change'),
+    payload: z.object({
+      stepCount: z.union([z.literal(8), z.literal(16), z.literal(32)]),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('velocity_change'),
+    payload: z.object({
+      track: z.enum(['kick', 'snare', 'hat', 'crash']),
+      step: z.number().int().min(0).max(31),
+      velocity: z.number().int().min(1).max(127),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('time_signature_change'),
+    payload: z.object({
+      beats: z.number().int().min(1).max(16),
+      division: z.union([z.literal(4), z.literal(8), z.literal(16)]),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('metronome_toggle'),
+    payload: z.object({
+      enabled: z.boolean(),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('swing_change'),
+    payload: z.object({
+      swing: z.number().int().min(0).max(100),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('pattern_switch'),
+    payload: z.object({
+      patternIndex: z.number().int().min(0).max(7),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('chain_set'),
+    payload: z.object({
+      chain: z.array(z.number().int().min(0).max(7)).max(32).nullable(),
     }),
   }),
 ])

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MAX_BPM, MIN_BPM, audioEngine } from './audio/audioEngine'
+import { metronome, COMMON_TIME_SIGNATURES, type MetronomeState, type TimeSignature } from './audio/metronome'
 import {
   DRUM_TRACKS,
-  STEP_COUNT,
+  MAX_PATTERNS,
   drumMachine,
   type DrumMachineState,
   type DrumTrack,
 } from './drumMachine/drumMachine'
+import { VALID_STEP_COUNTS, type StepCount } from './protocol/syncProtocol'
 import { roomSyncClient, type RoomState, type RoomParticipant } from './networking/roomSyncClient'
 import { peerManager } from './rtc/peerManager'
 import { mixerEngine } from './mixer/mixerEngine'
@@ -59,6 +61,8 @@ function friendlyError(code: string): string {
 function App() {
   const [machineState, setMachineState] = useState<DrumMachineState>(() => drumMachine.getState())
   const [bpm, setBpm] = useState(() => audioEngine.getBpm())
+  const [metronomeState, setMetronomeState] = useState<MetronomeState>(() => metronome.getState())
+  const [beatFlash, setBeatFlash] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isStarting, setIsStarting] = useState(false)
   const [roomState, setRoomState] = useState<RoomState>(() => roomSyncClient.getState())
@@ -86,6 +90,7 @@ function App() {
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
   const [roomHistory, setRoomHistory] = useState<RoomHistoryEntry[]>(() => loadRoomHistory())
+  const [prerollBars, setPrerollBars] = useState(2)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -181,6 +186,18 @@ function App() {
 
   useEffect(() => drumMachine.subscribe(setMachineState), [])
   useEffect(() => roomSyncClient.subscribeRoomState(setRoomState), [])
+  useEffect(() => metronome.subscribe((state) => {
+    setMetronomeState(state)
+  }), [])
+
+  // Short visual flash on each beat tick
+  useEffect(() => {
+    if (!isPlaying || !metronomeState.enabled) return
+    setBeatFlash(true)
+    const t = setTimeout(() => setBeatFlash(false), 80)
+    return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metronomeState.currentBeat])
 
   // Auto-fill code from invite hash: #join/ABCD
   useEffect(() => {
@@ -226,12 +243,14 @@ function App() {
 
         if (event.type === 'transport_play') {
           await drumMachine.start({ step: event.payload.step })
+          metronome.start()
           setIsPlaying(true)
           return
         }
 
         if (event.type === 'transport_stop') {
           drumMachine.stop()
+          metronome.stop()
           setIsPlaying(false)
           return
         }
@@ -243,6 +262,47 @@ function App() {
               p.socketId === senderId ? { ...p, micEnabled: event.payload.enabled } : p,
             ),
           )
+          return
+        }
+
+        if (event.type === 'step_count_change') {
+          drumMachine.setStepCount(event.payload.stepCount)
+          return
+        }
+
+        if (event.type === 'swing_change') {
+          drumMachine.setSwing(event.payload.swing)
+          return
+        }
+
+        if (event.type === 'pattern_switch') {
+          drumMachine.switchPattern(event.payload.patternIndex)
+          // Clear LWW map so stale timestamps from the previous pattern don't bleed
+          stepLwwRef.current.clear()
+          return
+        }
+
+        if (event.type === 'velocity_change') {
+          try {
+            drumMachine.setVelocity(event.payload.track, event.payload.step, event.payload.velocity)
+          } catch {
+            // step out of range for current pattern length — stale event, ignore
+          }
+          return
+        }
+
+        if (event.type === 'time_signature_change') {
+          metronome.setTimeSignature({ beats: event.payload.beats, division: event.payload.division })
+          return
+        }
+
+        if (event.type === 'metronome_toggle') {
+          metronome.setEnabled(event.payload.enabled)
+          return
+        }
+
+        if (event.type === 'chain_set') {
+          drumMachine.setChain(event.payload.chain)
           return
         }
 
@@ -295,14 +355,31 @@ function App() {
 
     if (isPlaying) {
       drumMachine.stop()
+      metronome.stop()
       setIsPlaying(false)
       await emitSyncEvent({ type: 'transport_stop', payload: { step: machineState.currentStep } })
       return
     }
 
     setIsStarting(true)
+
+    if (prerollBars > 0) {
+      await metronome.startPreroll(prerollBars, async () => {
+        try {
+          await drumMachine.start()
+          metronome.start()
+          setIsPlaying(true)
+          await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
+        } finally {
+          setIsStarting(false)
+        }
+      })
+      return
+    }
+
     try {
       await drumMachine.start()
+      metronome.start()
       setIsPlaying(true)
       await emitSyncEvent({ type: 'transport_play', payload: { step: machineState.currentStep } })
     } finally {
@@ -315,6 +392,49 @@ function App() {
     const safeBpm = audioEngine.setBpm(nextBpm)
     setBpm(safeBpm)
     await emitSyncEvent({ type: 'bpm_change', payload: { bpm: safeBpm } })
+  }
+
+  const handleVelocityChange = async (track: DrumTrack, step: number, velocity: number) => {
+    const clamped = drumMachine.setVelocity(track, step, velocity)
+    await emitSyncEvent({ type: 'velocity_change', payload: { track, step, velocity: clamped } })
+  }
+
+  const handleMetronomeToggle = async () => {
+    if (roomState.roomId && !roomState.isHost) return
+    const next = !metronomeState.enabled
+    metronome.setEnabled(next)
+    await emitSyncEvent({ type: 'metronome_toggle', payload: { enabled: next } })
+  }
+
+  const handleTimeSignatureChange = async (ts: TimeSignature) => {
+    if (roomState.roomId && !roomState.isHost) return
+    metronome.setTimeSignature(ts)
+    await emitSyncEvent({ type: 'time_signature_change', payload: { beats: ts.beats, division: ts.division } })
+  }
+
+  const handleSwingChange = async (swing: number) => {
+    if (roomState.roomId && !roomState.isHost) return
+    drumMachine.setSwing(swing)
+    await emitSyncEvent({ type: 'swing_change', payload: { swing } })
+  }
+
+  const handlePatternSwitch = async (index: number) => {
+    if (roomState.roomId && !roomState.isHost) return
+    drumMachine.switchPattern(index)
+    stepLwwRef.current.clear()
+    await emitSyncEvent({ type: 'pattern_switch', payload: { patternIndex: index } })
+  }
+
+  const handleStepCountChange = async (next: StepCount) => {
+    if (roomState.roomId && !roomState.isHost) return
+    drumMachine.setStepCount(next)
+    await emitSyncEvent({ type: 'step_count_change', payload: { stepCount: next } })
+  }
+
+  const handleChainSet = async (chain: number[] | null) => {
+    if (roomState.roomId && !roomState.isHost) return
+    drumMachine.setChain(chain)
+    await emitSyncEvent({ type: 'chain_set', payload: { chain } })
   }
 
   const handleStepToggle = async (track: DrumTrack, step: number) => {
@@ -435,17 +555,26 @@ function App() {
   const applySyncSnapshot = async (snapshot: SyncStateSnapshot | null) => {
     if (!snapshot) return
 
-    drumMachine.setPattern(snapshot.pattern)
+    drumMachine.setPatternBank(
+      snapshot.patternBank as Parameters<typeof drumMachine.setPatternBank>[0],
+      snapshot.activePatternIndex,
+    )
+    drumMachine.setSwing(snapshot.swing ?? 0)
+    drumMachine.setChain(snapshot.chain ?? null)
     const safeBpm = audioEngine.setBpm(snapshot.bpm)
     setBpm(safeBpm)
+    metronome.setTimeSignature(snapshot.timeSignature as TimeSignature)
+    metronome.setEnabled(snapshot.metronomeEnabled)
 
     if (snapshot.isPlaying) {
       await drumMachine.start({ step: snapshot.currentStep })
+      metronome.start()
       setIsPlaying(true)
       return
     }
 
     drumMachine.stop()
+    metronome.stop()
     setIsPlaying(false)
   }
 
@@ -471,7 +600,10 @@ function App() {
     : null
 
   return (
-    <main className="rehearsal-shell">
+    <main className={[
+      'rehearsal-shell',
+      beatFlash ? (metronomeState.isDownbeat ? 'beat-flash--down' : 'beat-flash--up') : '',
+    ].filter(Boolean).join(' ')}>
       <header className="app-header">
         <div>
           <p className="eyebrow">KGB Sound System 85</p>
@@ -715,7 +847,9 @@ function App() {
           disabled={isStarting || (inRoom && !roomState.isHost)}
           title={inRoom && !roomState.isHost ? 'Only host can control transport' : undefined}
         >
-          {isPlaying ? 'Stop' : isStarting ? 'Loading…' : 'Play'}
+          {isStarting
+            ? (metronomeState.isPreroll ? `${metronomeState.currentBeat + 1}…` : 'Loading…')
+            : isPlaying ? 'Stop' : 'Play'}
         </button>
 
         <label className="bpm-control">
@@ -740,6 +874,50 @@ function App() {
           value={bpm}
           disabled={inRoom && !roomState.isHost}
         />
+
+        <button
+          type="button"
+          className={['ghost-action', metronomeState.enabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleMetronomeToggle()}
+          disabled={inRoom && !roomState.isHost}
+          aria-pressed={metronomeState.enabled}
+          aria-label={metronomeState.enabled ? 'Disable metronome' : 'Enable metronome'}
+        >
+          Click
+        </button>
+
+        <select
+          aria-label="Time signature"
+          className="time-sig-select"
+          disabled={inRoom && !roomState.isHost}
+          value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
+          onChange={(e) => {
+            const [b, d] = e.target.value.split('/').map(Number)
+            void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
+          }}
+        >
+          {COMMON_TIME_SIGNATURES.map((ts) => (
+            <option key={`${ts.beats}/${ts.division}`} value={`${ts.beats}/${ts.division}`}>
+              {ts.beats}/{ts.division}
+            </option>
+          ))}
+        </select>
+
+        <label className="preroll-control">
+          <span>Pre</span>
+          <select
+            aria-label="Preroll bars"
+            className="preroll-select"
+            value={prerollBars}
+            onChange={(e) => setPrerollBars(Number(e.target.value))}
+            disabled={isPlaying || isStarting}
+          >
+            <option value={0}>Off</option>
+            <option value={1}>1 bar</option>
+            <option value={2}>2 bars</option>
+            <option value={4}>4 bars</option>
+          </select>
+        </label>
 
         <button
           type="button"
@@ -771,14 +949,68 @@ function App() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Drum Machine</p>
-              <h2>16 Step Pattern</h2>
+              <h2>{machineState.stepCount} Step Pattern</h2>
             </div>
-            <span>{STEP_COUNT} steps / 4 tracks</span>
+
+            {/* Pattern bank */}
+            <div className="pattern-bank" aria-label="Pattern bank">
+              {Array.from({ length: MAX_PATTERNS }, (_, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={[
+                    'ghost-action ghost-action--sm',
+                    i === machineState.activePatternIndex ? 'is-active' : '',
+                    machineState.patternActivity[i] ? 'has-content' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => { void handlePatternSwitch(i) }}
+                  disabled={inRoom && !roomState.isHost}
+                  aria-pressed={i === machineState.activePatternIndex}
+                  aria-label={`Pattern ${i + 1}`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+
+            {/* Step count + swing */}
+            <div className="sequencer-controls">
+              <div className="step-count-selector">
+                {VALID_STEP_COUNTS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={['ghost-action ghost-action--sm', n === machineState.stepCount ? 'is-active' : ''].filter(Boolean).join(' ')}
+                    onClick={() => { void handleStepCountChange(n) }}
+                    disabled={inRoom && !roomState.isHost}
+                    aria-pressed={n === machineState.stepCount}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+
+              <label className="swing-control">
+                <span>Swing</span>
+                <input
+                  aria-label="Swing"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={machineState.swing}
+                  onChange={(e) => { void handleSwingChange(Number(e.target.value)) }}
+                  disabled={inRoom && !roomState.isHost}
+                  className="swing-slider"
+                />
+                <span className="swing-value">{machineState.swing}%</span>
+              </label>
+            </div>
           </div>
 
           <div className="step-ruler" aria-hidden="true">
             <span />
-            {Array.from({ length: STEP_COUNT }, (_, step) => (
+            {Array.from({ length: machineState.stepCount }, (_, step) => (
               <span key={step}>{step + 1}</span>
             ))}
           </div>
@@ -789,6 +1021,7 @@ function App() {
                 <div className="track-label">{trackLabels[track]}</div>
                 {machineState.pattern[track].map((enabled, step) => {
                   const isCurrent = isPlaying && machineState.currentStep === step
+                  const vel = machineState.velocity[track][step] ?? 100
                   return (
                     <button
                       aria-label={`${trackLabels[track]} step ${step + 1}`}
@@ -802,13 +1035,77 @@ function App() {
                         .join(' ')}
                       key={`${track}-${step}`}
                       onClick={() => { void handleStepToggle(track, step) }}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        const v = Number(window.prompt(`Velocity for ${trackLabels[track]} step ${step + 1} (1–127)`, String(vel)))
+                        if (!Number.isNaN(v)) void handleVelocityChange(track, step, v)
+                      }}
                       type="button"
+                      style={enabled ? { '--vel-alpha': String(vel / 127) } as React.CSSProperties : undefined}
                     />
                   )
                 })}
               </div>
             ))}
           </div>
+
+          {/* Chain editor */}
+          <div className="chain-editor" aria-label="Pattern chain">
+            <button
+              type="button"
+              className={['ghost-action ghost-action--sm', machineState.chain !== null ? 'is-active' : ''].filter(Boolean).join(' ')}
+              onClick={() => void handleChainSet(
+                machineState.chain !== null ? null : [machineState.activePatternIndex]
+              )}
+              disabled={inRoom && !roomState.isHost}
+              aria-pressed={machineState.chain !== null}
+              title={machineState.chain !== null ? 'Disable chain mode' : 'Enable chain mode'}
+            >
+              Chain
+            </button>
+
+            {machineState.chain !== null && (
+              <>
+                <div className="chain-sequence">
+                  {machineState.chain.map((patIdx, pos) => (
+                    <button
+                      key={pos}
+                      type="button"
+                      className={[
+                        'chain-slot',
+                        isPlaying && pos === machineState.chainPosition ? 'is-current' : '',
+                      ].filter(Boolean).join(' ')}
+                      onClick={() => {
+                        if (inRoom && !roomState.isHost) return
+                        const next = machineState.chain!.filter((_, i) => i !== pos)
+                        void handleChainSet(next.length > 0 ? next : null)
+                      }}
+                      disabled={inRoom && !roomState.isHost}
+                      title={`Pattern ${patIdx + 1} — click to remove`}
+                      aria-label={`Chain slot ${pos + 1}: pattern ${patIdx + 1}`}
+                    >
+                      {patIdx + 1}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  className="ghost-action ghost-action--sm"
+                  onClick={() => {
+                    const next = [...(machineState.chain ?? []), machineState.activePatternIndex]
+                    void handleChainSet(next)
+                  }}
+                  disabled={(inRoom && !roomState.isHost) || (machineState.chain?.length ?? 0) >= 32}
+                  aria-label="Append active pattern to chain"
+                  title="Append active pattern to end of chain"
+                >
+                  +
+                </button>
+              </>
+            )}
+          </div>
+
         </section>
 
         <aside className="side-stack">

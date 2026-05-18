@@ -7,16 +7,22 @@ type RoomParticipant = {
   isHost: boolean
 }
 
+type PatternSlotSnapshot = {
+  pattern: { kick: boolean[]; snare: boolean[]; hat: boolean[]; crash: boolean[] }
+  velocity: { kick: number[]; snare: number[]; hat: number[]; crash: number[] }
+  stepCount: 8 | 16 | 32
+}
+
 type SyncStateSnapshot = {
   bpm: number
   isPlaying: boolean
   currentStep: number
-  pattern: {
-    kick: boolean[]
-    snare: boolean[]
-    hat: boolean[]
-    crash: boolean[]
-  }
+  activePatternIndex: number
+  swing: number
+  patternBank: PatternSlotSnapshot[]
+  metronomeEnabled: boolean
+  timeSignature: { beats: number; division: number }
+  chain: number[] | null
 }
 
 type RoomState = {
@@ -331,4 +337,4 @@ class RoomSyncClient {
 }
 
 export const roomSyncClient = new RoomSyncClient()
-export type { RoomState, SyncStateSnapshot, RoomParticipant }
+export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot }

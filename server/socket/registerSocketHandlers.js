@@ -164,7 +164,7 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
-      const hostOnlyTypes = new Set(['transport_play', 'transport_stop', 'bpm_change'])
+      const hostOnlyTypes = new Set(['transport_play', 'transport_stop', 'bpm_change', 'step_count_change', 'time_signature_change', 'metronome_toggle', 'swing_change', 'pattern_switch', 'chain_set'])
       if (hostOnlyTypes.has(parsed.data.type) && room.hostSocketId !== socket.id) {
         ack?.({ ok: false, error: 'HOST_AUTHORITY_REQUIRED' })
         return

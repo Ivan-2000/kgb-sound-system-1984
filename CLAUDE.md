@@ -3,6 +3,7 @@
 Project rules for Claude Code working on this repo.
 
 This file is read by Claude Code at the start of every session. Keep it short.
+Source of truth for phases, status, and acceptance criteria: **`TASKS.md`**.
 
 ---
 
@@ -13,11 +14,13 @@ Musicians connect over the internet: shared drum machine, real-time audio/video,
 
 Stack: Electron + React + TypeScript + Vite (client), Node.js + Socket.IO (signaling server), WebRTC via simple-peer, Tone.js + Web Audio API.
 
+> **Current audio transport is a prototype.** Audio runs through browser `getUserMedia` + WebRTC MediaStream. The target architecture is native: PortAudio (ASIO / WASAPI / CoreAudio / ALSA) in the Electron main process, with Opus over WebRTC DataChannel. The native engine is the critical block of Phase 1 (Stream A in TASKS.md).
+
 Key docs:
-- `TASKS.md` — phase checklist, what's done and what's next
+- `TASKS.md` — phase checklist, parallel streams, what's done and what's next (**authoritative**)
 - `kgb_sound_roadmap.md` — full spec with phases and acceptance criteria
 
-Read the relevant doc before writing code. If a task spans multiple layers, read both sides first.
+**Read TASKS.md before writing any code.** If a task spans multiple layers, read both sides first.
 
 ---
 
@@ -70,12 +73,11 @@ Default: **Sonnet 4.6**. Use Opus rarely.
 - Most debugging
 
 ### Use Opus 4.7 only when
-- Designing native audio architecture (ASIO / CoreAudio / PortAudio) — Phase 2
-- NTP-like clock sync and drift correction — Phase 4
-- Designing the recording pipeline with latency compensation — Phase 2
-- Designing the timeline / arrange window architecture — Phase 3
+- **A1 — native audio binding strategy** (naudiodon vs. node-addon-api + PortAudio C++, IPC schema between main and renderer) — Phase 1, Stream A
 - A bug that Sonnet attempted twice without solving
 - Architectural decisions that span 3+ layers
+
+Other heavy architectural work starts on Sonnet 4.6. Escalate to Opus only if Sonnet stalls — don't pre-assign Opus.
 
 **Switch back to Sonnet immediately after the Opus task is done.**
 
@@ -87,16 +89,28 @@ If the user is on Opus and the task is routine, suggest:
 
 ---
 
+## Parallel streams
+
+Work follows two parallel streams — check `TASKS.md` "Схема работы" before starting any new task.
+
+- **Stream A** — Native audio engine (critical path, sequential: A1 → A2 → A3 → A4 → A5 → A6). Blocks Phase 2 and Phase 3.
+- **Stream B** — Independent tasks that don't depend on the native engine (signaling polish, drum machine, UI). Can be picked up any time.
+
+> Phase 2 and Phase 3 only start after A3 (capture works). Phase 3 additionally requires Phase 2.
+
+If the user asks for something out of order within Stream A, ask whether to defer or skip ahead deliberately.
+
+---
+
 ## Session hygiene
 
 Long sessions burn the usage limit faster — every reply re-reads the whole conversation.
 
 **Tell the user to open a new session when:**
-- A phase from `TASKS.md` just completed
+- A phase or sub-task from `TASKS.md` just completed
 - The conversation has grown past ~30 back-and-forth turns
 - The topic shifts significantly (e.g. from audio engine to UI, or from networking to recording)
 - A long file dump has filled context with material no longer needed
-- The user is starting a new phase from the roadmap
 
 Phrase it plainly:
 > "This is a good point to start a fresh session. Current context is large and the next task is unrelated to what we just did. New session = lower token usage per reply."
@@ -143,18 +157,3 @@ These are non-obvious and have caused bugs before — don't skip them:
 3. Sample paths in `drumMachine.ts` must be `./samples/*.wav` (relative), not `/samples/*.wav`.
 4. The signaling server URL comes from `VITE_SIGNALING_URL` env var. Dev: `.env.development` (localhost). Prod: `.env.production` (Render URL).
 5. Render.com ignores `render.yaml` if the service was created manually via UI — fix Build Command to `npm install` and Start Command to `node server/index.js` in the dashboard.
-
----
-
-## Phase discipline
-
-Work on one phase at a time, in the order in `TASKS.md`.
-Check acceptance criteria before moving to the next phase.
-If the user asks for something out of order, ask whether to defer or skip ahead deliberately.
-
-Current phase order:
-1. Сеть и комнаты
-2. Миксер и запись
-3. Монтажный стол и MIDI
-4. Метроном и драм-машина (доработка)
-5. UI и полировка
