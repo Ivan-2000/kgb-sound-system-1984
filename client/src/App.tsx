@@ -15,6 +15,7 @@ import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
 import { ChatPanel } from './components/ChatPanel'
+import { SettingsModal } from './components/SettingsModal'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
@@ -100,6 +101,7 @@ function App() {
   const [syncOnly, setSyncOnly] = useState(false)
   const [showChat, setShowChat] = useState(false)
   const [chatUnread, setChatUnread] = useState(0)
+  const [showSettings, setShowSettings] = useState(false)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -1091,6 +1093,16 @@ function App() {
         <button type="button" className="ghost-action" onClick={handleClear}>
           Clear
         </button>
+
+        <button
+          type="button"
+          className={['ghost-action', showSettings ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => setShowSettings((v) => !v)}
+          aria-pressed={showSettings}
+          aria-label={showSettings ? 'Close settings' : 'Open settings'}
+        >
+          Settings
+        </button>
       </section>
 
       {showArrange && (
@@ -1404,6 +1416,9 @@ function App() {
           </section>
         </aside>
       </section>
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} />
+      )}
     </main>
   )
 }

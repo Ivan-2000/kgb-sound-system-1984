@@ -1230,6 +1230,179 @@ meter {
   vertical-align: middle;
 }
 
+/* ── Settings modal ──────────────────────────────────────── */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(3px);
+  padding: 20px;
+}
+
+.settings-modal {
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--gold);
+  background: var(--panel);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(218, 178, 91, 0.15);
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.settings-close-btn {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.settings-body {
+  overflow-y: auto;
+  padding: 18px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.settings-section {
+  padding-bottom: 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.settings-section-title {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.settings-field {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  align-items: start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.settings-field:last-child {
+  margin-bottom: 0;
+}
+
+.settings-label {
+  padding-top: 7px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.settings-select {
+  background: var(--control);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  width: 100%;
+}
+
+.settings-select:focus-visible {
+  outline: 2px solid var(--crystal);
+  outline-offset: 1px;
+}
+
+.settings-stub {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border: 1px dashed var(--line-soft);
+  background: var(--surface);
+  line-height: 1.5;
+}
+
+.settings-stub--phase {
+  color: rgba(218, 178, 91, 0.6);
+  border-color: rgba(218, 178, 91, 0.2);
+  background: rgba(218, 178, 91, 0.04);
+}
+
+.settings-reinit-btn {
+  min-height: 36px;
+  width: 100%;
+  font-size: 13px;
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-radiogroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--control);
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.settings-radio-label:has(input:checked) {
+  border-color: rgba(218, 178, 91, 0.55);
+  background: rgba(218, 178, 91, 0.06);
+}
+
+.settings-radio-label input[type='radio'] {
+  accent-color: var(--gold);
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.settings-radio-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-strong);
+  min-width: 36px;
+}
+
+.settings-radio-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 @media (max-width: 980px) {
   .rehearsal-shell {
     padding: 12px;
