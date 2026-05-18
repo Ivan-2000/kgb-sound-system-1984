@@ -53,6 +53,15 @@ type RtcSignalListener = (event: RtcSignalEvent) => void
 type RttEvent = { socketId: string; rtt: number }
 type RttListener = (event: RttEvent) => void
 
+type ChatMessage = {
+  roomId: string
+  senderId: string
+  username: string
+  text: string
+  ts: number
+}
+type ChatMessageListener = (message: ChatMessage) => void
+
 type AckResponse = {
   ok: boolean
   error?: string
@@ -92,6 +101,7 @@ class RoomSyncClient {
   private participantListeners = new Set<ParticipantListener>()
   private rtcSignalListeners = new Set<RtcSignalListener>()
   private rttListeners = new Set<RttListener>()
+  private chatListeners = new Set<ChatMessageListener>()
   private pingInterval: ReturnType<typeof setInterval> | null = null
 
   constructor() {
@@ -175,6 +185,10 @@ class RoomSyncClient {
     this.socket.on('participant:rtt', (event: RttEvent) => {
       this.rttListeners.forEach((l) => l(event))
     })
+
+    this.socket.on('chat_message', (message: ChatMessage) => {
+      this.chatListeners.forEach((l) => l(message))
+    })
   }
 
   subscribeRoomState(listener: RoomStateListener) {
@@ -201,6 +215,11 @@ class RoomSyncClient {
   subscribeRtt(listener: RttListener) {
     this.rttListeners.add(listener)
     return () => { this.rttListeners.delete(listener) }
+  }
+
+  subscribeChatMessages(listener: ChatMessageListener) {
+    this.chatListeners.add(listener)
+    return () => { this.chatListeners.delete(listener) }
   }
 
   getState() {
@@ -289,6 +308,17 @@ class RoomSyncClient {
     if (!response.ok) throw new Error(response.error || 'SYNC_EVENT_REJECTED')
   }
 
+  async sendChatMessage(text: string) {
+    const trimmed = text.trim()
+    if (!trimmed || trimmed.length > 500) throw new Error('INVALID_MESSAGE')
+    return new Promise<void>((resolve, reject) => {
+      this.socket.emit('chat_message', { text: trimmed }, (response: { ok: boolean; error?: string }) => {
+        if (response?.ok) resolve()
+        else reject(new Error(response?.error ?? 'CHAT_SEND_FAILED'))
+      })
+    })
+  }
+
   async sendRtcSignal(targetSocketId: string, signal: unknown) {
     return new Promise<RtcSignalAck>((resolve) => {
       this.socket.emit('rtc:signal', { targetSocketId, signal }, (response: RtcSignalAck) => {
@@ -337,4 +367,4 @@ class RoomSyncClient {
 }
 
 export const roomSyncClient = new RoomSyncClient()
-export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot }
+export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot, ChatMessage }

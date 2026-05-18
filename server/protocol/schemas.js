@@ -132,6 +132,10 @@ const participantRttSchema = z.object({
   rtt: z.number().int().nonnegative().max(60_000),
 })
 
+const chatMessageSchema = z.object({
+  text: z.string().trim().min(1).max(500),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
@@ -140,4 +144,5 @@ module.exports = {
   clientEventSchema,
   pingSchema,
   participantRttSchema,
+  chatMessageSchema,
 }

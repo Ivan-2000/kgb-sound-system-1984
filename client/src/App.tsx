@@ -14,6 +14,7 @@ import { peerManager } from './rtc/peerManager'
 import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
+import { ChatPanel } from './components/ChatPanel'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
@@ -97,6 +98,8 @@ function App() {
   const [showArrange, setShowArrange] = useState(false)
   const [showMetroSettings, setShowMetroSettings] = useState(false)
   const [syncOnly, setSyncOnly] = useState(false)
+  const [showChat, setShowChat] = useState(false)
+  const [chatUnread, setChatUnread] = useState(0)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -980,6 +983,24 @@ function App() {
 
         <button
           type="button"
+          className={['ghost-action chat-toolbar-btn', showChat ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => {
+            setShowChat((v) => !v)
+            setChatUnread(0)
+          }}
+          aria-pressed={showChat}
+          aria-label={showChat ? 'Hide chat' : 'Show chat'}
+        >
+          Chat
+          {chatUnread > 0 && (
+            <span className="chat-unread-badge" aria-label={`${chatUnread} unread messages`}>
+              {chatUnread > 9 ? '9+' : chatUnread}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
           className={['ghost-action', showDrumMachine ? 'is-active' : ''].filter(Boolean).join(' ')}
           onClick={() => setShowDrumMachine((v) => !v)}
           aria-pressed={showDrumMachine}
@@ -1237,6 +1258,15 @@ function App() {
               ))
             )}
           </section>
+
+          {showChat && (
+            <ChatPanel
+              selfSocketId={selfSocketId}
+              onNewMessage={() => {
+                if (!showChat) setChatUnread((n) => n + 1)
+              }}
+            />
+          )}
 
           <section className="participants-panel" aria-label="Participants">
             <div className="section-heading compact">

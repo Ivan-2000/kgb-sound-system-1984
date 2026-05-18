@@ -6,6 +6,7 @@ const {
   clientEventSchema,
   pingSchema,
   participantRttSchema,
+  chatMessageSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -216,6 +217,34 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
       ack?.({ serverTime: Date.now() })
+    })
+
+    socket.on('chat_message', (rawPayload, ack) => {
+      const parsed = chatMessageSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+
+      const participants = roomManager.getParticipants(roomId)
+      const sender = participants.find((p) => p.socketId === socket.id)
+      const username = sender?.username ?? 'Unknown'
+
+      io.to(roomId).emit('chat_message', {
+        roomId,
+        senderId: socket.id,
+        username,
+        text: parsed.data.text,
+        ts: Date.now(),
+      })
+
+      ack?.({ ok: true })
     })
 
     socket.on('participant:rtt', (rawPayload) => {
