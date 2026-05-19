@@ -1,0 +1,62 @@
+{
+  "name": "client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev-server=http://127.0.0.1:5173\"",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "build-win": "npm run build && electron-builder --win",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "start": "electron ."
+  },
+  "build": {
+    "appId": "com.kgb.sound85",
+    "productName": "KGB Sound System 85",
+    "directories": {
+      "output": "C:\\KGB_Sound_Build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "simple-peer": "^9.11.1",
+    "socket.io-client": "^4.8.3",
+    "tone": "^15.1.22",
+    "uuid": "^14.0.0",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.13"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.12.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/simple-peer": "^9.11.9",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "electron": "^42.0.1",
+    "electron-builder": "^26.8.1",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.0.12",
+    "wait-on": "^9.0.10"
+  }
+}

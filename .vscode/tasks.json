@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Vite dev server",
+      "type": "shell",
+      "command": "npm run dev:web",
+      "options": {
+        "cwd": "${workspaceFolder}/client"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE",
+          "endsPattern": "ready in"
+        }
+      },
+      "presentation": {
+        "panel": "dedicated",
+        "label": "Vite"
+      }
+    },
+    {
+      "label": "Start server",
+      "type": "shell",
+      "command": "node index.js",
+      "options": {
+        "cwd": "${workspaceFolder}/server"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "label": "Server"
+      }
+    }
+  ]
+}
