@@ -1,0 +1,18 @@
+{
+  "name": "@kgb/portaudio-addon",
+  "version": "0.1.0",
+  "description": "PortAudio native addon for KGB Sound System 85 — device enumeration and audio I/O",
+  "main": "index.js",
+  "binary": {
+    "module_name": "portaudio_addon",
+    "module_path": "./build/Release"
+  },
+  "dependencies": {
+    "cmake-js": "^7.3.0",
+    "node-addon-api": "^8.0.0"
+  },
+  "scripts": {
+    "build": "cmake-js compile --generator Ninja",
+    "rebuild": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1"
+  }
+}

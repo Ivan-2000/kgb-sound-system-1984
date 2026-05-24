@@ -11,7 +11,8 @@
     "build-win": "npm run build && electron-builder --win",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "electron ."
+    "start": "electron .",
+    "build:addon": "cd electron/nativeAudio/portaudioAddon && npm install && npm run build"
   },
   "build": {
     "appId": "com.kgb.sound85",

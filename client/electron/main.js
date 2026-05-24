@@ -1,6 +1,7 @@
-import { app, BrowserWindow, session } from 'electron'
+﻿import { app, BrowserWindow, session } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setupAudioIPC, logDevicesAtStartup } from './nativeAudio/ipc.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrlArg = process.argv.find((arg) => arg.startsWith('--dev-server='))
@@ -17,7 +18,8 @@ function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,  // preload uses ipcRenderer (Node API); renderer stays isolated
+      preload: join(__dirname, 'nativeAudio/preload.js'),
     },
   })
 
@@ -38,6 +40,8 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  setupAudioIPC()
+
   // Allow microphone and camera access inside the renderer (getUserMedia)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     const allowed = ['media', 'mediaKeySystem', 'clipboard-read']
@@ -45,6 +49,10 @@ app.whenReady().then(() => {
   })
 
   createMainWindow()
+
+  // Pa_Initialize() calls CoInitializeEx() (COM). Defer until after Electron's own
+  // COM setup completes to avoid threading-model conflict on the main thread.
+  setImmediate(() => logDevicesAtStartup())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -3,8 +3,8 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.6**
-Обновлён: 2026-05-19
+Версия: **1.7**
+Обновлён: 2026-05-24
 
 ---
 
@@ -153,8 +153,8 @@ B: ├─ B1 signaling ─────┤
 - [x] ~~Аудиотранспорт через WebRTC (Opus через браузер `getUserMedia`)~~ — временный прототип, подлежит замене
 - [x] ~~Музыкальные аудио-ограничения (echoCancellation: off, noiseSuppression: off, autoGainControl: off)~~ — актуально только для прототипа
 - [x] **A1** — Выбор binding-стратегии: naudiodon vs. node-addon-api + PortAudio C++; схема IPC между main process и renderer *(см. `docs/ADR_native_audio.md`)*
-- [ ] **A2** — Интеграция PortAudio: перечисление всех аудиоустройств в системе (название, тип, число каналов)
-- [ ] **A2** — Перечисление доступных Host API для каждого устройства (ASIO / WASAPI / DirectSound / MME на Windows; CoreAudio на macOS; ALSA / JACK на Linux)
+- [x] **A2** — Интеграция PortAudio: перечисление всех аудиоустройств в системе (название, тип, число каналов)
+- [x] **A2** — Перечисление доступных Host API для каждого устройства (ASIO / WASAPI / DirectSound / MME на Windows; CoreAudio на macOS; ALSA / JACK на Linux)
 - [ ] **A2** — Авто-выбор оптимального Host API по приоритету: ASIO → WASAPI Exclusive → WASAPI Shared → DirectSound → MME; пользователь может переопределить
 - [ ] **A2** — Перечисление всех input/output каналов выбранного устройства с их названиями
 - [ ] **A3** — Нативный захват аудио через Electron main process (минуя браузерный `getUserMedia`)
@@ -410,7 +410,7 @@ B: ├─ B1 signaling ─────┤
 | Оболочка | Electron (Windows / macOS / Linux) | [x] Работает |
 | UI | React + TypeScript + Vite | [x] Работает |
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
-| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [ ] Не начат — **критический блок A1–A3** |
+| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A2 готов (перечисление устройств и Host API); A3 не начат |
 | Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A4–A5** |
 | VST-хостинг | JUCE или Steinberg VST3 SDK | [ ] Не начат |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
