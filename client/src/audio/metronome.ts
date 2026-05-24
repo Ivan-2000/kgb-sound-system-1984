@@ -28,6 +28,7 @@ class Metronome {
   private currentBeat = 0
   private isPreroll = false
   private prerollTimeouts: ReturnType<typeof setTimeout>[] = []
+  private prerollReject: ((reason: unknown) => void) | null = null
   private scheduleId: number | null = null
   private clickHigh: Tone.Synth | null = null
   private clickLow: Tone.Synth | null = null
@@ -68,21 +69,10 @@ class Metronome {
     this.emitChange()
   }
 
-  // Called by drumMachine/transport on each beat tick — time is Tone audio context time
-  tick(beatIndex: number, time: number) {
-    const beat = beatIndex % this.timeSignature.beats
-    this.currentBeat = beat
-
-    if (this.enabled && this.soundEnabled) {
-      this.playClick(beat === 0, time)
-    }
-
-    this.emitChange()
-  }
-
   // Install repeating schedule into Tone.Transport (called when transport starts)
   start() {
     this.clearSchedule()
+    this.currentBeat = 0
     this.ensureSynths()
 
     const beatDuration = this.beatDurationNotation()
@@ -96,9 +86,10 @@ class Metronome {
     }, beatDuration)
   }
 
-  // Play N bars of clicks before transport starts, then call onComplete.
+  // Play N bars of clicks before transport starts.
+  // Returns a Promise that resolves when preroll completes, rejects if cancelled via stop().
   // Clicks are scheduled directly into AudioContext time (no Transport needed).
-  async startPreroll(bars: number, onComplete: () => void) {
+  async startPreroll(bars: number): Promise<void> {
     await Tone.start()
     this.clearPreroll()
     this.ensureSynths()
@@ -121,17 +112,23 @@ class Metronome {
         this.emitChange()
       }, i * secsPerBeat * 1000))
 
-      // Audio click — always fires during preroll regardless of enabled flag
-      const synth = beat === 0 ? this.clickHigh! : this.clickLow!
-      synth.triggerAttackRelease(beat === 0 ? 1200 : 800, '32n', audioTime)
+      // Respects soundEnabled — preroll is silent in sync-only mode
+      if (this.soundEnabled) {
+        const synth = beat === 0 ? this.clickHigh! : this.clickLow!
+        synth.triggerAttackRelease(beat === 0 ? 1200 : 800, '32n', audioTime)
+      }
     }
 
-    this.prerollTimeouts.push(setTimeout(() => {
-      this.isPreroll = false
-      this.currentBeat = 0
-      this.emitChange()
-      onComplete()
-    }, totalBeats * secsPerBeat * 1000 + 20))
+    return new Promise<void>((resolve, reject) => {
+      this.prerollReject = reject
+      this.prerollTimeouts.push(setTimeout(() => {
+        this.prerollReject = null
+        this.isPreroll = false
+        this.currentBeat = 0
+        this.emitChange()
+        resolve()
+      }, totalBeats * secsPerBeat * 1000 + 20))
+    })
   }
 
   stop() {
@@ -154,6 +151,10 @@ class Metronome {
   private clearPreroll() {
     for (const t of this.prerollTimeouts) clearTimeout(t)
     this.prerollTimeouts = []
+    if (this.prerollReject) {
+      this.prerollReject(new Error('PREROLL_CANCELLED'))
+      this.prerollReject = null
+    }
     this.isPreroll = false
   }
 

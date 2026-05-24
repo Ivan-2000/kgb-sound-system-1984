@@ -63,6 +63,7 @@ function friendlyError(code: string): string {
 function App() {
   const [machineState, setMachineState] = useState<DrumMachineState>(() => drumMachine.getState())
   const [bpm, setBpm] = useState(() => audioEngine.getBpm())
+  const [bpmText, setBpmText] = useState(() => String(audioEngine.getBpm()))
   const [metronomeState, setMetronomeState] = useState<MetronomeState>(() => metronome.getState())
   const [beatFlash, setBeatFlash] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -110,6 +111,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem('kgb_username', username)
   }, [username])
+
+  // Keep bpmText field in sync when bpm changes from slider or network
+  useEffect(() => {
+    setBpmText(String(bpm))
+  }, [bpm])
 
   // Wire peerManager signal sender once on mount
   useEffect(() => {
@@ -413,16 +419,19 @@ function App() {
     setIsStarting(true)
 
     if (prerollBars > 0) {
-      await metronome.startPreroll(prerollBars, async () => {
-        try {
-          await drumMachine.start()
-          metronome.start()
-          setIsPlaying(true)
-          await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
-        } finally {
-          setIsStarting(false)
+      try {
+        await metronome.startPreroll(prerollBars)
+        await drumMachine.start()
+        metronome.start()
+        setIsPlaying(true)
+        await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
+      } catch (err) {
+        if (!(err instanceof Error && err.message === 'PREROLL_CANCELLED')) {
+          setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
         }
-      })
+      } finally {
+        setIsStarting(false)
+      }
       return
     }
 
@@ -430,7 +439,7 @@ function App() {
       await drumMachine.start()
       metronome.start()
       setIsPlaying(true)
-      await emitSyncEvent({ type: 'transport_play', payload: { step: machineState.currentStep } })
+      await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
     } finally {
       setIsStarting(false)
     }
@@ -945,10 +954,22 @@ function App() {
           <input
             aria-label="BPM"
             inputMode="numeric"
-            onChange={(event) => { void handleBpmChange(Number(event.target.value)) }}
             type="text"
-            value={bpm}
+            value={bpmText}
             disabled={inRoom && !roomState.isHost}
+            onChange={(e) => setBpmText(e.target.value)}
+            onBlur={() => {
+              const n = Number(bpmText)
+              if (!Number.isNaN(n)) void handleBpmChange(n)
+              else setBpmText(String(bpm))
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const n = Number(bpmText)
+                if (!Number.isNaN(n)) void handleBpmChange(n)
+                else setBpmText(String(bpm))
+              }
+            }}
           />
         </label>
 
@@ -1090,7 +1111,13 @@ function App() {
           {cameraEnabled ? 'Cam On' : 'Cam Off'}
         </button>
 
-        <button type="button" className="ghost-action" onClick={handleClear}>
+        <button
+          type="button"
+          className="ghost-action"
+          onClick={handleClear}
+          disabled={inRoom && !roomState.isHost}
+          title={inRoom && !roomState.isHost ? 'Only host can clear the pattern' : undefined}
+        >
           Clear
         </button>
 
@@ -1330,14 +1357,14 @@ function App() {
             )}
           </section>
 
-          {showChat && (
+          <div style={showChat ? undefined : { display: 'none' }}>
             <ChatPanel
               selfSocketId={selfSocketId}
               onNewMessage={() => {
                 if (!showChat) setChatUnread((n) => n + 1)
               }}
             />
-          )}
+          </div>
 
           <section className="participants-panel" aria-label="Participants">
             <div className="section-heading compact">

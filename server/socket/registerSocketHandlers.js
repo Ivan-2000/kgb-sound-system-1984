@@ -306,6 +306,11 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
+      if (parsed.data.targetSocketId === socket.id) {
+        ack?.({ ok: false, error: 'CANNOT_KICK_SELF' })
+        return
+      }
+
       const targetRoomId = roomManager.getRoomIdBySocket(parsed.data.targetSocketId)
       if (targetRoomId !== roomId) {
         ack?.({ ok: false, error: 'TARGET_NOT_IN_ROOM' })

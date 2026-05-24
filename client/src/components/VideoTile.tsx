@@ -86,7 +86,7 @@ export function VideoTile({
             </span>
           )}
           <strong>{label}</strong>
-          {sublabel && !isHost !== undefined ? <span>{sublabel}</span> : null}
+          {sublabel ? <span>{sublabel}</span> : null}
         </div>
         <div className="video-footer-right">
           {rtt !== undefined ? <span className="rtt-badge">{rtt} ms</span> : null}

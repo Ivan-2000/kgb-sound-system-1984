@@ -210,7 +210,6 @@ class RoomManager {
 
     if (event.type === 'step_toggle') {
       activeSlot.pattern[event.payload.track][event.payload.step] = event.payload.value
-      s.currentStep = event.payload.step
       return
     }
 
