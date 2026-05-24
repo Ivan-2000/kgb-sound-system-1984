@@ -1,17 +1,17 @@
-// Main-process side of the native audio IPC (ADR-001 §3.3 control plane).
-// A2 scope: device enumeration only. Stream open/close added in A3.
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
 import { ipcMain } from 'electron'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
 
 // libwinpthread-1.dll is a MinGW runtime dependency of the addon.
-// Add MSYS2 UCRT64 bin to PATH so Windows can resolve it at addon load time.
+// Add MSYS2 UCRT64 bin to PATH only when the directory actually exists —
+// avoids silent failures on machines where MSYS2 is installed elsewhere.
 const MSYS2_BIN = 'C:\\msys64\\ucrt64\\bin'
-if (process.platform === 'win32' && !process.env.PATH?.includes(MSYS2_BIN)) {
+if (process.platform === 'win32' && existsSync(MSYS2_BIN) && !process.env.PATH?.includes(MSYS2_BIN)) {
   process.env.PATH = `${MSYS2_BIN};${process.env.PATH ?? ''}`
 }
 
@@ -23,9 +23,37 @@ function loadAddon() {
     addon = require('./portaudioAddon/index.js')
   } catch (e) {
     console.error('[nativeAudio] Cannot load portaudio addon:', e.message)
-    console.error('[nativeAudio] Run: cd client/electron/nativeAudio/portaudioAddon && npm install && npm run build')
+    if (process.platform === 'win32' && e.message.toLowerCase().includes('winpthread')) {
+      console.error('[nativeAudio] libwinpthread-1.dll not found — MSYS2 UCRT64 not at', MSYS2_BIN)
+    }
+    console.error('[nativeAudio] Rebuild: cd client/electron/nativeAudio/portaudioAddon && npm run rebuild')
   }
   return addon
+}
+
+// initAudio() — call once at startup (deferred past Electron COM setup).
+// Calls Pa_Initialize(); all subsequent getDevices() and A3 stream calls
+// reuse this single PA context.
+export function initAudio() {
+  const a = loadAddon()
+  if (!a) return
+  try {
+    a.paInit()
+    console.log('[nativeAudio] PortAudio initialized')
+  } catch (e) {
+    console.error('[nativeAudio] Pa_Initialize failed:', e.message)
+  }
+}
+
+// terminateAudio() — call from app.before-quit.
+export function terminateAudio() {
+  if (!addon) return
+  try {
+    addon.paTerminate()
+    console.log('[nativeAudio] PortAudio terminated')
+  } catch (e) {
+    console.error('[nativeAudio] Pa_Terminate failed:', e.message)
+  }
 }
 
 export function setupAudioIPC() {

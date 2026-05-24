@@ -1,7 +1,7 @@
-﻿import { app, BrowserWindow, session } from 'electron'
+import { app, BrowserWindow, session } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { setupAudioIPC, logDevicesAtStartup } from './nativeAudio/ipc.js'
+import { setupAudioIPC, initAudio, terminateAudio, logDevicesAtStartup } from './nativeAudio/ipc.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrlArg = process.argv.find((arg) => arg.startsWith('--dev-server='))
@@ -50,19 +50,26 @@ app.whenReady().then(() => {
 
   createMainWindow()
 
-  // Pa_Initialize() calls CoInitializeEx() (COM). Defer until after Electron's own
-  // COM setup completes to avoid threading-model conflict on the main thread.
-  setImmediate(() => logDevicesAtStartup())
+  // Pa_Initialize() calls CoInitializeEx() (COM). Defer until after Electron's
+  // own COM setup completes to avoid threading-model conflict on the main thread.
+  // initAudio() initializes the single PA context that lives for the app lifetime;
+  // logDevicesAtStartup() uses that same context via getDevices().
+  setImmediate(() => {
+    initAudio()
+    logDevicesAtStartup()
+  })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
   })
 })
 
+// Pa_Terminate() must be called before the process exits so PortAudio can
+// cleanly shut down any open streams and release audio device handles.
+app.on('before-quit', () => {
+  terminateAudio()
+})
+
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform !== 'darwin') app.quit()
 })
