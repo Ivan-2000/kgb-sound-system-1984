@@ -152,7 +152,7 @@ B: ├─ B1 signaling ─────┤
 **Нативный аудиодвижок** ⚠️ *критический блок — Поток A, без него инструменты не работают*:
 - [x] ~~Аудиотранспорт через WebRTC (Opus через браузер `getUserMedia`)~~ — временный прототип, подлежит замене
 - [x] ~~Музыкальные аудио-ограничения (echoCancellation: off, noiseSuppression: off, autoGainControl: off)~~ — актуально только для прототипа
-- [ ] **A1** — Выбор binding-стратегии: naudiodon vs. node-addon-api + PortAudio C++; схема IPC между main process и renderer
+- [x] **A1** — Выбор binding-стратегии: naudiodon vs. node-addon-api + PortAudio C++; схема IPC между main process и renderer *(см. `docs/ADR_native_audio.md`)*
 - [ ] **A2** — Интеграция PortAudio: перечисление всех аудиоустройств в системе (название, тип, число каналов)
 - [ ] **A2** — Перечисление доступных Host API для каждого устройства (ASIO / WASAPI / DirectSound / MME на Windows; CoreAudio на macOS; ALSA / JACK на Linux)
 - [ ] **A2** — Авто-выбор оптимального Host API по приоритету: ASIO → WASAPI Exclusive → WASAPI Shared → DirectSound → MME; пользователь может переопределить
