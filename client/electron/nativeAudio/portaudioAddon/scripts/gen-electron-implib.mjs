@@ -7,33 +7,25 @@
  * The addon's PE import table then references electron.exe directly, which
  * Windows resolves from the already-running process at load time.
  *
- * Run this script when:
+ * Run when:
  *   - First-time setup on a new machine
- *   - After upgrading the electron version in package.json
+ *   - After upgrading the electron version in client/package.json
  *
  * Prerequisites: MSYS2 UCRT64 with dlltool and nm in PATH.
  *
- * Usage:
- *   npm run gen-implib
+ * Usage: npm run gen-implib
  */
 
-import { execSync, spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
-// Read electron version from the client package.json
-const clientPkg = JSON.parse(
-  (await import('node:fs')).promises.readFile(
-    join(ROOT, '..', '..', '..', 'package.json'), 'utf8'
-  ).then ? await (await import('node:fs')).promises.readFile(
-    join(ROOT, '..', '..', '..', 'package.json'), 'utf8'
-  ) : '{}'
-)
+const clientPkg = JSON.parse(readFileSync(join(ROOT, '..', '..', '..', 'package.json'), 'utf8'))
 const electronVersion = (clientPkg.devDependencies?.electron ?? '').replace(/[\^~]/, '')
 if (!electronVersion) {
   console.error('Could not determine electron version from client/package.json')
@@ -41,17 +33,20 @@ if (!electronVersion) {
 }
 
 const nodeLibPath = join(
-  process.env.HOME ?? process.env.USERPROFILE,
-  '.cmake-js', 'electron-x64', `v${electronVersion}`, 'x64', 'node.lib'
+  homedir(), '.cmake-js', 'electron-x64', `v${electronVersion}`, 'x64', 'node.lib'
 )
 
 console.log(`electron version : ${electronVersion}`)
 console.log(`node.lib path    : ${nodeLibPath}`)
 
-// Extract napi_* and node_api_* symbol names from node.lib
 const nmResult = spawnSync('nm', [nodeLibPath], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
 if (nmResult.error) {
   console.error('nm not found — install MSYS2 UCRT64 binutils and add to PATH')
+  process.exit(1)
+}
+if (nmResult.status !== 0) {
+  console.error('nm failed. Download node.lib first:')
+  console.error(`  cd portaudioAddon && node_modules/.bin/cmake-js --runtime=electron --runtime-version=${electronVersion} --generator Ninja`)
   process.exit(1)
 }
 
@@ -65,17 +60,14 @@ const symbols = [...new Set(
 
 if (symbols.length === 0) {
   console.error('No NAPI symbols found in', nodeLibPath)
-  console.error('Run: cmake-js --runtime=electron --runtime-version=' + electronVersion + ' to download node.lib first')
   process.exit(1)
 }
 
 console.log(`symbols found    : ${symbols.length}`)
 
-// Write .def file
 const defPath = join(tmpdir(), 'electron_napi.def')
 writeFileSync(defPath, ['LIBRARY electron.exe', 'EXPORTS', ...symbols].join('\n') + '\n')
 
-// Run dlltool
 const outLib = join(ROOT, 'libelectron-napi.dll.a')
 const dt = spawnSync('dlltool', [
   '--dllname', 'electron.exe',
@@ -92,4 +84,4 @@ if (dt.status !== 0) {
 }
 
 console.log(`output           : ${outLib}`)
-console.log('Done. Commit libelectron-napi.dll.a and rebuild the addon.')
+console.log('Done. Commit libelectron-napi.dll.a and run: npm run rebuild')
