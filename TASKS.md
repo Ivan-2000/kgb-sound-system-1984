@@ -3,7 +3,7 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.9**
+Версия: **1.10**
 Обновлён: 2026-05-25
 
 ---
@@ -165,7 +165,9 @@ B: ├─ B1 signaling ─────┤
 - [x] **A3** — Переинициализация аудиоустройства без перезапуска приложения (смена устройства / драйвера)
 - [ ] **A3.5a** — ASIO support в сборке: ASIO SDK 2.3.3 у Steinberg через переменную окружения `KGB_ASIO_SDK_DIR` (лицензия запрещает редистрибуцию, SDK не в репо); PortAudio как git submodule в `third_party/portaudio/` вместо MSYS2-сборки; флаги `PA_USE_ASIO=1`, `PA_USE_WASAPI=1`, `PA_USE_WDMKS=1`, `PA_USE_DS=1`, `PA_USE_WMME=1` в CMakeLists; скрипт `scripts/fetch-asio-sdk.ps1` для новых разработчиков. Цель: устройства с ASIO-драйвером появляются в `getDevices()` с `hostApi: 'ASIO'`, openStream открывает их с задержкой ≤ 10 мс. *(блокирует A6 — цель ≤ 30 мс end-to-end на WASAPI Shared недостижима)*
 - [ ] **A3.5b** — Расширить `openStream` API на раздельные `inputDeviceId` / `outputDeviceId` для duplex-стрима на разных устройствах (Windows split: WASAPI/DirectSound/WDM-KS выдают input и output одного физического устройства как отдельные deviceId). Сейчас принимаем один deviceId — это блокирует нативный мониторинг без ASIO. После A3.5a (если у пользователя есть ASIO-драйвер устройства) монитор работает через один deviceId; без ASIO — нужно через два разных. Back-compat: если передан только `deviceId`, поведение текущее.
+- [ ] **A3.5c** — Перенести portaudio addon из main process в `utilityProcess.fork()` (ADR §3.2). Сейчас addon живёт в main — любая ошибка PortAudio (segfault в RT callback, BSOD-склонный ASIO-драйвер, и пр.) убивает всё окно Electron. utilityProcess изолирует движок: падение audio engine ≠ потеря UI и комнаты, движок можно перезапустить без перезапуска приложения. main только проксирует control plane через ipcMain; `MessagePortMain` для data plane идёт `utility ↔ renderer` напрямую. **Делать ДО A4**: после того как Opus encoder осядет в addon, переезд значительно сложнее (libopus state, jitter buffer, refs из renderer).
 - [ ] **A4** — Кодирование каждого захваченного канала в Opus в main process
+- [ ] **A4.5** — Метрики аудио-потока через `audio:get-stats` (ADR §3.3): xrun counter (`paInputOverflow`/`paOutputUnderflow` из `PaStreamCallbackFlags`), drop counter (когда TSFN `NonBlockingCall` возвращает `napi_queue_full`), TSFN queue fill %, CPU load из `Pa_GetStreamCpuLoad()`. Нужно для A6 (объективная диагностика «не теряются ли фреймы») и для UI-индикатора «жалоб» когда у пользователя проблемы с драйвером/нагрузкой. Идеально делать сразу после A4 — там же добавятся encoder timing метрики.
 - [ ] **A5** — Передача Opus-потоков через WebRTC DataChannel (замена MediaStream)
 - [ ] **A5** — Декодирование входящих Opus-потоков и вывод на output-каналы устройства через PortAudio
 - [ ] **A5** — Jitter buffer для компенсации нестабильности сети
@@ -435,4 +437,4 @@ B: ├─ B1 signaling ─────┤
 
 ---
 
-*KGB Sound TASKS.md v1.9 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*
+*KGB Sound TASKS.md v1.10 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*
