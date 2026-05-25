@@ -116,11 +116,19 @@ function openStreamInternal(event, opts) {
   try {
     result = a.openStream(
       {
-        deviceId:       opts.deviceId,
-        hostApiKind:    opts.hostApiKind ?? 'WASAPI_SHARED',
-        sampleRate:     opts.sampleRate ?? 48000,
-        bufferSize:     opts.bufferSize ?? 256,
-        inputChannels:  opts.inputChannels ?? 2,
+        // Split-device fields (A3.5b): WASAPI/DS/WDM-KS expose input and output
+        // of the same physical device as separate PA indices on Windows.
+        inputDeviceId:     opts.inputDeviceId,
+        outputDeviceId:    opts.outputDeviceId,
+        inputHostApiKind:  opts.inputHostApiKind,
+        outputHostApiKind: opts.outputHostApiKind,
+        // Back-compat: single deviceId covers both sides (old callers unchanged).
+        deviceId:          opts.deviceId,
+        hostApiKind:       opts.hostApiKind ?? 'WASAPI_SHARED',
+        sampleRate:        opts.sampleRate  ?? 48000,
+        bufferSize:        opts.bufferSize  ?? 256,
+        inputChannels:     opts.inputChannels ?? 2,
+        outputChannels:    opts.outputChannels,
       },
       // Audio thread → TSFN → this JS callback. Forward each PCM chunk to
       // the renderer through the MessageChannelMain. NB: MessagePortMain in

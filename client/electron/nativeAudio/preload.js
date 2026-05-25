@@ -35,8 +35,27 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   /** Enumerate audio devices via PortAudio. */
   getDevices: () => ipcRenderer.invoke('audio:list-devices'),
 
-  /** Open a capture+monitor stream on the given device.
-   *  @param {{deviceId:number, hostApiKind:string, sampleRate:number, bufferSize:64|128|256|512, inputChannels:number}} opts
+  /** Open a capture+monitor stream.
+   *
+   *  New API — Windows split-device (A3.5b): WASAPI/DirectSound/WDM-KS expose
+   *  input and output of the same physical device as separate PortAudio indices.
+   *  Pass inputDeviceId + outputDeviceId to open a true duplex stream across them.
+   *  Omit outputDeviceId for capture-only (no native monitoring output).
+   *
+   *  Back-compat: pass deviceId alone (covers both sides — existing behaviour).
+   *
+   *  @param {{
+   *    inputDeviceId?:    number,
+   *    outputDeviceId?:   number,
+   *    inputHostApiKind?: 'WASAPI_SHARED'|'WASAPI_EXCLUSIVE'|'ASIO'|'DirectSound'|'MME'|'CoreAudio'|'ALSA'|'JACK',
+   *    outputHostApiKind?: 'WASAPI_SHARED'|'WASAPI_EXCLUSIVE'|'ASIO'|'DirectSound'|'MME'|'CoreAudio'|'ALSA'|'JACK',
+   *    deviceId?:         number,
+   *    hostApiKind?:      string,
+   *    sampleRate?:       number,
+   *    bufferSize?:       64|128|256|512,
+   *    inputChannels?:    number,
+   *    outputChannels?:   number,
+   *  }} opts
    *  @returns {Promise<{ok:boolean, streamId?:number, inputLatency?:number, outputLatency?:number, sampleRate?:number, inputChannels?:number, outputChannels?:number, bufferSize?:number, error?:string}>}
    */
   openStream: (opts) => ipcRenderer.invoke('audio:open-stream', opts),
@@ -44,7 +63,9 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   /** Close the active stream (idempotent). */
   closeStream: () => ipcRenderer.invoke('audio:close-stream'),
 
-  /** Close and reopen with new parameters in one round-trip (device/buffer change). */
+  /** Close and reopen with new parameters in one round-trip (device/buffer change).
+   *  Accepts the same opts as openStream.
+   */
   reinit: (opts) => ipcRenderer.invoke('audio:reinit', opts),
 
   /** Native monitor gain. 0 = off, 1 = unity. Linear amplitude, capped at 4 (+12 dB). */

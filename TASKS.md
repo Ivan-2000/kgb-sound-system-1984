@@ -3,7 +3,7 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.11**
+Версия: **1.12**
 Обновлён: 2026-05-26
 
 ---
@@ -161,10 +161,10 @@ B: ├─ B1 signaling ─────┤
 - [x] **A3** — Нативный захват аудио через Electron main process (минуя браузерный `getUserMedia`)
 - [x] **A3** — Настройка размера буфера (buffer size): цель ≤ 64 сэмпла для ASIO, ≤ 256 для WASAPI
 - [x] **A3** — Захват PCM со всех активных input-каналов выбранного устройства
-- [x] **A3** — Нативный мониторинг: PortAudio открывает вход и выход одновременно, PCM-буфер из input callback напрямую маршрутизируется на output (`Инструмент → PortAudio input callback → PortAudio output → наушники`); задержка на уровне драйвера — ASIO ~1–5 мс, WASAPI ~10 мс; архитектурно неотделимо от открытия стрима, реализуется в той же инициализации; управляется параметром `monitor: true/false` с регулировкой громкости в миксере *(архитектурно реализовано — input→output×gain в PaCallback с атомарным setMonitorGain; end-to-end не валидировано: на Windows WASAPI/DirectSound/WDM-KS показывают input и output одного физического устройства как разные deviceId, а текущий openStream принимает один — см. A3.5b)*
+- [x] **A3** — Нативный мониторинг: PortAudio открывает вход и выход одновременно, PCM-буфер из input callback напрямую маршрутизируется на output (`Инструмент → PortAudio input callback → PortAudio output → наушники`); задержка на уровне драйвера — ASIO ~1–5 мс, WASAPI ~10 мс; архитектурно неотделимо от открытия стрима, реализуется в той же инициализации; управляется параметром `monitor: true/false` с регулировкой громкости в миксере *(реализовано и валидировано end-to-end: input→output×gain в PaCallback с атомарным setMonitorGain; duplex на раздельных input/output deviceId — через A3.5b)*
 - [x] **A3** — Переинициализация аудиоустройства без перезапуска приложения (смена устройства / драйвера)
 - [x] **A3.5a** — ASIO support в сборке: ASIO SDK 2.3.3 у Steinberg через переменную окружения `KGB_ASIO_SDK_DIR` (лицензия запрещает редистрибуцию, SDK не в репо); PortAudio как git submodule в `third_party/portaudio/` вместо MSYS2-сборки (`v19.7.0`, `iasiothiscallresolver.cpp` обеспечивает MinGW-совместимость); флаги `PA_USE_ASIO=ON`, `PA_USE_WASAPI=ON`, `PA_USE_WDMKS=ON`, `PA_USE_DS=ON`, `PA_USE_WMME=ON` в CMakeLists; `build:asio` / `build:noasio` в package.json; скрипт `scripts/fetch-asio-sdk.ps1` для новых разработчиков; README с разделом «Building with ASIO». Без `KGB_ASIO_SDK_DIR` — CMake fatal error со ссылкой на скрипт; `build:noasio` работает без SDK. Цель: устройства с ASIO-драйвером появляются в `getDevices()` с `hostApi: 'ASIO'`, openStream открывает их с задержкой ≤ 10 мс. *(блокировал A6 — цель ≤ 30 мс end-to-end на WASAPI Shared недостижима без ASIO)*
-- [ ] **A3.5b** — Расширить `openStream` API на раздельные `inputDeviceId` / `outputDeviceId` для duplex-стрима на разных устройствах (Windows split: WASAPI/DirectSound/WDM-KS выдают input и output одного физического устройства как отдельные deviceId). Сейчас принимаем один deviceId — это блокирует нативный мониторинг без ASIO. После A3.5a (если у пользователя есть ASIO-драйвер устройства) монитор работает через один deviceId; без ASIO — нужно через два разных. Back-compat: если передан только `deviceId`, поведение текущее.
+- [x] **A3.5b** — Расширить `openStream` API на раздельные `inputDeviceId` / `outputDeviceId` для duplex-стрима на разных устройствах (Windows split: WASAPI/DirectSound/WDM-KS выдают input и output одного физического устройства как отдельные deviceId). Реализовано: раздельные `PaStreamParameters` и `PaWasapiStreamInfo` на каждую сторону; `inputHostApiKind`/`outputHostApiKind` позволяют задать EXCLUSIVE независимо для каждой стороны; back-compat — старый `deviceId` по-прежнему работает без изменений в renderer.
 - [ ] **A3.5c** — Перенести portaudio addon из main process в `utilityProcess.fork()` (ADR §3.2). Сейчас addon живёт в main — любая ошибка PortAudio (segfault в RT callback, BSOD-склонный ASIO-драйвер, и пр.) убивает всё окно Electron. utilityProcess изолирует движок: падение audio engine ≠ потеря UI и комнаты, движок можно перезапустить без перезапуска приложения. main только проксирует control plane через ipcMain; `MessagePortMain` для data plane идёт `utility ↔ renderer` напрямую. **Делать ДО A4**: после того как Opus encoder осядет в addon, переезд значительно сложнее (libopus state, jitter buffer, refs из renderer).
 - [ ] **A4** — Кодирование каждого захваченного канала в Opus в main process
 - [ ] **A4.5** — Метрики аудио-потока через `audio:get-stats` (ADR §3.3): xrun counter (`paInputOverflow`/`paOutputUnderflow` из `PaStreamCallbackFlags`), drop counter (когда TSFN `NonBlockingCall` возвращает `napi_queue_full`), TSFN queue fill %, CPU load из `Pa_GetStreamCpuLoad()`. Нужно для A6 (объективная диагностика «не теряются ли фреймы») и для UI-индикатора «жалоб» когда у пользователя проблемы с драйвером/нагрузкой. Идеально делать сразу после A4 — там же добавятся encoder timing метрики.
@@ -416,7 +416,7 @@ B: ├─ B1 signaling ─────┤
 | Оболочка | Electron (Windows / macOS / Linux) | [x] Работает |
 | UI | React + TypeScript + Vite | [x] Работает |
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
-| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3 готов backend (capture + native monitor, MessageChannelMain data plane, валидировано на WASAPI Shared); A3.5a — ASIO в сборку готово (submodule v19.7.0, KGB_ASIO_SDK_DIR, MinGW-compat); split input/output deviceId — A3.5b |
+| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3 готов (capture + native monitor, MessageChannelMain data plane); A3.5a — ASIO в сборку (submodule v19.7.0, KGB_ASIO_SDK_DIR); A3.5b — split input/output deviceId готово (WASAPI/DS/WDM-KS duplex на Windows); ждёт A4 Opus |
 | Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A4–A5**, не блокируется A3.5 |
 | VST-хостинг | JUCE или Steinberg VST3 SDK | [ ] Не начат |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
@@ -429,7 +429,7 @@ B: ├─ B1 signaling ─────┤
 
 | Фаза | Прогресс |
 |---|---|
-| Phase 1 — Сеть и комнаты | ~82% *(signaling завершён; A3 backend + A3.5a ASIO-сборка готовы; ждёт A3.5b split-id, A4 Opus, A5 транспорт)* |
+| Phase 1 — Сеть и комнаты | ~85% *(signaling завершён; A3 backend + A3.5a ASIO-сборка + A3.5b split-id готовы; ждёт A4 Opus, A5 транспорт)* |
 | Phase 2 — Миксер и запись | ~25% *(разблокирована — можно начинать UI-обвязку миксера с native input)* |
 | Phase 3 — Монтажный стол и MIDI | 0% *(ждёт Phase 2)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; экспорт MIDI ждёт Phase 3)* |
@@ -437,4 +437,4 @@ B: ├─ B1 signaling ─────┤
 
 ---
 
-*KGB Sound TASKS.md v1.10 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*
+*KGB Sound TASKS.md v1.12 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*

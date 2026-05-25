@@ -244,12 +244,26 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   return paContinue;
 }
 
-// openStream(opts: { deviceId, hostApiKind, sampleRate, bufferSize, inputChannels },
-//            onPcm: (buf: ArrayBuffer, frames: number, channels: number) => void)
+// openStream(opts, onPcm)
+//   opts: {
+//     inputDeviceId:      number  — required; or use back-compat deviceId
+//     outputDeviceId?:    number  — output-side device; omit for capture-only
+//     inputHostApiKind?:  string  — 'WASAPI_SHARED'|'WASAPI_EXCLUSIVE'|...
+//     outputHostApiKind?: string  — same for the output side
+//     deviceId?:          number  — back-compat: covers both sides when split ids absent
+//     hostApiKind?:       string  — back-compat fallback for both sides
+//     sampleRate:         number
+//     bufferSize:         64|128|256|512
+//     inputChannels:      number
+//     outputChannels?:    number  — default: min(2, dev.maxOutputChannels)
+//   }
+//   onPcm: (buf: ArrayBuffer, frames: number, channels: number) => void
 //   → { inputLatency, outputLatency, sampleRate, inputChannels, outputChannels, bufferSize }
 //
-// hostApiKind selects the WASAPI mode (Exclusive vs Shared); for other APIs
-// the value is informational since the device index already pins the host API.
+// Windows split-device: WASAPI/DirectSound/WDM-KS expose input and output of
+// the same physical device as separate PA indices. Pass inputDeviceId for the
+// input-side index and outputDeviceId for the output-side index.
+// Back-compat: a single deviceId (old form) still works and covers both sides.
 Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
 
@@ -270,19 +284,59 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   }
 
   Napi::Object opts = info[0].As<Napi::Object>();
-  const int deviceId      = opts.Get("deviceId").As<Napi::Number>().Int32Value();
-  const std::string apiKind = opts.Get("hostApiKind").As<Napi::String>().Utf8Value();
+
+  // Resolve input device: inputDeviceId > back-compat deviceId.
+  const bool hasInputDeviceId  = opts.Get("inputDeviceId").IsNumber();
+  const bool hasOutputDeviceId = opts.Get("outputDeviceId").IsNumber();
+  const bool hasDeviceId       = opts.Get("deviceId").IsNumber();
+
+  if (!hasInputDeviceId && !hasDeviceId) {
+    Napi::Error::New(env, "opts must include inputDeviceId or deviceId")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+
+  const int inputDeviceId = hasInputDeviceId
+      ? opts.Get("inputDeviceId").As<Napi::Number>().Int32Value()
+      : opts.Get("deviceId").As<Napi::Number>().Int32Value();
+
+  // Output device: explicit outputDeviceId, OR back-compat deviceId (only when
+  // no inputDeviceId was given, preserving old single-device behaviour),
+  // OR absent → capture-only (outputPtr = nullptr).
+  const bool useOutputDevice = hasOutputDeviceId || (!hasInputDeviceId && hasDeviceId);
+  const int outputDeviceId = hasOutputDeviceId
+      ? opts.Get("outputDeviceId").As<Napi::Number>().Int32Value()
+      : ((!hasInputDeviceId && hasDeviceId)
+             ? opts.Get("deviceId").As<Napi::Number>().Int32Value()
+             : -1);
+
+  // Resolve hostApiKind per side: per-side field > shared hostApiKind fallback > default.
+  const std::string inputApiKind = [&]() -> std::string {
+    Napi::Value v = opts.Get("inputHostApiKind");
+    if (v.IsString()) return v.As<Napi::String>().Utf8Value();
+    v = opts.Get("hostApiKind");
+    if (v.IsString()) return v.As<Napi::String>().Utf8Value();
+    return "WASAPI_SHARED";
+  }();
+  const std::string outputApiKind = [&]() -> std::string {
+    Napi::Value v = opts.Get("outputHostApiKind");
+    if (v.IsString()) return v.As<Napi::String>().Utf8Value();
+    v = opts.Get("hostApiKind");
+    if (v.IsString()) return v.As<Napi::String>().Utf8Value();
+    return "WASAPI_SHARED";
+  }();
+
   const double sampleRate = opts.Get("sampleRate").As<Napi::Number>().DoubleValue();
   const int bufferSize    = opts.Get("bufferSize").As<Napi::Number>().Int32Value();
   const int inputChannels = opts.Get("inputChannels").As<Napi::Number>().Int32Value();
 
-  const PaDeviceInfo* devInfo = Pa_GetDeviceInfo(deviceId);
-  if (!devInfo) {
-    Napi::Error::New(env, "Invalid device id").ThrowAsJavaScriptException();
+  const PaDeviceInfo* inDevInfo = Pa_GetDeviceInfo(inputDeviceId);
+  if (!inDevInfo) {
+    Napi::Error::New(env, "Invalid inputDeviceId").ThrowAsJavaScriptException();
     return env.Null();
   }
-  if (inputChannels < 1 || inputChannels > devInfo->maxInputChannels) {
-    Napi::Error::New(env, "inputChannels out of range for device")
+  if (inputChannels < 1 || inputChannels > inDevInfo->maxInputChannels) {
+    Napi::Error::New(env, "inputChannels out of range for input device")
         .ThrowAsJavaScriptException();
     return env.Null();
   }
@@ -292,39 +346,66 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     return env.Null();
   }
 
-  // Output mirrors input for monitoring. Cap at stereo: WASAPI Shared is
-  // pinned to whatever Windows configured for the device (almost always
-  // stereo), and opening with more channels than the shared-mode format
-  // expects fails with paInvalidChannelCount. Devices with 1 output (rare)
-  // get mono monitor. Devices with no outputs get capture-only.
-  int outputChannels = std::min(devInfo->maxOutputChannels, 2);
-  if (outputChannels < 0) outputChannels = 0;
-
-  PaStreamParameters inputParams = {};
-  inputParams.device                    = deviceId;
-  inputParams.channelCount              = inputChannels;
-  inputParams.sampleFormat              = paFloat32;
-  inputParams.suggestedLatency          = devInfo->defaultLowInputLatency;
-  inputParams.hostApiSpecificStreamInfo = nullptr;
-
-  PaStreamParameters outputParams = {};
-  PaWasapiStreamInfo wasapiInfo = {};
-  const bool wasapiExclusive = (apiKind == "WASAPI_EXCLUSIVE");
-  if (wasapiExclusive) {
-    wasapiInfo.size         = sizeof(PaWasapiStreamInfo);
-    wasapiInfo.hostApiType  = paWASAPI;
-    wasapiInfo.version      = 1;
-    wasapiInfo.flags        = paWinWasapiExclusive;
-    inputParams.hostApiSpecificStreamInfo = &wasapiInfo;
+  // Resolve output device info and channel count.
+  const PaDeviceInfo* outDevInfo = (useOutputDevice && outputDeviceId >= 0)
+      ? Pa_GetDeviceInfo(outputDeviceId) : nullptr;
+  if (useOutputDevice && outputDeviceId >= 0 && !outDevInfo) {
+    Napi::Error::New(env, "Invalid outputDeviceId").ThrowAsJavaScriptException();
+    return env.Null();
   }
 
+  // Cap at stereo: WASAPI Shared is pinned to the Windows shared-mode format
+  // (almost always stereo); opening with more channels fails paInvalidChannelCount.
+  int outputChannels = 0;
+  if (outDevInfo) {
+    if (opts.Get("outputChannels").IsNumber()) {
+      outputChannels = opts.Get("outputChannels").As<Napi::Number>().Int32Value();
+      if (outputChannels < 1 || outputChannels > outDevInfo->maxOutputChannels) {
+        Napi::Error::New(env, "outputChannels out of range for output device")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+      }
+    } else {
+      outputChannels = std::min(outDevInfo->maxOutputChannels, 2);
+      if (outputChannels < 0) outputChannels = 0;
+    }
+  }
+
+  // Build input PaStreamParameters.
+  PaStreamParameters inputParams = {};
+  inputParams.device           = inputDeviceId;
+  inputParams.channelCount     = inputChannels;
+  inputParams.sampleFormat     = paFloat32;
+  inputParams.suggestedLatency = inDevInfo->defaultLowInputLatency;
+
+  PaWasapiStreamInfo inputWasapiInfo = {};
+  const bool inputWasapiExclusive = (inputApiKind == "WASAPI_EXCLUSIVE");
+  if (inputWasapiExclusive) {
+    inputWasapiInfo.size        = sizeof(PaWasapiStreamInfo);
+    inputWasapiInfo.hostApiType = paWASAPI;
+    inputWasapiInfo.version     = 1;
+    inputWasapiInfo.flags       = paWinWasapiExclusive;
+    inputParams.hostApiSpecificStreamInfo = &inputWasapiInfo;
+  }
+
+  // Build output PaStreamParameters — nullptr for capture-only.
+  PaStreamParameters outputParams = {};
   PaStreamParameters* outputPtr = nullptr;
-  if (outputChannels > 0) {
-    outputParams.device                    = deviceId;
-    outputParams.channelCount              = outputChannels;
-    outputParams.sampleFormat              = paFloat32;
-    outputParams.suggestedLatency          = devInfo->defaultLowOutputLatency;
-    outputParams.hostApiSpecificStreamInfo = wasapiExclusive ? &wasapiInfo : nullptr;
+  PaWasapiStreamInfo outputWasapiInfo = {};
+
+  if (outDevInfo && outputChannels > 0) {
+    const bool outputWasapiExclusive = (outputApiKind == "WASAPI_EXCLUSIVE");
+    outputParams.device           = outputDeviceId;
+    outputParams.channelCount     = outputChannels;
+    outputParams.sampleFormat     = paFloat32;
+    outputParams.suggestedLatency = outDevInfo->defaultLowOutputLatency;
+    if (outputWasapiExclusive) {
+      outputWasapiInfo.size        = sizeof(PaWasapiStreamInfo);
+      outputWasapiInfo.hostApiType = paWASAPI;
+      outputWasapiInfo.version     = 1;
+      outputWasapiInfo.flags       = paWinWasapiExclusive;
+      outputParams.hostApiSpecificStreamInfo = &outputWasapiInfo;
+    }
     outputPtr = &outputParams;
   }
 
