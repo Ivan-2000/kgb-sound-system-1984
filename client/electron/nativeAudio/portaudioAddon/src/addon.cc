@@ -180,13 +180,17 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   const float gain = g_monitorGain.load(std::memory_order_relaxed);
 
   // Native monitoring path: input → output × gain, no JS round-trip.
+  // Sum all input channels to mono, then write to every output channel.
+  // This ensures a mono instrument on ch0 is heard in both ears, and a
+  // stereo source (keyboard L+R) is also heard in both ears as a mono mix.
   if (out && outCh > 0) {
-    if (in && gain > 0.0f) {
+    if (in && inCh > 0 && gain > 0.0f) {
+      const float invInCh = 1.0f / static_cast<float>(inCh);
       for (unsigned long f = 0; f < frames; f++) {
-        for (int c = 0; c < outCh; c++) {
-          const float s = (c < inCh) ? in[f * inCh + c] : in[f * inCh + (inCh - 1)];
-          out[f * outCh + c] = s * gain;
-        }
+        float mono = 0.0f;
+        for (int c = 0; c < inCh; c++) mono += in[f * inCh + c];
+        mono *= invInCh * gain;
+        for (int c = 0; c < outCh; c++) out[f * outCh + c] = mono;
       }
     } else {
       std::memset(out, 0, frames * outCh * sizeof(float));
