@@ -129,6 +129,9 @@ function openStreamInternal(event, opts) {
         bufferSize:        opts.bufferSize  ?? 256,
         inputChannels:     opts.inputChannels ?? 2,
         outputChannels:    opts.outputChannels,
+        // Native monitoring: forward so addon.cc sets gain before Pa_StartStream.
+        monitor:           opts.monitor,
+        monitorGain:       opts.monitorGain,
       },
       // Audio thread → TSFN → this JS callback. Forward each PCM chunk to
       // the renderer through the MessageChannelMain. NB: MessagePortMain in
