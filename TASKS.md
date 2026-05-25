@@ -414,8 +414,8 @@ B: ├─ B1 signaling ─────┤
 | Оболочка | Electron (Windows / macOS / Linux) | [x] Работает |
 | UI | React + TypeScript + Vite | [x] Работает |
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
-| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A2 готов (перечисление устройств и Host API); A3 не начат |
-| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A4–A5** |
+| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3 готов backend (capture + native monitor, MessageChannelMain data plane, валидировано на WASAPI Shared); ASIO в сборку — A3.5a; split input/output deviceId — A3.5b |
+| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A4–A5**, не блокируется A3.5 |
 | VST-хостинг | JUCE или Steinberg VST3 SDK | [ ] Не начат |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
 | MIDI | WebMIDI API + нативный bridge | [ ] Не начат |
@@ -427,12 +427,12 @@ B: ├─ B1 signaling ─────┤
 
 | Фаза | Прогресс |
 |---|---|
-| Phase 1 — Сеть и комнаты | ~70% *(signaling завершён; нативный аудиопуть не начат)* |
-| Phase 2 — Миксер и запись | ~25% *(ждёт A3)* |
+| Phase 1 — Сеть и комнаты | ~80% *(signaling завершён; A3 backend готов и валидирован; ждёт A3.5a ASIO, A4 Opus, A5 транспорт)* |
+| Phase 2 — Миксер и запись | ~25% *(разблокирована — можно начинать UI-обвязку миксера с native input)* |
 | Phase 3 — Монтажный стол и MIDI | 0% *(ждёт Phase 2)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; экспорт MIDI ждёт Phase 3)* |
-| Phase 5 — UI и полировка | ~55% *(Поток B3, можно делать сейчас)* |
+| Phase 5 — UI и полировка | ~55% *(Поток B3, можно делать сейчас; SettingsModal Host API / buffer size ждёт UI-обвязки native)* |
 
 ---
 
-*KGB Sound TASKS.md v1.5 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*
+*KGB Sound TASKS.md v1.9 — основан на kgb_sound_roadmap.md v1.1. Оригинал сохранён в TASKS_v1_original.md.*

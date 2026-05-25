@@ -55,9 +55,12 @@ export function initAudio() {
 export function terminateAudio() {
   if (!addon) return
   try {
-    // Close any open stream before tearing down the PA context, otherwise
-    // PortAudio leaks driver handles on some Windows backends.
-    if (addon.isStreamActive?.()) addon.closeStream()
+    // closeStream is idempotent — call unconditionally so a paused-but-open
+    // stream (Pa_IsStreamActive returns 0 but the handle still holds the
+    // device) is cleaned up before Pa_Terminate. PortAudio leaks driver
+    // handles on some Windows backends if Pa_Terminate runs with open
+    // streams.
+    addon.closeStream?.()
   } catch (e) {
     console.error('[nativeAudio] closeStream during shutdown failed:', e.message)
   }
@@ -94,6 +97,20 @@ function openStreamInternal(event, opts) {
   const { port1, port2 } = new MessageChannelMain()
   audioDataPort = port1
   audioDataPort.start()
+
+  // If the renderer reloads / window closes, the renderer-side port closes
+  // and the channel disconnects. Without this, the addon stream keeps
+  // running, audio thread burns CPU, and frames quietly drop because
+  // postMessage throws. Tear down the native stream on disconnect.
+  audioDataPort.on('close', () => {
+    // Guard against the close firing for an already-replaced port (reinit).
+    if (audioDataPort !== port1) return
+    audioDataPort = null
+    firstChunkSent = false
+    try { a.closeStream() } catch (e) {
+      console.error('[nativeAudio] closeStream after port disconnect failed:', e.message)
+    }
+  })
 
   let result
   try {

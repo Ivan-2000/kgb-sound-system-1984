@@ -50,8 +50,12 @@ struct PcmChunk {
 };
 
 static PaStream* g_stream = nullptr;
-static int g_streamInputChannels = 0;
-static int g_streamOutputChannels = 0;
+// Channel counts are written from the JS thread before Pa_StartStream and read
+// from the audio thread inside PaCallback. Atomic with release/acquire to
+// avoid the data race UB (Pa_StartStream itself usually fences via syscalls,
+// but we don't want to rely on that).
+static std::atomic<int> g_streamInputChannels{0};
+static std::atomic<int> g_streamOutputChannels{0};
 static std::atomic<float> g_monitorGain{0.0f};
 static Napi::ThreadSafeFunction g_pcmTsfn;
 static std::atomic<bool> g_tsfnAlive{false};
@@ -171,8 +175,8 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
                       PaStreamCallbackFlags /*flags*/, void* /*userData*/) {
   const float* in = static_cast<const float*>(input);
   float* out = static_cast<float*>(output);
-  const int inCh = g_streamInputChannels;
-  const int outCh = g_streamOutputChannels;
+  const int inCh = g_streamInputChannels.load(std::memory_order_acquire);
+  const int outCh = g_streamOutputChannels.load(std::memory_order_acquire);
   const float gain = g_monitorGain.load(std::memory_order_relaxed);
 
   // Native monitoring path: input → output × gain, no JS round-trip.
@@ -199,10 +203,8 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       napi_status status = g_pcmTsfn.NonBlockingCall(chunk,
         [](Napi::Env env, Napi::Function jsCb, PcmChunk* c) {
           // Allocate a V8-managed ArrayBuffer and memcpy our heap copy into
-          // it, then free the heap copy immediately.
-          //
-          // We used to wrap the heap buffer directly via the external-data
-          // overload of Napi::ArrayBuffer::New — but that calls
+          // it. We used to wrap the heap buffer directly via the external-
+          // data overload of Napi::ArrayBuffer::New — but that calls
           // napi_create_external_arraybuffer, which is deprecated under
           // modern V8 (pointer-compression sandbox) and throws at creation
           // time inside the TSFN callback. The thrown exception surfaces as
@@ -211,15 +213,24 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
           // V8-managed ArrayBuffers are cloneable across MessagePortMain and
           // contextBridge; the extra ~2 KB memcpy per frame is negligible
           // (~375 KB/s at 187 fps).
+          //
+          // The JS callback may throw at any time (e.g. structured-clone
+          // failure on postMessage). If that exception unwinds through
+          // NAPI we get DEP0168 and leak `c`. Catch everything here and
+          // ensure the chunk + its heap data are released exactly once.
           const size_t bytes = c->frames * c->channels * sizeof(float);
-          Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, bytes);
-          std::memcpy(ab.Data(), c->data, bytes);
+          try {
+            Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, bytes);
+            std::memcpy(ab.Data(), c->data, bytes);
+            jsCb.Call({
+              ab,
+              Napi::Number::New(env, static_cast<double>(c->frames)),
+              Napi::Number::New(env, static_cast<double>(c->channels)),
+            });
+          } catch (...) {
+            // Frame dropped — do not let the exception escape back to NAPI.
+          }
           std::free(c->data);
-          jsCb.Call({
-            ab,
-            Napi::Number::New(env, static_cast<double>(c->frames)),
-            Napi::Number::New(env, static_cast<double>(c->channels)),
-          });
           delete c;
         });
       if (status != napi_ok) {
@@ -235,7 +246,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
 
 // openStream(opts: { deviceId, hostApiKind, sampleRate, bufferSize, inputChannels },
 //            onPcm: (buf: ArrayBuffer, frames: number, channels: number) => void)
-//   → { inputLatency, outputLatency, sampleRate, inputChannels, outputChannels }
+//   → { inputLatency, outputLatency, sampleRate, inputChannels, outputChannels, bufferSize }
 //
 // hostApiKind selects the WASAPI mode (Exclusive vs Shared); for other APIs
 // the value is informational since the device index already pins the host API.
@@ -281,12 +292,13 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     return env.Null();
   }
 
-  // Output mirrors input for monitoring. Open as stereo when possible, else
-  // match available output channel count; null if device has no outputs.
-  int outputChannels = 0;
-  if (devInfo->maxOutputChannels > 0) {
-    outputChannels = std::min(devInfo->maxOutputChannels, std::max(2, inputChannels));
-  }
+  // Output mirrors input for monitoring. Cap at stereo: WASAPI Shared is
+  // pinned to whatever Windows configured for the device (almost always
+  // stereo), and opening with more channels than the shared-mode format
+  // expects fails with paInvalidChannelCount. Devices with 1 output (rare)
+  // get mono monitor. Devices with no outputs get capture-only.
+  int outputChannels = std::min(devInfo->maxOutputChannels, 2);
+  if (outputChannels < 0) outputChannels = 0;
 
   PaStreamParameters inputParams = {};
   inputParams.device                    = deviceId;
@@ -316,8 +328,10 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     outputPtr = &outputParams;
   }
 
-  g_streamInputChannels  = inputChannels;
-  g_streamOutputChannels = outputChannels;
+  // Publish channel counts with release semantics so the audio thread sees
+  // them once Pa_StartStream's first callback fires.
+  g_streamInputChannels.store(inputChannels, std::memory_order_release);
+  g_streamOutputChannels.store(outputChannels, std::memory_order_release);
   g_monitorGain.store(0.0f, std::memory_order_relaxed);
 
   // TSFN must exist before Pa_StartStream — the very first callback may fire
@@ -380,8 +394,8 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
     Pa_CloseStream(g_stream);
     g_stream = nullptr;
   }
-  g_streamInputChannels  = 0;
-  g_streamOutputChannels = 0;
+  g_streamInputChannels.store(0, std::memory_order_release);
+  g_streamOutputChannels.store(0, std::memory_order_release);
   g_monitorGain.store(0.0f, std::memory_order_relaxed);
 
   if (wasAlive) {
