@@ -22,15 +22,24 @@ include_directories(${NODE_ADDON_API_INC})
 option(KGB_NO_ASIO "Build without ASIO support (CI/no-SDK fallback)" OFF)
 
 if(NOT KGB_NO_ASIO)
+  # Allow passing via cmake define (-DKGB_ASIO_SDK_DIR=/path) as an alternative
+  # to the environment variable — useful for CI pipelines and IDE builds.
+  if(DEFINED KGB_ASIO_SDK_DIR AND NOT "${KGB_ASIO_SDK_DIR}" STREQUAL "")
+    set(ENV{KGB_ASIO_SDK_DIR} "${KGB_ASIO_SDK_DIR}")
+  endif()
+
   if(NOT DEFINED ENV{KGB_ASIO_SDK_DIR} OR "$ENV{KGB_ASIO_SDK_DIR}" STREQUAL "")
     message(FATAL_ERROR
       "\n"
       "KGB_ASIO_SDK_DIR is not set.\n"
       "ASIO SDK cannot be redistributed (Steinberg license) — you must obtain it manually.\n"
       "\n"
-      "Run the setup guide:\n"
+      "Run the setup guide (from repo root):\n"
       "  powershell -ExecutionPolicy Bypass -File "
       "client/electron/nativeAudio/portaudioAddon/scripts/fetch-asio-sdk.ps1\n"
+      "\n"
+      "Or pass the path directly:\n"
+      "  npm run rebuild -- --CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.3\n"
       "\n"
       "To build without ASIO (CI / no-SDK fallback):\n"
       "  npm run build:noasio\n")

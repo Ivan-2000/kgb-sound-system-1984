@@ -8,8 +8,15 @@
 # Usage: powershell -ExecutionPolicy Bypass -File scripts/fetch-asio-sdk.ps1
 # ============================================================
 
-$envVar      = "KGB_ASIO_SDK_DIR"
-$currentPath = [System.Environment]::GetEnvironmentVariable($envVar, "User")
+$envVar = "KGB_ASIO_SDK_DIR"
+
+# Check all three scopes: process (current session) → user → machine.
+# cmake-js reads from the process environment, so a session-only $env: assignment
+# is enough to make the build work even without setx.
+$currentPath = $env:KGB_ASIO_SDK_DIR
+if (-not $currentPath) {
+    $currentPath = [System.Environment]::GetEnvironmentVariable($envVar, "User")
+}
 if (-not $currentPath) {
     $currentPath = [System.Environment]::GetEnvironmentVariable($envVar, "Machine")
 }

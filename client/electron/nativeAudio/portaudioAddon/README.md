@@ -112,8 +112,17 @@ file an issue and we will evaluate switching the build chain to MSVC.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `KGB_NO_ASIO=ON` | OFF | Build without ASIO — no `KGB_ASIO_SDK_DIR` needed |
-| `KGB_ASIO_SDK_DIR` | (env var) | Override ASIO SDK path via cmake instead of env var |
+| `KGB_NO_ASIO=ON` | OFF | Build without ASIO — no SDK needed |
+| `KGB_ASIO_SDK_DIR=/path` | — | SDK path as cmake define (alternative to env var) |
+
+Pass cmake defines via cmake-js: `--CDKGB_NO_ASIO=ON` or `--CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.3`.
+
+> **Switching between ASIO and no-ASIO builds:** cmake caches the `KGB_NO_ASIO` value.
+> If you switch build modes, clean first:
+> ```powershell
+> node_modules/.bin/cmake-js clean
+> npm run rebuild          # or build:noasio
+> ```
 
 ---
 
