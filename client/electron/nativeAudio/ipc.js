@@ -105,8 +105,11 @@ function openStreamInternal(event, opts) {
         bufferSize:     opts.bufferSize ?? 256,
         inputChannels:  opts.inputChannels ?? 2,
       },
-      // Audio thread → TSFN → this JS callback. Transfer the ArrayBuffer
-      // to the renderer end of the MessageChannel (zero-copy across process).
+      // Audio thread → TSFN → this JS callback. Forward each PCM chunk to
+      // the renderer through the MessageChannelMain. NB: MessagePortMain in
+      // the main process only accepts MessagePortMain[] in the transfer list
+      // (unlike renderer's MessagePort), so the ArrayBuffer rides as a normal
+      // structured-clone copy — ~2 KB per frame at 187 fps is negligible.
       (arrayBuffer, frames, channels) => {
         if (!audioDataPort) return
         const message = {
@@ -119,12 +122,11 @@ function openStreamInternal(event, opts) {
         if (!firstChunkSent) {
           firstChunkSent = true
           try {
-            const lat = a.getStreamLatency()
-            message.latency = lat
+            message.latency = a.getStreamLatency()
           } catch { /* ignore — latency is best-effort metadata */ }
         }
         try {
-          audioDataPort.postMessage(message, [arrayBuffer])
+          audioDataPort.postMessage(message)
         } catch {
           // Renderer-side port was closed; stop trying to send.
           closeAudioPort()

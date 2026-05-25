@@ -3,7 +3,7 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.8**
+Версия: **1.9**
 Обновлён: 2026-05-25
 
 ---
@@ -161,8 +161,10 @@ B: ├─ B1 signaling ─────┤
 - [x] **A3** — Нативный захват аудио через Electron main process (минуя браузерный `getUserMedia`)
 - [x] **A3** — Настройка размера буфера (buffer size): цель ≤ 64 сэмпла для ASIO, ≤ 256 для WASAPI
 - [x] **A3** — Захват PCM со всех активных input-каналов выбранного устройства
-- [x] **A3** — Нативный мониторинг: PortAudio открывает вход и выход одновременно, PCM-буфер из input callback напрямую маршрутизируется на output (`Инструмент → PortAudio input callback → PortAudio output → наушники`); задержка на уровне драйвера — ASIO ~1–5 мс, WASAPI ~10 мс; архитектурно неотделимо от открытия стрима, реализуется в той же инициализации; управляется параметром `monitor: true/false` с регулировкой громкости в миксере
+- [x] **A3** — Нативный мониторинг: PortAudio открывает вход и выход одновременно, PCM-буфер из input callback напрямую маршрутизируется на output (`Инструмент → PortAudio input callback → PortAudio output → наушники`); задержка на уровне драйвера — ASIO ~1–5 мс, WASAPI ~10 мс; архитектурно неотделимо от открытия стрима, реализуется в той же инициализации; управляется параметром `monitor: true/false` с регулировкой громкости в миксере *(архитектурно реализовано — input→output×gain в PaCallback с атомарным setMonitorGain; end-to-end не валидировано: на Windows WASAPI/DirectSound/WDM-KS показывают input и output одного физического устройства как разные deviceId, а текущий openStream принимает один — см. A3.5b)*
 - [x] **A3** — Переинициализация аудиоустройства без перезапуска приложения (смена устройства / драйвера)
+- [ ] **A3.5a** — ASIO support в сборке: ASIO SDK 2.3.3 у Steinberg через переменную окружения `KGB_ASIO_SDK_DIR` (лицензия запрещает редистрибуцию, SDK не в репо); PortAudio как git submodule в `third_party/portaudio/` вместо MSYS2-сборки; флаги `PA_USE_ASIO=1`, `PA_USE_WASAPI=1`, `PA_USE_WDMKS=1`, `PA_USE_DS=1`, `PA_USE_WMME=1` в CMakeLists; скрипт `scripts/fetch-asio-sdk.ps1` для новых разработчиков. Цель: устройства с ASIO-драйвером появляются в `getDevices()` с `hostApi: 'ASIO'`, openStream открывает их с задержкой ≤ 10 мс. *(блокирует A6 — цель ≤ 30 мс end-to-end на WASAPI Shared недостижима)*
+- [ ] **A3.5b** — Расширить `openStream` API на раздельные `inputDeviceId` / `outputDeviceId` для duplex-стрима на разных устройствах (Windows split: WASAPI/DirectSound/WDM-KS выдают input и output одного физического устройства как отдельные deviceId). Сейчас принимаем один deviceId — это блокирует нативный мониторинг без ASIO. После A3.5a (если у пользователя есть ASIO-драйвер устройства) монитор работает через один deviceId; без ASIO — нужно через два разных. Back-compat: если передан только `deviceId`, поведение текущее.
 - [ ] **A4** — Кодирование каждого захваченного канала в Opus в main process
 - [ ] **A5** — Передача Opus-потоков через WebRTC DataChannel (замена MediaStream)
 - [ ] **A5** — Декодирование входящих Opus-потоков и вывод на output-каналы устройства через PortAudio

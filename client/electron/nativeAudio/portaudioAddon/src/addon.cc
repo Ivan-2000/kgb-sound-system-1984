@@ -198,12 +198,23 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       PcmChunk* chunk = new PcmChunk{copy, frames, static_cast<size_t>(inCh)};
       napi_status status = g_pcmTsfn.NonBlockingCall(chunk,
         [](Napi::Env env, Napi::Function jsCb, PcmChunk* c) {
-          // Wrap the heap buffer in an ArrayBuffer with a free() finalizer.
-          // The buffer is transferred (via postMessage) to the renderer; the
-          // finalizer fires once the renderer-side ArrayBuffer is GC'd.
-          Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(
-            env, c->data, c->frames * c->channels * sizeof(float),
-            [](Napi::Env /*e*/, void* p) { std::free(p); });
+          // Allocate a V8-managed ArrayBuffer and memcpy our heap copy into
+          // it, then free the heap copy immediately.
+          //
+          // We used to wrap the heap buffer directly via the external-data
+          // overload of Napi::ArrayBuffer::New — but that calls
+          // napi_create_external_arraybuffer, which is deprecated under
+          // modern V8 (pointer-compression sandbox) and throws at creation
+          // time inside the TSFN callback. The thrown exception surfaces as
+          // "DEP0168: Uncaught Node-API callback exception".
+          //
+          // V8-managed ArrayBuffers are cloneable across MessagePortMain and
+          // contextBridge; the extra ~2 KB memcpy per frame is negligible
+          // (~375 KB/s at 187 fps).
+          const size_t bytes = c->frames * c->channels * sizeof(float);
+          Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, bytes);
+          std::memcpy(ab.Data(), c->data, bytes);
+          std::free(c->data);
           jsCb.Call({
             ab,
             Napi::Number::New(env, static_cast<double>(c->frames)),
