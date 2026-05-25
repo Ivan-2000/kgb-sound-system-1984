@@ -417,7 +417,19 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   // them once Pa_StartStream's first callback fires.
   g_streamInputChannels.store(inputChannels, std::memory_order_release);
   g_streamOutputChannels.store(outputChannels, std::memory_order_release);
-  g_monitorGain.store(0.0f, std::memory_order_relaxed);
+
+  // Read monitorGain from opts (same clamping as setMonitorGain).
+  // Defaults to 0.0 (monitoring off) if not provided or monitor:false.
+  float initialGain = 0.0f;
+  if (opts.Get("monitorGain").IsNumber()) {
+    initialGain = static_cast<float>(opts.Get("monitorGain").As<Napi::Number>().DoubleValue());
+    if (!(initialGain >= 0.0f)) initialGain = 0.0f;
+    if (initialGain > 4.0f)    initialGain = 4.0f;
+  }
+  // Honour monitor:false even when monitorGain is present.
+  if (opts.Get("monitor").IsBoolean() && !opts.Get("monitor").As<Napi::Boolean>().Value())
+    initialGain = 0.0f;
+  g_monitorGain.store(initialGain, std::memory_order_relaxed);
 
   // TSFN must exist before Pa_StartStream — the very first callback may fire
   // immediately and try to enqueue PCM.
