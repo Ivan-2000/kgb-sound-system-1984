@@ -39,7 +39,7 @@ if(NOT KGB_NO_ASIO)
       "client/electron/nativeAudio/portaudioAddon/scripts/fetch-asio-sdk.ps1\n"
       "\n"
       "Or pass the path directly:\n"
-      "  npm run rebuild -- --CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.3\n"
+      "  npm run rebuild -- --CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.4\n"
       "\n"
       "To build without ASIO (CI / no-SDK fallback):\n"
       "  npm run build:noasio\n")

@@ -49,35 +49,35 @@ Write-Host "  https://developer.steinberg.help" -ForegroundColor White
 Write-Host "  (Create a free MySteinberg account if you don't have one)" -ForegroundColor Gray
 Write-Host ""
 
-Write-Host "STEP 2 -- Download ASIO SDK 2.3.3:" -ForegroundColor Cyan
+Write-Host "STEP 2 -- Download ASIO SDK 2.3.4 (latest):" -ForegroundColor Cyan
 Write-Host "  After logging in, go to: SDK Downloads (top navigation)" -ForegroundColor White
-Write-Host "  Find: 'ASIO SDK' -- download version 2.3.3" -ForegroundColor White
+Write-Host "  Find: 'ASIO SDK' -- download version 2.3.4 (or latest 2.3.x)" -ForegroundColor White
 Write-Host "  You must accept the Steinberg SDK License Agreement to proceed." -ForegroundColor White
-Write-Host "  Expected filename: asiosdk_2.3.3_2019-06-14.zip (or similar)" -ForegroundColor Gray
+Write-Host "  Expected filename: asiosdk_2.3.4_<date>.zip (or similar)" -ForegroundColor Gray
 Write-Host ""
 
 Write-Host "STEP 3 -- Extract the SDK to a permanent location:" -ForegroundColor Cyan
-Write-Host "  Recommended: C:\ASIOSDK2.3.3\" -ForegroundColor White
+Write-Host "  Recommended: C:\ASIOSDK2.3.4\" -ForegroundColor White
 Write-Host "  After extraction, verify this structure:" -ForegroundColor White
-Write-Host "    C:\ASIOSDK2.3.3\common\asio.h" -ForegroundColor Gray
-Write-Host "    C:\ASIOSDK2.3.3\host\asiodrivers.h" -ForegroundColor Gray
-Write-Host "    C:\ASIOSDK2.3.3\host\pc\asiolist.h" -ForegroundColor Gray
+Write-Host "    C:\ASIOSDK2.3.4\common\asio.h" -ForegroundColor Gray
+Write-Host "    C:\ASIOSDK2.3.4\host\asiodrivers.h" -ForegroundColor Gray
+Write-Host "    C:\ASIOSDK2.3.4\host\pc\asiolist.h" -ForegroundColor Gray
 Write-Host ""
 
 Write-Host "STEP 4 -- Set the environment variable:" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Option A -- Permanent, current user (recommended):" -ForegroundColor White
-Write-Host '    setx KGB_ASIO_SDK_DIR "C:\ASIOSDK2.3.3"' -ForegroundColor Green
+Write-Host '    setx KGB_ASIO_SDK_DIR "C:\ASIOSDK2.3.4"' -ForegroundColor Green
 Write-Host "    Then close and re-open your terminal / VS Code." -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Option B -- Current PowerShell session only:" -ForegroundColor White
-Write-Host '    $env:KGB_ASIO_SDK_DIR = "C:\ASIOSDK2.3.3"' -ForegroundColor Green
+Write-Host '    $env:KGB_ASIO_SDK_DIR = "C:\ASIOSDK2.3.4"' -ForegroundColor Green
 Write-Host ""
 Write-Host "  Option C -- Via GUI (System Properties):" -ForegroundColor White
 Write-Host "    Win+R -> sysdm.cpl -> Advanced -> Environment Variables" -ForegroundColor Gray
 Write-Host "    Under 'User variables' -> New:" -ForegroundColor Gray
 Write-Host "      Variable name:  KGB_ASIO_SDK_DIR" -ForegroundColor Gray
-Write-Host "      Variable value: C:\ASIOSDK2.3.3" -ForegroundColor Gray
+Write-Host "      Variable value: C:\ASIOSDK2.3.4" -ForegroundColor Gray
 Write-Host ""
 
 Write-Host "STEP 5 -- Build the addon with ASIO:" -ForegroundColor Cyan

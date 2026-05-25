@@ -32,7 +32,7 @@ KGB Sound System requires ASIO to meet the ≤ 30 ms end-to-end latency goal (TA
 |---|---|---|
 | MSYS2 UCRT64 | latest | MinGW toolchain, Ninja, cmake |
 | cmake-js | ^7.3 | already in `devDependencies` |
-| ASIO SDK | **2.3.3** | Steinberg — **cannot be in the repo**, see below |
+| ASIO SDK | **2.3.4** (latest 2.3.x) | Steinberg — **cannot be in the repo**, see below |
 
 ### Obtaining the ASIO SDK
 
@@ -49,24 +49,24 @@ powershell -ExecutionPolicy Bypass -File client/electron/nativeAudio/portaudioAd
 Manual steps (if you prefer):
 
 1. **Register** at [developer.steinberg.help](https://developer.steinberg.help) (free MySteinberg account).
-2. **Download** ASIO SDK 2.3.3 from *SDK Downloads* → accept the license agreement.
-   Expected file: `asiosdk_2.3.3_2019-06-14.zip`
-3. **Extract** to a permanent location, e.g. `C:\ASIOSDK2.3.3\`
+2. **Download** ASIO SDK 2.3.4 (latest 2.3.x) from *SDK Downloads* → accept the license agreement.
+   Expected file: `asiosdk_2.3.4_<date>.zip` (or similar)
+3. **Extract** to a permanent location, e.g. `C:\ASIOSDK2.3.4\`
    Verify the structure:
    ```
-   C:\ASIOSDK2.3.3\
+   C:\ASIOSDK2.3.4\
      common\asio.h
      host\asiodrivers.h
      host\pc\asiolist.h
    ```
 4. **Set the environment variable** (permanent, current user):
    ```powershell
-   setx KGB_ASIO_SDK_DIR "C:\ASIOSDK2.3.3"
+   setx KGB_ASIO_SDK_DIR "C:\ASIOSDK2.3.4"
    # Re-open terminal after setx
    ```
    Or for the current session only:
    ```powershell
-   $env:KGB_ASIO_SDK_DIR = "C:\ASIOSDK2.3.3"
+   $env:KGB_ASIO_SDK_DIR = "C:\ASIOSDK2.3.4"
    ```
 
 ### Build
@@ -115,7 +115,7 @@ file an issue and we will evaluate switching the build chain to MSVC.
 | `KGB_NO_ASIO=ON` | OFF | Build without ASIO — no SDK needed |
 | `KGB_ASIO_SDK_DIR=/path` | — | SDK path as cmake define (alternative to env var) |
 
-Pass cmake defines via cmake-js: `--CDKGB_NO_ASIO=ON` or `--CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.3`.
+Pass cmake defines via cmake-js: `--CDKGB_NO_ASIO=ON` or `--CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.4`.
 
 > **Switching between ASIO and no-ASIO builds:** cmake caches the `KGB_NO_ASIO` value.
 > If you switch build modes, clean first:
