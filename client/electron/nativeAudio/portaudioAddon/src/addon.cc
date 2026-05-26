@@ -289,6 +289,14 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
 
   Napi::Object opts = info[0].As<Napi::Object>();
 
+  // A3.5c test affordance: deliberately abort() this process to verify that
+  // the utilityProcess crash is isolated from the Electron main window
+  // (renderer keeps room/UI, sees audio:engine-crashed, can call reinit).
+  // Production code never sets opts.crashMe — it's purely for smoke tests.
+  if (opts.Get("crashMe").IsBoolean() && opts.Get("crashMe").As<Napi::Boolean>().Value()) {
+    std::abort();
+  }
+
   // Resolve input device: inputDeviceId > back-compat deviceId.
   const bool hasInputDeviceId  = opts.Get("inputDeviceId").IsNumber();
   const bool hasOutputDeviceId = opts.Get("outputDeviceId").IsNumber();

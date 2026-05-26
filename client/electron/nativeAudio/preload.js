@@ -8,6 +8,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 let audioPort = null
 const pcmHandlers = new Set()
 const latencyHandlers = new Set()
+const engineCrashHandlers = new Set()
+
+// A3.5c: main broadcasts this when the audio utilityProcess exits abnormally.
+// Renderer learns the engine is gone without taking the window down with it.
+ipcRenderer.on('audio:engine-crashed', (_event, payload) => {
+  engineCrashHandlers.forEach((h) => {
+    try { h(payload) } catch (err) { console.error('[nativeAudio] engine-crashed handler:', err) }
+  })
+})
 
 ipcRenderer.on('audio:port', (event) => {
   if (audioPort) {
@@ -90,5 +99,16 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     if (typeof handler !== 'function') return () => {}
     latencyHandlers.add(handler)
     return () => latencyHandlers.delete(handler)
+  },
+
+  /** Subscribe to abnormal audio-engine termination (A3.5c utilityProcess crash).
+   *  Handler receives { code: number }. UI is free to surface this and call
+   *  reinit() to respawn the engine — main does not auto-restart to avoid loops.
+   *  @returns {() => void} unsubscribe
+   */
+  onEngineCrashed: (handler) => {
+    if (typeof handler !== 'function') return () => {}
+    engineCrashHandlers.add(handler)
+    return () => engineCrashHandlers.delete(handler)
   },
 })

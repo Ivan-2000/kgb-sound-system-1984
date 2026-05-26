@@ -64,10 +64,17 @@ app.whenReady().then(() => {
   })
 })
 
-// Pa_Terminate() must be called before the process exits so PortAudio can
-// cleanly shut down any open streams and release audio device handles.
-app.on('before-quit', () => {
-  terminateAudio()
+// Pa_Terminate() must run before the process exits so the audio utility can
+// cleanly shut down any open streams and release device handles. terminateAudio
+// is async since A3.5c (round-trips a shutdown message to the utilityProcess),
+// so we hold quit with preventDefault → await → app.exit(). The isQuitting
+// latch avoids re-entry when app.exit() refires before-quit handlers.
+let isQuitting = false
+app.on('before-quit', (event) => {
+  if (isQuitting) return
+  isQuitting = true
+  event.preventDefault()
+  terminateAudio().finally(() => app.exit())
 })
 
 app.on('window-all-closed', () => {
