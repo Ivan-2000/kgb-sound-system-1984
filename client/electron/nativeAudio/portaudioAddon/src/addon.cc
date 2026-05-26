@@ -597,9 +597,9 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
 
     Napi::Function onOpus = info[2].As<Napi::Function>();
     g_opusTsfn = Napi::ThreadSafeFunction::New(env, onOpus, "kgb-opus", 64, 1);
-    g_opusTsfnAlive.store(true, std::memory_order_relaxed);
-
-    // Release after TSFN is live and all g_opusCh[] entries are set.
+    // Release semantics: all g_opusCh[] and g_opusTsfn writes above become
+    // visible to the RT callback once it loads g_opusNumCh with acquire.
+    g_opusTsfnAlive.store(true, std::memory_order_release);
     g_opusNumCh.store(numOpusCh, std::memory_order_release);
   }
 
@@ -684,9 +684,12 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   // Destroy encoders BEFORE releasing opus TSFN. Any pending lambdas in the
   // TSFN queue will see enc=nullptr and skip encoding without crashing.
   // (JS thread is single-threaded: closeStream and TSFN lambdas cannot interleave.)
+  //
+  // g_opusTsfnFill is NOT reset here: pending lambdas still run after Release()
+  // and each does fetch_sub(1). Resetting to 0 before they drain would push the
+  // counter negative. The counter reaches 0 naturally once all lambdas complete.
   cleanupOpusState();
   if (opusWasAlive) {
-    g_opusTsfnFill.store(0, std::memory_order_relaxed);
     g_opusTsfn.Release();
   }
 
