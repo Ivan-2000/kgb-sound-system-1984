@@ -159,6 +159,22 @@ export function setupAudioIPC() {
     try { return await sendRequest('isStreamActive') }
     catch { return false }
   })
+
+  // A4.5: stream health metrics (xrunCount, dropCount, bufferFillPct, cpuLoad).
+  ipcMain.handle('audio:get-stats', async () => {
+    try { return await sendRequest('getStats') }
+    catch { return { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 } }
+  })
+
+  // A4 stub for inbound Opus from WebRTC DataChannel (A5 integration).
+  // Renderer sends packets here; utility will decode and mix to output.
+  // Decoder implementation is deferred to A4b.
+  ipcMain.handle('audio:push-inbound-opus', async (_event, packet) => {
+    // packet: { peerId, channelId, sequence, timestampUs, payload: ArrayBuffer }
+    // TODO(A4b): forward to utility decoder via sendRequest('pushInboundOpus', packet)
+    void packet
+    return { ok: true }
+  })
 }
 
 // open-stream & reinit share the channel-minting logic.

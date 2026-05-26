@@ -1,3 +1,6 @@
 [submodule "portaudio"]
 	path = client/electron/nativeAudio/portaudioAddon/third_party/portaudio
 	url = https://github.com/PortAudio/portaudio.git
+[submodule "client/electron/nativeAudio/portaudioAddon/third_party/opus"]
+	path = client/electron/nativeAudio/portaudioAddon/third_party/opus
+	url = https://github.com/xiph/opus

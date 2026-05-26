@@ -100,53 +100,80 @@ function doOpenStream(opts, port1) {
     }
   })
 
-  let result
-  try {
-    result = a.openStream(
-      {
-        inputDeviceId:     opts.inputDeviceId,
-        outputDeviceId:    opts.outputDeviceId,
-        inputHostApiKind:  opts.inputHostApiKind,
-        outputHostApiKind: opts.outputHostApiKind,
-        deviceId:          opts.deviceId,
-        hostApiKind:       opts.hostApiKind ?? 'WASAPI_SHARED',
-        sampleRate:        opts.sampleRate  ?? 48000,
-        bufferSize:        opts.bufferSize  ?? 256,
-        inputChannels:     opts.inputChannels ?? 2,
-        outputChannels:    opts.outputChannels,
-        monitor:           opts.monitor,
-        monitorGain:       opts.monitorGain,
-        // A3.5c smoke test: opts.crashMe === true makes addon.cc abort()
-        // immediately so we can verify the utility crash is isolated from
-        // the Electron main window. Never set in production code paths.
-        crashMe:           opts.crashMe,
-      },
-      // TSFN → JS thread of THIS utility process. Forward PCM frames to the
-      // renderer through MessageChannelMain. ArrayBuffer rides as a normal
-      // structured-clone copy because MessagePortMain only accepts other
-      // MessagePortMain[] in its transfer list (Electron limitation; see
-      // ipc.js history before A3.5c, and commit 17b1299).
-      (arrayBuffer, frames, channels) => {
+  // A4: opus opts — only pass onOpus callback when opts.opus is present.
+  const hasOpus = opts.opus && typeof opts.opus === 'object'
+
+  const addonOpts = {
+    inputDeviceId:     opts.inputDeviceId,
+    outputDeviceId:    opts.outputDeviceId,
+    inputHostApiKind:  opts.inputHostApiKind,
+    outputHostApiKind: opts.outputHostApiKind,
+    deviceId:          opts.deviceId,
+    hostApiKind:       opts.hostApiKind ?? 'WASAPI_SHARED',
+    sampleRate:        opts.sampleRate  ?? 48000,
+    bufferSize:        opts.bufferSize  ?? 256,
+    inputChannels:     opts.inputChannels ?? 2,
+    outputChannels:    opts.outputChannels,
+    monitor:           opts.monitor,
+    monitorGain:       opts.monitorGain,
+    // A3.5c smoke test: opts.crashMe === true makes addon.cc abort()
+    // immediately so we can verify the utility crash is isolated from
+    // the Electron main window. Never set in production code paths.
+    crashMe:           opts.crashMe,
+    opus:              hasOpus ? opts.opus : undefined,
+  }
+
+  // TSFN → JS thread of THIS utility process. Forward PCM frames to the
+  // renderer through MessageChannelMain. ArrayBuffer rides as a normal
+  // structured-clone copy because MessagePortMain only accepts other
+  // MessagePortMain[] in its transfer list (Electron limitation; see
+  // ipc.js history before A3.5c, and commit 17b1299).
+  const onPcm = (arrayBuffer, frames, channels) => {
+    if (!audioDataPort) return
+    const message = {
+      kind: 'pcm',
+      streamId,
+      frames,
+      channels,
+      payload: arrayBuffer,
+    }
+    if (!firstChunkSent) {
+      firstChunkSent = true
+      try { message.latency = a.getStreamLatency() } catch { /* best-effort metadata */ }
+    }
+    try {
+      audioDataPort.postMessage(message)
+    } catch {
+      // Renderer-side port closed mid-stream; stop pumping.
+      closeAudioPort()
+    }
+  }
+
+  // A4: Opus packet callback — forward kind:'opus-out' to renderer.
+  // BigInt (timestampUs) is passed as a JS BigInt through the TSFN lambda
+  // and survives structured-clone over MessagePortMain unchanged.
+  const onOpus = hasOpus
+    ? (payload, channelIndex, sequence, timestampUs) => {
         if (!audioDataPort) return
-        const message = {
-          kind: 'pcm',
-          streamId,
-          frames,
-          channels,
-          payload: arrayBuffer,
-        }
-        if (!firstChunkSent) {
-          firstChunkSent = true
-          try { message.latency = a.getStreamLatency() } catch { /* best-effort metadata */ }
-        }
         try {
-          audioDataPort.postMessage(message)
+          audioDataPort.postMessage({
+            kind: 'opus-out',
+            channelIndex,
+            sequence,
+            timestampUs,
+            payload,
+          })
         } catch {
-          // Renderer-side port closed mid-stream; stop pumping.
           closeAudioPort()
         }
-      },
-    )
+      }
+    : undefined
+
+  let result
+  try {
+    result = hasOpus
+      ? a.openStream(addonOpts, onPcm, onOpus)
+      : a.openStream(addonOpts, onPcm)
   } catch (e) {
     closeAudioPort()
     return { ok: false, error: e.message }
@@ -208,6 +235,13 @@ process.parentPort.on('message', (event) => {
 
       case 'isStreamActive': {
         try { reply(id, !!loadAddon().isStreamActive()) } catch { reply(id, false) }
+        return
+      }
+
+      // A4.5: stats snapshot — xrunCount, dropCount, bufferFillPct, cpuLoad.
+      case 'getStats': {
+        try { reply(id, loadAddon().getStats()) }
+        catch { reply(id, { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 }) }
         return
       }
 

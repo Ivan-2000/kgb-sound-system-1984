@@ -86,6 +86,23 @@ set(PA_USE_WMME   ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/portaudio EXCLUDE_FROM_ALL)
 
+# ─── libopus from source (third_party/opus submodule) ─────────────────────────
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/opus/CMakeLists.txt")
+  message(FATAL_ERROR
+    "third_party/opus submodule is missing.\n"
+    "Run: git submodule update --init --recursive")
+endif()
+
+# Tests and programs are OFF by default in opus CMakeLists; set explicitly for
+# clarity and to guard against future upstream defaults changing.
+set(OPUS_BUILD_TESTING  OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE  OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
+
 # ─── addon ────────────────────────────────────────────────────────────────────
 set(ADDON_SOURCES src/addon.cc)
 
@@ -114,6 +131,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
 target_link_libraries(${PROJECT_NAME}
   ${ELECTRON_NAPI_LIB}
   portaudio_static
+  opus
   -lwinmm
   -lole32
   -ldsound

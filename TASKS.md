@@ -3,8 +3,8 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.12**
-Обновлён: 2026-05-26
+Версия: **1.13**
+Обновлён: 2026-05-27
 
 ---
 
@@ -166,8 +166,8 @@ B: ├─ B1 signaling ─────┤
 - [x] **A3.5a** — ASIO support в сборке: ASIO SDK 2.3.4 у Steinberg через переменную окружения `KGB_ASIO_SDK_DIR` (лицензия запрещает редистрибуцию, SDK не в репо); PortAudio как git submodule в `third_party/portaudio/` вместо MSYS2-сборки (`v19.7.0`, `iasiothiscallresolver.cpp` обеспечивает MinGW-совместимость); флаги `PA_USE_ASIO=ON`, `PA_USE_WASAPI=ON`, `PA_USE_WDMKS=ON`, `PA_USE_DS=ON`, `PA_USE_WMME=ON` в CMakeLists; `build:asio` / `build:noasio` в package.json; скрипт `scripts/fetch-asio-sdk.ps1` для новых разработчиков; README с разделом «Building with ASIO». Без `KGB_ASIO_SDK_DIR` — CMake fatal error со ссылкой на скрипт; `build:noasio` работает без SDK. *(валидировано: BEHRINGER USB AUDIO и FL Studio ASIO появляются в `getDevices()` с `kind: 'ASIO'`; inputLatency 6.3 мс, round-trip 23.2 мс ≤ 30 мс; ASIO-мониторинг работает; блокер A6 снят)*
 - [x] **A3.5b** — Расширить `openStream` API на раздельные `inputDeviceId` / `outputDeviceId` для duplex-стрима на разных устройствах (Windows split: WASAPI/DirectSound/WDM-KS выдают input и output одного физического устройства как отдельные deviceId). Реализовано: раздельные `PaStreamParameters` и `PaWasapiStreamInfo` на каждую сторону; `inputHostApiKind`/`outputHostApiKind` позволяют задать EXCLUSIVE независимо для каждой стороны; back-compat — старый `deviceId` по-прежнему работает без изменений в renderer.
 - [x] **A3.5c** — Перенести portaudio addon из main process в `utilityProcess.fork()` (ADR §3.2). Реализовано: `client/electron/nativeAudio/utilityHost.mjs` грузит addon, держит Pa_Initialize и единственный PA-стрим, MSYS2 PATH-инициализация для libwinpthread переехала туда же. `ipc.js` теперь — тонкий прокси: каждый `ipcMain.handle('audio:*')` шлёт `{kind:'request', id, op, opts}` в utility и резолвится по матчингу `{kind:'reply', id, payload}`; `MessageChannelMain.port1` транзитом передаётся в utility (TSFN endpoint), `port2` — в renderer (data plane utility ↔ renderer напрямую, main PCM не видит). `utility.on('exit', code)` ≠ 0 → broadcast `audio:engine-crashed` во все окна + reject всех pending; respawn ленивый на следующий запрос (без auto-restart, иначе цикл). `preload.js` добавил `onEngineCrashed(handler)` — публичный API расширен additively, существующее не менялось. Renderer API (`window.nativeAudio.*`) и форматы payload/response остались идентичны. Quartet фиксов 33a6bb1 сохранён: TSFN try/catch (addon), `port1.on('close')` теперь в utility, atomics, outputChannels cap, terminateAudio без isStreamActive-guard. Smoke-тест: отдельный «Electron Helper (Utility)» в Task Manager при открытом стриме; `opts.crashMe=true` → `std::abort()` в addon → окно Electron живо, UI работает, engine-crashed приходит в renderer, reinit поднимает движок заново. *(валидировано 2026-05-27: 30 устройств перечислены через утилити (ASIO + WASAPI/EXCLUSIVE + WDMKS + DirectSound + MME), отдельный процесс с `--utility-sub-type=node.mojom.NodeService` виден в Task Manager; WASAPI Shared duplex на BEHRINGER USB AUDIO id=16, inputLatency 6.3 мс / outputLatency 16.9 мс; `setMonitorGain(1.0) → {ok:true}`; `openStream({...,crashMe:true})` → utility exited code=0xC0000005, await вернулся с `{ok:false, error:'engine crashed'}`, `onEngineCrashed` handler в renderer получил `{code:3221226505}`, окно Electron не упало; `reinit()` поднял движок заново, streamId продолжил расти; graceful shutdown через закрытие окна — Electron exit code=0)*
-- [ ] **A4** — Кодирование каждого захваченного канала в Opus в main process
-- [ ] **A4.5** — Метрики аудио-потока через `audio:get-stats` (ADR §3.3): xrun counter (`paInputOverflow`/`paOutputUnderflow` из `PaStreamCallbackFlags`), drop counter (когда TSFN `NonBlockingCall` возвращает `napi_queue_full`), TSFN queue fill %, CPU load из `Pa_GetStreamCpuLoad()`. Нужно для A6 (объективная диагностика «не теряются ли фреймы») и для UI-индикатора «жалоб» когда у пользователя проблемы с драйвером/нагрузкой. Идеально делать сразу после A4 — там же добавятся encoder timing метрики.
+- [~] **A4** — Кодирование каждого захваченного канала в Opus в main process. **A4a (encoder) готово:** libopus v1.5.2 как git submodule; per-channel `OpusEncoder*` создаётся в `openStream` с параметрами `opts.opus = { bitrate, complexity, frameMs }`; PCM аккумулируется в pre-allocated `accumBuf` в PaCallback (без alloc в RT); полный фрейм отправляется через отдельный `g_opusTsfn`, `opus_encode_float()` вызывается на JS-thread (known follow-up: перенести на encoder worker thread); `kind:'opus-out'` пакеты летят renderer-у через тот же `MessageChannelMain`; BigInt `timestampUs` из `Pa_GetStreamInfo`; `preload.js` добавляет `onOpusPacket(h)`, `pushInboundOpus(p)`. **A4b (decoder + jitter buffer + mix) — отложено на следующую сессию** (реализовать после A5 DataChannel transport).
+- [x] **A4.5** — Метрики аудио-потока через `audio:get-stats` (ADR §3.3): `xrunCount` (`paInputOverflow`/`paOutputUnderflow` из `PaStreamCallbackFlags`), `dropCount` (когда TSFN `NonBlockingCall` → `napi_queue_full`), `bufferFillPct` (ручной счётчик `g_opusTsfnFill`, очередь 64 слота), `cpuLoad` из `Pa_GetStreamCpuLoad()`. Экспортировано через `addon.getStats()` → `utility op:getStats` → `ipc audio:get-stats` → `preload getStats()`. Счётчики монотонны — UI делает diff. Протестировать: при нормальной нагрузке `xrunCount ≈ 0`, `dropCount ≈ 0`, `cpuLoad < 0.05`.
 - [ ] **A5** — Передача Opus-потоков через WebRTC DataChannel (замена MediaStream)
 - [ ] **A5** — Декодирование входящих Opus-потоков и вывод на output-каналы устройства через PortAudio
 - [ ] **A5** — Jitter buffer для компенсации нестабильности сети
@@ -416,8 +416,8 @@ B: ├─ B1 signaling ─────┤
 | Оболочка | Electron (Windows / macOS / Linux) | [x] Работает |
 | UI | React + TypeScript + Vite | [x] Работает |
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
-| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3 готов (capture + native monitor, MessageChannelMain data plane); A3.5a — ASIO в сборку (submodule v19.7.0, KGB_ASIO_SDK_DIR); A3.5b — split input/output deviceId готово (WASAPI/DS/WDM-KS duplex на Windows); A3.5c — addon переехал в `utilityProcess.fork()`, крэш движка изолирован от main-окна (renderer получает `audio:engine-crashed`, движок поднимается через reinit без перезапуска приложения); ждёт A4 Opus |
-| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A4–A5**, не блокируется A3.5 |
+| Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3–A3.5c готовы; **A4a готово** — libopus v1.5.2 (git submodule, BSD-3), per-channel `OpusEncoder*`, PCM-аккумуляция без alloc в RT, TSFN → `kind:'opus-out'` → renderer, `onOpusPacket` / `getStats` / `pushInboundOpus` в preload; **A4.5 готово** — `audio:get-stats` (xrunCount, dropCount, bufferFillPct, cpuLoad); A4b decoder отложен |
+| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [ ] Не начат — **блок A5** (A4a encoder готов, DataChannel transport следующий) |
 | VST-хостинг | JUCE или Steinberg VST3 SDK | [ ] Не начат |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
 | MIDI | WebMIDI API + нативный bridge | [ ] Не начат |
@@ -429,7 +429,7 @@ B: ├─ B1 signaling ─────┤
 
 | Фаза | Прогресс |
 |---|---|
-| Phase 1 — Сеть и комнаты | ~87% *(signaling завершён; A3 backend + A3.5a ASIO-сборка + A3.5b split-id + A3.5c utilityProcess-изоляция готовы; ждёт A4 Opus, A5 транспорт)* |
+| Phase 1 — Сеть и комнаты | ~91% *(signaling завершён; A3–A3.5c готовы; A4a Opus encoder + A4.5 metrics готовы; ждёт A4b decoder, A5 DataChannel транспорт)* |
 | Phase 2 — Миксер и запись | ~25% *(разблокирована — можно начинать UI-обвязку миксера с native input)* |
 | Phase 3 — Монтажный стол и MIDI | 0% *(ждёт Phase 2)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; экспорт MIDI ждёт Phase 3)* |

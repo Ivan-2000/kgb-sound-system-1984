@@ -1,0 +1,54 @@
+KGB Sound System 85 — Native Audio Addon
+Third-party libraries used in this module:
+
+──────────────────────────────────────────────────────────────
+PortAudio  (third_party/portaudio)
+Copyright (c) 1999-2011 Ross Bencina and Phil Burk
+https://github.com/PortAudio/portaudio
+
+MIT-style license (PortAudio License):
+  Permission is hereby granted, free of charge, to any person
+  obtaining a copy of the software and associated documentation
+  files (the "Software"), to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software,
+  and to permit persons to whom the Software is furnished to do
+  so, subject to the following conditions:
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+──────────────────────────────────────────────────────────────
+libopus  (third_party/opus, pinned to v1.5.2)
+Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, Jean-Marc
+Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding,
+Erik de Castro Lopo
+https://github.com/xiph/opus
+
+BSD 3-Clause License:
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  - Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  - Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in
+    the documentation and/or other materials provided with the
+    distribution.
+  - Neither the name of Internet Society, IETF or IETF Trust, nor
+    the names of specific contributors, may be used to endorse or
+    promote products derived from this software without specific
+    prior written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING
+  IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+  THE POSSIBILITY OF SUCH DAMAGE.
+
+──────────────────────────────────────────────────────────────
+ASIO SDK  (not in repository — path supplied via KGB_ASIO_SDK_DIR)
+Copyright (c) Steinberg Media Technologies GmbH
+Used under Steinberg Developer License.
+Not redistributed. See scripts/fetch-asio-sdk.ps1 for setup.

@@ -7,6 +7,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 let audioPort = null
 const pcmHandlers = new Set()
+const opusHandlers = new Set()      // A4: kind:'opus-out' packets from encoder
 const latencyHandlers = new Set()
 const engineCrashHandlers = new Set()
 
@@ -27,7 +28,17 @@ ipcRenderer.on('audio:port', (event) => {
   if (!audioPort) return
   audioPort.onmessage = (ev) => {
     const msg = ev.data
-    if (!msg || msg.kind !== 'pcm') return
+    if (!msg) return
+
+    if (msg.kind === 'opus-out') {
+      // A4: Opus packet from encoder — fan out to onOpusPacket subscribers.
+      opusHandlers.forEach((h) => {
+        try { h(msg) } catch (err) { console.error('[nativeAudio] opus handler:', err) }
+      })
+      return
+    }
+
+    if (msg.kind !== 'pcm') return
     if (msg.latency) {
       latencyHandlers.forEach((h) => {
         try { h(msg.latency) } catch (err) { console.error('[nativeAudio] latency handler:', err) }
@@ -93,6 +104,34 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     pcmHandlers.add(handler)
     return () => pcmHandlers.delete(handler)
   },
+
+  /** A4: Subscribe to Opus output packets from the local encoder.
+   *  Handler receives { kind:'opus-out', channelIndex, sequence, timestampUs: BigInt, payload: ArrayBuffer }.
+   *  Renderer's rtc/ layer forwards these into a WebRTC DataChannel (A5).
+   *  @returns {() => void} unsubscribe
+   */
+  onOpusPacket: (handler) => {
+    if (typeof handler !== 'function') return () => {}
+    opusHandlers.add(handler)
+    return () => opusHandlers.delete(handler)
+  },
+
+  /** A4: Push an inbound Opus packet (received from a remote peer's DataChannel)
+   *  to the native decoder in the utility process.
+   *  packet: { peerId: string, channelId: string, sequence: number,
+   *            timestampUs: BigInt, payload: ArrayBuffer }
+   *  Decoder implementation is in A4b; the IPC channel is wired up here.
+   *  @returns {boolean} false if the audio port is not yet established
+   */
+  pushInboundOpus: (packet) => {
+    if (!packet || !packet.payload) return false
+    return ipcRenderer.invoke('audio:push-inbound-opus', packet)
+  },
+
+  /** A4.5: Snapshot of audio stream health metrics.
+   *  @returns {Promise<{ xrunCount: number, dropCount: number, bufferFillPct: number, cpuLoad: number }>}
+   */
+  getStats: () => ipcRenderer.invoke('audio:get-stats'),
 
   /** Subscribe to the latency report that ships with the first PCM frame after openStream. */
   onLatency: (handler) => {
