@@ -5,6 +5,7 @@ type VideoTileProps = {
   label: string
   sublabel?: string
   rtt?: number
+  dcRtt?: number
   isLocal?: boolean
   /** Mute audio on the video element — use when Web Audio mixer handles output */
   muteAudio?: boolean
@@ -27,6 +28,7 @@ export function VideoTile({
   label,
   sublabel,
   rtt,
+  dcRtt,
   isLocal,
   muteAudio,
   cameraEnabled = true,
@@ -90,6 +92,7 @@ export function VideoTile({
         </div>
         <div className="video-footer-right">
           {rtt !== undefined ? <span className="rtt-badge">{rtt} ms</span> : null}
+          {dcRtt !== undefined ? <span className="participant-dc-rtt">DC {dcRtt} ms</span> : null}
           {canControl && (
             <div className="video-host-controls" onClick={(e) => e.stopPropagation()}>
               <button

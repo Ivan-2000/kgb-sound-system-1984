@@ -284,7 +284,14 @@ function App() {
 
   useEffect(() => {
     return nativeRtcManager.subscribeRtt((peerId, rttMs) => {
-      setNativeRttMap((prev) => ({ ...prev, [peerId]: rttMs }))
+      setNativeRttMap((prev) => {
+        if (rttMs === null) {
+          const next = { ...prev }
+          delete next[peerId]
+          return next
+        }
+        return { ...prev, [peerId]: rttMs }
+      })
     })
   }, [])
 
@@ -902,6 +909,7 @@ function App() {
             label={fullscreenTile.participant.username}
             sublabel={fullscreenTile.participant.isHost ? 'Host' : 'Guest'}
             rtt={rtts.get(fullscreenTile.participant.socketId)}
+            dcRtt={nativeRttMap[fullscreenTile.participant.socketId]}
             muteAudio
             cameraEnabled={fullscreenTile.participant.cameraEnabled}
             isActiveSpeaker={activeSpeakerSocketId === fullscreenTile.participant.socketId}
@@ -932,6 +940,7 @@ function App() {
                   label={t.participant.username}
                   sublabel={t.participant.isHost ? 'Host' : 'Guest'}
                   rtt={rtts.get(t.participant.socketId)}
+                  dcRtt={nativeRttMap[t.participant.socketId]}
                   muteAudio
                   cameraEnabled={t.participant.cameraEnabled}
                   isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}
@@ -964,6 +973,7 @@ function App() {
               label={t.participant.username}
               sublabel={t.participant.isHost ? 'Host' : 'Guest'}
               rtt={rtts.get(t.participant.socketId)}
+              dcRtt={nativeRttMap[t.participant.socketId]}
               muteAudio
               cameraEnabled={t.participant.cameraEnabled}
               isActiveSpeaker={activeSpeakerSocketId === t.participant.socketId}

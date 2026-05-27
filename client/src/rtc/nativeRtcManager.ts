@@ -25,7 +25,7 @@ type PeerData = {
   isInitiator: boolean
   rttMs: number | null
   pingTimer: ReturnType<typeof setInterval> | null
-  pendingSendTime: number | null
+  stalenessTimer: ReturnType<typeof setTimeout> | null
 }
 type CtrlMsg = { type: 'ping'; t: number } | { type: 'pong'; t: number }
 type SignalFn = (targetSocketId: string, signal: unknown) => void
@@ -67,7 +67,7 @@ class NativeRtcManager {
   private sendSignalFn: SignalFn | null = null
   private onOpusUnsub: (() => void) | null = null
   private active = false
-  private rttListeners = new Set<(peerId: string, rttMs: number) => void>()
+  private rttListeners = new Set<(peerId: string, rttMs: number | null) => void>()
 
   setSendSignal(fn: SignalFn): void {
     this.sendSignalFn = fn
@@ -90,7 +90,7 @@ class NativeRtcManager {
     if (this.peers.has(socketId)) return
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    const entry: PeerData = { pc, channel: null, ctrl: null, pendingCandidates: [], isInitiator: initiator, rttMs: null, pingTimer: null, pendingSendTime: null }
+    const entry: PeerData = { pc, channel: null, ctrl: null, pendingCandidates: [], isInitiator: initiator, rttMs: null, pingTimer: null, stalenessTimer: null }
     this.peers.set(socketId, entry)
 
     if (initiator) {
@@ -219,6 +219,7 @@ class NativeRtcManager {
     const entry = this.peers.get(socketId)
     if (!entry) return
     if (entry.pingTimer !== null) clearInterval(entry.pingTimer)
+    if (entry.stalenessTimer !== null) clearTimeout(entry.stalenessTimer)
     try { entry.pc.close() } catch { /* ignored */ }
     this.peers.delete(socketId)
   }
@@ -230,8 +231,17 @@ class NativeRtcManager {
       entry.pingTimer = setInterval(() => {
         if (channel.readyState !== 'open') return
         const t = performance.now()
-        entry.pendingSendTime = t
         channel.send(JSON.stringify({ type: 'ping', t }))
+        // Staleness guard: if no pong arrives within 6 s (3 missed pings),
+        // null out rttMs and notify listeners so the UI stops showing a stale value.
+        if (entry.stalenessTimer !== null) clearTimeout(entry.stalenessTimer)
+        entry.stalenessTimer = setTimeout(() => {
+          const e = this.peers.get(socketId)
+          if (!e) return
+          e.rttMs = null
+          e.stalenessTimer = null
+          for (const fn of this.rttListeners) fn(socketId, null)
+        }, 6000)
       }, 2000)
     }
     channel.onmessage = (e) => {
@@ -243,6 +253,7 @@ class NativeRtcManager {
       if (msg.type === 'ping') {
         if (channel.readyState === 'open') channel.send(JSON.stringify({ type: 'pong', t: msg.t }))
       } else if (msg.type === 'pong') {
+        if (entry.stalenessTimer !== null) { clearTimeout(entry.stalenessTimer); entry.stalenessTimer = null }
         entry.rttMs = Math.round(performance.now() - msg.t)
         for (const fn of this.rttListeners) fn(socketId, entry.rttMs)
       }
@@ -250,14 +261,12 @@ class NativeRtcManager {
     channel.onclose = () => {
       const entry = this.peers.get(socketId)
       if (!entry) return
-      if (entry.pingTimer !== null) {
-        clearInterval(entry.pingTimer)
-        entry.pingTimer = null
-      }
+      if (entry.pingTimer !== null) { clearInterval(entry.pingTimer); entry.pingTimer = null }
+      if (entry.stalenessTimer !== null) { clearTimeout(entry.stalenessTimer); entry.stalenessTimer = null }
     }
   }
 
-  subscribeRtt(fn: (peerId: string, rttMs: number) => void): () => void {
+  subscribeRtt(fn: (peerId: string, rttMs: number | null) => void): () => void {
     this.rttListeners.add(fn)
     return () => this.rttListeners.delete(fn)
   }
@@ -274,15 +283,10 @@ class NativeRtcManager {
   }
 
   private broadcastOpusPacket(msg: OpusOutMessage): void {
-    let count = 0
     for (const entry of this.peers.values()) {
       if (entry.channel?.readyState === 'open') {
         entry.channel.send(encodePacket(msg))
-        count++
       }
-    }
-    if (count > 0) {
-      console.log(`[nativeRtc] sending opus ch=${msg.channelIndex} seq=${msg.sequence} to ${count} peer(s)`)
     }
   }
 
