@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <map>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -99,6 +101,60 @@ static std::atomic<bool>        g_opusTsfnAlive{false};
 static std::atomic<uint64_t> g_xrunCount{0};
 static std::atomic<uint64_t> g_dropCount{0};
 static std::atomic<int64_t>  g_opusTsfnFill{0};
+
+// ─── A4b Opus decoder state ───────────────────────────────────────────────────
+// One OpusDecoder* per (peerId, channelId) pair, created lazily on first packet.
+// PeerDecState is heap-allocated; g_peerSlots holds atomic pointers so the RT
+// callback can read them (acquire) while the JS thread writes (release).
+// Cleanup happens in cleanupDecoderState() after Pa_StopStream() ensures the RT
+// callback is no longer executing.
+
+static const int MAX_PEERS         = 32;
+static const int PEER_RING_CAP     = 1 << 16; // 65536 floats ≈ 1.36 s at 48 kHz
+static const int JITTER_HOLD       = 2;        // min queued packets before forcing PLC
+static const int JITTER_MAX        = 8;        // evict oldest when queue exceeds this
+static const int DEC_FRAME_DEFAULT = 960;      // 20 ms @ 48 kHz, for PLC before first decode
+
+// SPSC ring: JS thread is the sole producer (push), RT callback is the sole consumer.
+struct PeerRing {
+  float                 buf[PEER_RING_CAP];
+  std::atomic<uint32_t> wpos{0};
+  std::atomic<uint32_t> rpos{0};
+
+  // Push n decoded samples.  Returns false and increments g_dropCount if the
+  // ring is full (e.g. capture-only stream — rpos never advances, or consumer
+  // fell behind).  Caller should not retry; the frame is lost.
+  bool push(const float* src, int n) {
+    const uint32_t w         = wpos.load(std::memory_order_relaxed);
+    const uint32_t r         = rpos.load(std::memory_order_acquire);
+    const uint32_t freeSlots = static_cast<uint32_t>(PEER_RING_CAP) - (w - r);
+    if (static_cast<uint32_t>(n) > freeSlots) {
+      g_dropCount.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+    for (int i = 0; i < n; i++)
+      buf[(w + i) & (PEER_RING_CAP - 1)] = src[i];
+    wpos.store(w + static_cast<uint32_t>(n), std::memory_order_release);
+    return true;
+  }
+};
+
+struct PeerDecState {
+  std::string                              key;           // "peerId/channelId"
+  OpusDecoder*                             dec    = nullptr;
+  int                                      fsize  = 0;   // learned on first decode; 0 → use default for PLC
+  uint32_t                                 nextSeq = 0;
+  bool                                     seqInit = false;
+  std::map<uint32_t, std::vector<uint8_t>> jitter;
+  PeerRing                                 ring;
+
+  PeerDecState() = default;
+  PeerDecState(const PeerDecState&) = delete;
+  PeerDecState& operator=(const PeerDecState&) = delete;
+};
+
+// Zero-initialised at module load (nullptr for all slots).
+static std::atomic<PeerDecState*> g_peerSlots[MAX_PEERS];
 
 // ─── hostApiKind helpers ──────────────────────────────────────────────────────
 static const char* hostApiKind(PaHostApiTypeId t) {
@@ -202,6 +258,96 @@ static void cleanupOpusState() {
   g_opusNumCh.store(0, std::memory_order_release);
 }
 
+// ─── A4b decoder helpers (JS thread only) ────────────────────────────────────
+
+// Find existing or create new PeerDecState for 'key'.  Returns nullptr on OOM or
+// decoder create failure.  Called only from the JS thread (no concurrent writes).
+static PeerDecState* findOrCreatePeer(const std::string& key) {
+  int freeSlot = -1;
+  for (int i = 0; i < MAX_PEERS; i++) {
+    PeerDecState* p = g_peerSlots[i].load(std::memory_order_acquire);
+    if (p) {
+      if (p->key == key) return p;
+    } else if (freeSlot < 0) {
+      freeSlot = i;
+    }
+  }
+  if (freeSlot < 0) return nullptr;
+
+  int err = OPUS_OK;
+  PeerDecState* np = new PeerDecState();
+  np->key = key;
+  np->dec = opus_decoder_create(48000, 1, &err);
+  if (err != OPUS_OK || !np->dec) { delete np; return nullptr; }
+  g_peerSlots[freeSlot].store(np, std::memory_order_release);
+  return np;
+}
+
+// Flush jitter buffer in sequence order; generate PLC frames for gaps.
+static void decodeAndFlush(PeerDecState* peer) {
+  float pcm[MAX_OPUS_FRAME];
+  for (;;) {
+    auto it = peer->jitter.find(peer->nextSeq);
+    if (it != peer->jitter.end()) {
+      const auto& pkt = it->second;
+      int n = opus_decode_float(peer->dec, pkt.data(), static_cast<opus_int32>(pkt.size()),
+                                pcm, MAX_OPUS_FRAME, 0);
+      if (n > 0) {
+        if (peer->fsize == 0) peer->fsize = n;
+        peer->ring.push(pcm, n);
+      } else {
+        // Corrupted packet (e.g. truncated, bad header): run PLC to keep the
+        // internal decoder state in sync with nextSeq, then still advance
+        // nextSeq below so subsequent in-order packets play correctly.
+        int fs   = peer->fsize > 0 ? peer->fsize : DEC_FRAME_DEFAULT;
+        int plcN = opus_decode_float(peer->dec, nullptr, 0, pcm, fs, 0);
+        if (plcN > 0) peer->ring.push(pcm, plcN);
+      }
+      peer->jitter.erase(it);
+      peer->nextSeq++;
+    } else {
+      // Gap: force PLC only when STRICTLY MORE than JITTER_HOLD future packets
+      // are buffered.  With JITTER_HOLD=2 and >=, a single missing packet would
+      // trigger PLC the instant 2 future packets arrived, with zero hold window.
+      // Using > gives a real buffer of JITTER_HOLD frames before concealing.
+      if (!peer->jitter.empty() && static_cast<int>(peer->jitter.size()) > JITTER_HOLD) {
+        int fs = peer->fsize > 0 ? peer->fsize : DEC_FRAME_DEFAULT;
+        int n  = opus_decode_float(peer->dec, nullptr, 0, pcm, fs, 0);
+        if (n > 0) peer->ring.push(pcm, n);
+        peer->nextSeq++;
+        continue;
+      }
+      break;
+    }
+  }
+  // Evict excess: remove the packet with the largest signed distance from
+  // nextSeq (i.e. the farthest future packet).  Using begin() (smallest uint32
+  // key) is WRONG near a sequence rollover — post-wrap keys 0,1,2 are
+  // numerically smaller than pre-wrap keys 0xFFFFFFFE,0xFFFFFFFF and would be
+  // evicted first even though they are the next packets to play.
+  // Linear scan over JITTER_MAX=8 entries is negligible cost.
+  while (static_cast<int>(peer->jitter.size()) > JITTER_MAX) {
+    auto   evict   = peer->jitter.begin();
+    int32_t maxDist = static_cast<int32_t>(evict->first - peer->nextSeq);
+    for (auto it = std::next(evict); it != peer->jitter.end(); ++it) {
+      int32_t d = static_cast<int32_t>(it->first - peer->nextSeq);
+      if (d > maxDist) { maxDist = d; evict = it; }
+    }
+    peer->jitter.erase(evict);
+  }
+}
+
+// Destroy all peer decoders.  Safe to call only after Pa_StopStream().
+static void cleanupDecoderState() {
+  for (int i = 0; i < MAX_PEERS; i++) {
+    PeerDecState* p = g_peerSlots[i].exchange(nullptr, std::memory_order_acq_rel);
+    if (p) {
+      if (p->dec) { opus_decoder_destroy(p->dec); p->dec = nullptr; }
+      delete p;
+    }
+  }
+}
+
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
 // Runs on the audio thread — must not block.
 //
@@ -230,9 +376,12 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   if (flags & paInputOverflow)    g_xrunCount.fetch_add(1, std::memory_order_relaxed);
   if (flags & paOutputUnderflow)  g_xrunCount.fetch_add(1, std::memory_order_relaxed);
 
-  // ── Native monitoring ─────────────────────────────────────────────────────
-  // Sum all input channels to mono, write to every output channel.
+  // ── Native monitoring + A4b peer mix ─────────────────────────────────────
+  // Always zero the output buffer first, then additively blend monitor signal
+  // and all inbound peer rings so neither path stomps on the other.
   if (out && outCh > 0) {
+    std::memset(out, 0, frames * static_cast<size_t>(outCh) * sizeof(float));
+
     if (in && inCh > 0 && gain > 0.0f) {
       const float invInCh = 1.0f / static_cast<float>(inCh);
       for (unsigned long f = 0; f < frames; f++) {
@@ -241,8 +390,35 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
         mono *= invInCh * gain;
         for (int c = 0; c < outCh; c++) out[f * outCh + c] = mono;
       }
-    } else {
-      std::memset(out, 0, frames * static_cast<size_t>(outCh) * sizeof(float));
+    }
+
+    // A4b: mix one mono PCM ring per remote peer into every output channel.
+    for (int s = 0; s < MAX_PEERS; s++) {
+      PeerDecState* peer = g_peerSlots[s].load(std::memory_order_acquire);
+      if (!peer) continue;
+      const uint32_t r     = peer->ring.rpos.load(std::memory_order_relaxed);
+      const uint32_t w     = peer->ring.wpos.load(std::memory_order_acquire);
+      const uint32_t avail = w - r; // unsigned subtraction handles wrap correctly
+      const uint32_t take  = avail < static_cast<uint32_t>(frames)
+                               ? avail : static_cast<uint32_t>(frames);
+      for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
+        const float samp = (f < take)
+            ? peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)]
+            : 0.0f;
+        for (int c = 0; c < outCh; c++) out[f * outCh + c] += samp;
+      }
+      peer->ring.rpos.store(r + take, std::memory_order_release);
+    }
+
+    // Hard-clip the final mix to [-1, 1] to prevent DAC distortion when
+    // several hot peers are active simultaneously (monitor + N peers can
+    // easily exceed ±1 without this guard).
+    for (unsigned long f = 0; f < frames; f++) {
+      for (int c = 0; c < outCh; c++) {
+        float& s = out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)];
+        if      (s >  1.0f) s =  1.0f;
+        else if (s < -1.0f) s = -1.0f;
+      }
     }
   }
 
@@ -596,6 +772,14 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     }
 
     Napi::Function onOpus = info[2].As<Napi::Function>();
+    // Do NOT reset g_opusTsfnFill here.  On a synchronous close→open / reinit
+    // (no event-loop yield between them — the common case), the old TSFN's
+    // pending lambdas have NOT yet drained when we reach this point.  Resetting
+    // to 0 before they drain would then drive the counter negative as each old
+    // lambda fires its fetch_sub(1), corrupting bufferFillPct in getStats().
+    // The correct approach: let the old lambdas drain naturally (they converge
+    // to 0); the new RT path only enqueues to the new TSFN after g_opusNumCh
+    // is stored with release below, so the counter remains self-consistent.
     g_opusTsfn = Napi::ThreadSafeFunction::New(env, onOpus, "kgb-opus", 64, 1);
     // Release semantics: all g_opusCh[] and g_opusTsfn writes above become
     // visible to the RT callback once it loads g_opusNumCh with acquire.
@@ -669,7 +853,14 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   const bool opusWasAlive = g_opusTsfnAlive.exchange(false, std::memory_order_acq_rel);
 
   if (g_stream) {
-    Pa_StopStream(g_stream);
+    PaError stopErr = Pa_StopStream(g_stream);
+    if (stopErr != paNoError)
+      std::fprintf(stderr, "[addon] Pa_StopStream: %s — forcing close\n",
+                   Pa_GetErrorText(stopErr));
+    // Pa_CloseStream is called unconditionally: it stops the stream if still
+    // active (e.g. ASIO driver hang) and frees resources.  cleanupDecoderState
+    // below is safe because Pa_CloseStream guarantees the RT callback is not
+    // running by the time it returns.
     Pa_CloseStream(g_stream);
     g_stream = nullptr;
   }
@@ -692,6 +883,10 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   if (opusWasAlive) {
     g_opusTsfn.Release();
   }
+
+  // A4b: destroy all peer decoders (Pa_StopStream above guarantees the RT
+  // callback is no longer running, so peer rings are no longer accessed).
+  cleanupDecoderState();
 
   return env.Undefined();
 }
@@ -761,6 +956,69 @@ Napi::Value GetStats(const Napi::CallbackInfo& info) {
   return r;
 }
 
+// ─── A4b: PushInboundOpus ─────────────────────────────────────────────────────
+// JS-thread entry point for inbound Opus packets from remote peers.
+// Signature: pushInboundOpus(peerId, channelId, sequence, timestampUs, payload)
+//   peerId, channelId : string  — form the per-decoder key
+//   sequence          : uint32  — monotonic counter from the remote encoder
+//   timestampUs       : any     — accepted for API compat, not used in decoder path
+//   payload           : ArrayBuffer — raw Opus bitstream
+Napi::Value PushInboundOpus(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+
+  if (info.Length() < 5 ||
+      !info[0].IsString() || !info[1].IsString() ||
+      !info[2].IsNumber() || !info[4].IsArrayBuffer()) {
+    Napi::TypeError::New(env,
+        "pushInboundOpus(peerId, channelId, sequence, timestampUs, payload)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  const std::string peerId    = info[0].As<Napi::String>().Utf8Value();
+  const std::string channelId = info[1].As<Napi::String>().Utf8Value();
+  const uint32_t    sequence  = info[2].As<Napi::Number>().Uint32Value();
+  Napi::ArrayBuffer payload = info[4].As<Napi::ArrayBuffer>();
+
+  // Guard: if the active stream has no output device (capture-only mode),
+  // decoded PCM has nowhere to play back.  Skipping avoids filling peer rings
+  // to no effect, saturating g_dropCount with misleading drop events, and
+  // wasting CPU on decoding that will never be heard.
+  if (g_streamOutputChannels.load(std::memory_order_acquire) == 0)
+    return env.Undefined();
+
+  const std::string key = peerId + "/" + channelId;
+  PeerDecState* peer = findOrCreatePeer(key);
+  if (!peer) return env.Undefined(); // too many peers or decoder create failed
+
+  // Initialise sequence tracking on first packet from this peer.
+  if (!peer->seqInit) {
+    peer->nextSeq = sequence;
+    peer->seqInit = true;
+  }
+
+  // Drop late arrivals.  Signed int32 subtraction handles the common uint32
+  // wrap-around case correctly up to a distance of 2^31-1 in either direction.
+  // Sequences more than 2^31 steps ahead of nextSeq are mis-classified as late
+  // (negative signed distance) and silently dropped; at 20 ms/frame this
+  // threshold is ~497 days of continuous streaming — well outside normal use.
+  if (static_cast<int32_t>(sequence - peer->nextSeq) < 0)
+    return env.Undefined();
+
+  // Buffer packet in jitter heap.
+  const uint8_t* data = static_cast<const uint8_t*>(payload.Data());
+  const size_t   len  = payload.ByteLength();
+  // Empty payload (zero-length ArrayBuffer or detached buffer where Data()→null)
+  // would store an empty vector, then opus_decode_float(dec, ptr, 0, ...) returns
+  // OPUS_INVALID_PACKET and nextSeq would advance over a silent slot — silently
+  // desynchronising the decoder.  Drop it here; the jitter PLC path will conceal.
+  if (len == 0) return env.Undefined();
+  peer->jitter.emplace(sequence, std::vector<uint8_t>(data, data + len));
+
+  decodeAndFlush(peer);
+  return env.Undefined();
+}
+
 // ─── Module init ──────────────────────────────────────────────────────────────
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("paInit",           Napi::Function::New(env, PaInit));
@@ -772,6 +1030,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setMonitorGain",   Napi::Function::New(env, SetMonitorGain));
   exports.Set("getStreamLatency", Napi::Function::New(env, GetStreamLatency));
   exports.Set("getStats",         Napi::Function::New(env, GetStats));
+  exports.Set("pushInboundOpus",  Napi::Function::New(env, PushInboundOpus));
   return exports;
 }
 

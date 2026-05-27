@@ -116,15 +116,25 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     return () => opusHandlers.delete(handler)
   },
 
-  /** A4: Push an inbound Opus packet (received from a remote peer's DataChannel)
+  /** A4b: Push an inbound Opus packet (received from a remote peer's DataChannel)
    *  to the native decoder in the utility process.
    *  packet: { peerId: string, channelId: string, sequence: number,
    *            timestampUs: BigInt, payload: ArrayBuffer }
-   *  Decoder implementation is in A4b; the IPC channel is wired up here.
-   *  @returns {boolean} false if the audio port is not yet established
+   *  Fast path: sends kind:'opus-in' directly over the audio MessagePort to avoid
+   *  the main-process serialisation hop.  Falls back to ipcRenderer.invoke when
+   *  the port is not yet established.
+   *  @returns {true|false|Promise<{ok:boolean}>}
    */
   pushInboundOpus: (packet) => {
     if (!packet || !packet.payload) return false
+    if (audioPort) {
+      try {
+        // kind must come AFTER the spread: if packet carries kind:'opus-out'
+        // (loopback path) the spread would overwrite 'opus-in' otherwise.
+        audioPort.postMessage({ ...packet, kind: 'opus-in' })
+        return true
+      } catch { /* port closed — fall through to IPC */ }
+    }
     return ipcRenderer.invoke('audio:push-inbound-opus', packet)
   },
 

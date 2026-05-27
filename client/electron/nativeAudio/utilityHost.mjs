@@ -84,6 +84,25 @@ function doOpenStream(opts, port1) {
   audioDataPort = port1
   audioDataPort.start()
 
+  // A4b: receive inbound Opus directly from renderer over the port — avoids
+  // the main-process IPC hop on the hot audio path.
+  audioDataPort.on('message', (portEvent) => {
+    const pmsg = portEvent?.data
+    if (!pmsg || pmsg.kind !== 'opus-in') return
+    const a = loadAddon()
+    // Guard: do not allocate peer decoder state when no PA stream is running.
+    // Without this check, packets arriving after closeStream() (but while the
+    // port is still alive) would fill all 32 g_peerSlots with orphan decoders,
+    // blocking legitimate peers after the next openStream().
+    if (!a.isStreamActive?.()) return
+    try {
+      a.pushInboundOpus(pmsg.peerId, pmsg.channelId, pmsg.sequence,
+                        pmsg.timestampUs, pmsg.payload)
+    } catch (e) {
+      console.error('[utility] pushInboundOpus error:', e)  // log full Error (stack)
+    }
+  })
+
   // Tear down PA stream when the renderer-side port closes (window reload,
   // BrowserWindow destroyed, devtools-only crash). Without this, the audio
   // thread keeps burning CPU while every postMessage throws.
@@ -235,6 +254,28 @@ process.parentPort.on('message', (event) => {
 
       case 'isStreamActive': {
         try { reply(id, !!loadAddon().isStreamActive()) } catch { reply(id, false) }
+        return
+      }
+
+      // A4b: inbound Opus packet from main-process IPC fallback path.
+      // Hot path uses the direct audioPort 'opus-in' message (see doOpenStream above).
+      case 'pushInboundOpus': {
+        const a = loadAddon()
+        // Mirror the isStreamActive guard from the hot-path handler above.
+        // Without it, packets arriving before openStream or after closeStream
+        // allocate orphan PeerDecState slots and can exhaust all MAX_PEERS=32
+        // slots before any real stream is opened.
+        if (!a.isStreamActive?.()) {
+          reply(id, { ok: false, error: 'no active stream' })
+          return
+        }
+        try {
+          a.pushInboundOpus(opts.peerId, opts.channelId, opts.sequence,
+                            opts.timestampUs, opts.payload)
+          reply(id, { ok: true })
+        } catch (e) {
+          replyError(id, e)
+        }
         return
       }
 

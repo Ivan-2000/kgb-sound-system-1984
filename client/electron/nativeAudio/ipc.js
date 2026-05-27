@@ -85,6 +85,16 @@ function sendRequest(op, opts, transfer) {
       }
     } catch (e) {
       pending.delete(id)
+      // postMessage threw before the transfer happened (e.g. utility already
+      // exited).  The ports were never transferred to the utility process, so
+      // close them here to avoid a handle leak (GC would eventually collect
+      // them, but explicit close is deterministic and avoids confusion in
+      // crash-recovery cycles that call reinit() repeatedly).
+      if (transfer) {
+        for (const port of transfer) {
+          try { port.close() } catch { /* already closed */ }
+        }
+      }
       reject(e)
     }
   })
@@ -166,14 +176,12 @@ export function setupAudioIPC() {
     catch { return { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 } }
   })
 
-  // A4 stub for inbound Opus from WebRTC DataChannel (A5 integration).
-  // Renderer sends packets here; utility will decode and mix to output.
-  // Decoder implementation is deferred to A4b.
+  // A4b: inbound Opus from remote peer → utility decoder → PortAudio output mix.
+  // Hot path bypasses this via the direct audioPort MessagePort (see preload.js);
+  // this IPC handler serves as the fallback when the port is not yet established.
   ipcMain.handle('audio:push-inbound-opus', async (_event, packet) => {
-    // packet: { peerId, channelId, sequence, timestampUs, payload: ArrayBuffer }
-    // TODO(A4b): forward to utility decoder via sendRequest('pushInboundOpus', packet)
-    void packet
-    return { ok: true }
+    try { return await sendRequest('pushInboundOpus', packet) }
+    catch (e) { return { ok: false, error: e.message } }
   })
 }
 

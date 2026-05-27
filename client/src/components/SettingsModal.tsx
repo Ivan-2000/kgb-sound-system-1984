@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
 
 type RecordingFormat = 'wav' | 'mp3'
 
@@ -15,6 +16,7 @@ export function SettingsModal({ onClose }: Props) {
   const [selectedInput, setSelectedInput] = useState('')
   const [selectedOutput, setSelectedOutput] = useState('')
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
+  const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
   const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -30,6 +32,10 @@ export function SettingsModal({ onClose }: Props) {
   useEffect(() => {
     localStorage.setItem('kgb_recording_format', recordingFormat)
   }, [recordingFormat])
+
+  useEffect(() => {
+    return nativeAudioController.subscribeState(setNativeSnapshot)
+  }, [])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -142,6 +148,162 @@ export function SettingsModal({ onClose }: Props) {
               </button>
             </div>
           </section>
+
+          {/* ── Native Audio (PortAudio) ─────────────────────── */}
+          {window.nativeAudio !== undefined && (() => {
+            const inputDevices = nativeSnapshot.devices.filter((d) => d.inputChannels > 0)
+            const outputDevices = nativeSnapshot.devices.filter((d) => d.outputChannels > 0)
+            const currentInputValue = nativeSnapshot.selectedInputId !== null && nativeSnapshot.inputHostApiKind
+              ? `${nativeSnapshot.selectedInputId}::${nativeSnapshot.inputHostApiKind}`
+              : ''
+            const currentOutputValue = nativeSnapshot.selectedOutputId !== null && nativeSnapshot.outputHostApiKind
+              ? `${nativeSnapshot.selectedOutputId}::${nativeSnapshot.outputHostApiKind}`
+              : ''
+            return (
+              <section className="settings-section">
+                <h3 className="settings-section-title">Native Audio (PortAudio)</h3>
+
+                <div className="settings-field">
+                  <button
+                    type="button"
+                    className="ghost-action settings-reinit-btn"
+                    onClick={() => { void nativeAudioController.loadDevices() }}
+                  >
+                    Load devices
+                  </button>
+                </div>
+
+                <div className="settings-field">
+                  <label className="settings-label" htmlFor="native-input-device">
+                    Input device
+                  </label>
+                  <select
+                    id="native-input-device"
+                    className="settings-select"
+                    value={currentInputValue}
+                    onChange={(e) => {
+                      if (!e.target.value) return
+                      const sep = e.target.value.indexOf('::')
+                      const idStr = e.target.value.slice(0, sep)
+                      const kind = e.target.value.slice(sep + 2)
+                      nativeAudioController.selectInput(Number(idStr), kind)
+                    }}
+                    aria-label="Native audio input device"
+                  >
+                    <option value="">— select —</option>
+                    {inputDevices.flatMap((dev) =>
+                      dev.hostApis.map((api) => (
+                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
+                          {dev.name} [{api.kind}]
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="settings-field">
+                  <label className="settings-label" htmlFor="native-output-device">
+                    Output device
+                  </label>
+                  <select
+                    id="native-output-device"
+                    className="settings-select"
+                    value={currentOutputValue}
+                    onChange={(e) => {
+                      if (!e.target.value) return
+                      const sep = e.target.value.indexOf('::')
+                      const idStr = e.target.value.slice(0, sep)
+                      const kind = e.target.value.slice(sep + 2)
+                      nativeAudioController.selectOutput(Number(idStr), kind)
+                    }}
+                    aria-label="Native audio output device"
+                  >
+                    <option value="">— same as input —</option>
+                    {outputDevices.flatMap((dev) =>
+                      dev.hostApis.map((api) => (
+                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
+                          {dev.name} [{api.kind}]
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="settings-field">
+                  <label className="settings-label" htmlFor="native-buffer-size">
+                    Buffer size
+                  </label>
+                  <select
+                    id="native-buffer-size"
+                    className="settings-select"
+                    value={nativeSnapshot.bufferSize}
+                    onChange={(e) => {
+                      nativeAudioController.setBufferSize(Number(e.target.value) as 64 | 128 | 256 | 512)
+                    }}
+                    aria-label="Buffer size"
+                  >
+                    {([64, 128, 256, 512] as const).map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="settings-field">
+                  <label className="settings-label" htmlFor="native-monitor-gain">
+                    Monitor: {nativeSnapshot.monitorGain.toFixed(2)}
+                  </label>
+                  <input
+                    id="native-monitor-gain"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={nativeSnapshot.monitorGain}
+                    onChange={(e) => nativeAudioController.setMonitorGain(Number(e.target.value))}
+                    className="channel-slider"
+                    aria-label="Monitor gain"
+                  />
+                </div>
+
+                <div className="settings-field" style={{ gap: '0.5rem', display: 'flex', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="ghost-action settings-reinit-btn"
+                    disabled={nativeSnapshot.selectedInputId === null || nativeSnapshot.streamActive}
+                    onClick={() => { void nativeAudioController.openStream() }}
+                  >
+                    Open Stream
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-action settings-reinit-btn"
+                    disabled={!nativeSnapshot.streamActive}
+                    onClick={() => { void nativeAudioController.closeStream() }}
+                  >
+                    Close Stream
+                  </button>
+                  <span
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      background: nativeSnapshot.streamActive ? '#1a7a1a' : '#7a1a1a',
+                      color: '#fff',
+                    }}
+                  >
+                    {nativeSnapshot.streamActive ? 'ACTIVE' : 'INACTIVE'}
+                  </span>
+                </div>
+
+                {nativeSnapshot.error !== null && (
+                  <div className="settings-field">
+                    <p className="network-error" style={{ margin: 0 }}>{nativeSnapshot.error}</p>
+                  </div>
+                )}
+              </section>
+            )
+          })()}
 
           {/* ── Recording ────────────────────────────────────── */}
           <section className="settings-section">

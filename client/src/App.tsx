@@ -11,6 +11,8 @@ import {
 import { VALID_STEP_COUNTS, type StepCount } from './protocol/syncProtocol'
 import { roomSyncClient, type RoomState, type RoomParticipant } from './networking/roomSyncClient'
 import { peerManager } from './rtc/peerManager'
+import { nativeRtcManager } from './rtc/nativeRtcManager'
+import { nativeAudioController } from './audio/nativeAudioController'
 import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
@@ -124,6 +126,20 @@ function App() {
     })
   }, [])
 
+  // 5a: Wire nativeRtcManager signal sender once on mount
+  useEffect(() => {
+    nativeRtcManager.setSendSignal((targetSocketId, signal) => {
+      void roomSyncClient.sendRtcSignal(targetSocketId, signal)
+    })
+  }, [])
+
+  // 5e: Keep nativeRtcManager in sync with nativeAudioController stream state
+  useEffect(() => {
+    return nativeAudioController.subscribeState((snap) => {
+      nativeRtcManager.setActive(snap.streamActive)
+    })
+  }, [])
+
   // Active speaker detection — polls mixer levels via requestAnimationFrame
   useEffect(() => {
     const THRESHOLD = 0.04  // RMS level to be considered "speaking"
@@ -171,14 +187,18 @@ function App() {
     })
   }, [])
 
-  // RTC signal relay → peerManager
+  // 5b: RTC signal relay — route by _kgbAudio flag to avoid conflicts with SimplePeer
   useEffect(() => {
     return roomSyncClient.subscribeRtcSignals(({ fromSocketId, signal }) => {
-      peerManager.handleSignal(fromSocketId, signal as Parameters<typeof peerManager.handleSignal>[1])
+      if ((signal as { _kgbAudio?: boolean })?._kgbAudio) {
+        nativeRtcManager.handleSignal(fromSocketId, signal)
+      } else {
+        peerManager.handleSignal(fromSocketId, signal as Parameters<typeof peerManager.handleSignal>[1])
+      }
     })
   }, [])
 
-  // Participant join/leave → update list + peer connections
+  // 5c/5d: Participant join/leave → update list + peer connections (SimplePeer + nativeRtcManager)
   useEffect(() => {
     return roomSyncClient.subscribeParticipants((event) => {
       if (event.type === 'participant_join') {
@@ -187,8 +207,12 @@ function App() {
           if (prev.some((p) => p.socketId === socketId)) return prev
           return [...prev, { socketId, username: joinedUsername, isHost: false, micEnabled: true, cameraEnabled: true, hostMuted: false }]
         })
-        // Existing participant initiates WebRTC with the newcomer
+        // Existing participant initiates WebRTC with the newcomer.
+        // The newcomer gets existing peers from the join ACK (setParticipants) and
+        // never calls addPeer for them via this handler — so the existing participant
+        // is always the sole initiator, matching peerManager's pattern.
         peerManager.addPeer(socketId, true)
+        nativeRtcManager.addPeer(socketId, true) // 5c
         return
       }
 
@@ -196,6 +220,7 @@ function App() {
         const { socketId } = event.payload
         setParticipants((prev) => prev.filter((p) => p.socketId !== socketId))
         peerManager.removePeer(socketId)
+        nativeRtcManager.removePeer(socketId) // 5d
         if (fullscreenSocketId === socketId) setFullscreenSocketId(null)
       }
     })
@@ -271,11 +296,15 @@ function App() {
   useEffect(
     () =>
       roomSyncClient.subscribeKicked(() => {
+        nativeRtcManager.removeAllPeers() // 5f
         setNetworkError('You were removed from the room by the host.')
         setParticipants([])
       }),
     [],
   )
+
+  // 5f: Clean up native RTC peers on unmount
+  useEffect(() => () => { nativeRtcManager.removeAllPeers() }, [])
 
   useEffect(
     () =>
