@@ -228,20 +228,28 @@ class NativeRtcManager {
     channel.onopen = () => {
       const entry = this.peers.get(socketId)
       if (!entry || !entry.isInitiator) return
+
+      // Guard: compare the entry reference (not just socketId) so a stale
+      // closure cannot corrupt a new peer that reuses the same socketId after
+      // a disconnect/reconnect cycle.
+      const fireStale = () => {
+        if (this.peers.get(socketId) !== entry) return
+        entry.rttMs = null
+        entry.stalenessTimer = null
+        for (const fn of this.rttListeners) fn(socketId, null)
+      }
+
+      // Arm the initial staleness guard before the first ping fires.
+      // The first ping goes out 2 s from now; allow 6 s for its pong → 8 s total.
+      entry.stalenessTimer = setTimeout(fireStale, 8000)
+
       entry.pingTimer = setInterval(() => {
         if (channel.readyState !== 'open') return
         const t = performance.now()
         channel.send(JSON.stringify({ type: 'ping', t }))
-        // Staleness guard: if no pong arrives within 6 s (3 missed pings),
-        // null out rttMs and notify listeners so the UI stops showing a stale value.
+        // Reset the staleness guard: 6 s from now, if no pong arrived, null out RTT.
         if (entry.stalenessTimer !== null) clearTimeout(entry.stalenessTimer)
-        entry.stalenessTimer = setTimeout(() => {
-          const e = this.peers.get(socketId)
-          if (!e) return
-          e.rttMs = null
-          e.stalenessTimer = null
-          for (const fn of this.rttListeners) fn(socketId, null)
-        }, 6000)
+        entry.stalenessTimer = setTimeout(fireStale, 6000)
       }, 2000)
     }
     channel.onmessage = (e) => {
@@ -253,6 +261,8 @@ class NativeRtcManager {
       if (msg.type === 'ping') {
         if (channel.readyState === 'open') channel.send(JSON.stringify({ type: 'pong', t: msg.t }))
       } else if (msg.type === 'pong') {
+        // Reject late pongs that arrive after the channel has already closed.
+        if (channel.readyState !== 'open') return
         if (entry.stalenessTimer !== null) { clearTimeout(entry.stalenessTimer); entry.stalenessTimer = null }
         entry.rttMs = Math.round(performance.now() - msg.t)
         for (const fn of this.rttListeners) fn(socketId, entry.rttMs)

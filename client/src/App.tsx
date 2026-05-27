@@ -88,6 +88,10 @@ function App() {
   const [micEnabled, setMicEnabled] = useState(true)
   const [cameraEnabled, setCameraEnabled] = useState(true)
   const [fullscreenSocketId, setFullscreenSocketId] = useState<string | null>(null)
+  // Ref keeps the subscribeParticipants closure up-to-date without re-subscribing
+  // every time fullscreenSocketId changes (avoids a teardown/re-attach race).
+  const fullscreenSocketIdRef = useRef(fullscreenSocketId)
+  fullscreenSocketIdRef.current = fullscreenSocketId
   const [masterVolume, setMasterVolume] = useState(100)
   const [activeSpeakerSocketId, setActiveSpeakerSocketId] = useState<string | null>(null)
   const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
@@ -222,7 +226,7 @@ function App() {
         setParticipants((prev) => prev.filter((p) => p.socketId !== socketId))
         peerManager.removePeer(socketId)
         nativeRtcManager.removePeer(socketId) // 5d
-        if (fullscreenSocketId === socketId) setFullscreenSocketId(null)
+        if (fullscreenSocketIdRef.current === socketId) setFullscreenSocketId(null)
         setNativeRttMap((prev) => {
           const next = { ...prev }
           delete next[socketId]
@@ -230,7 +234,7 @@ function App() {
         })
       }
     })
-  }, [fullscreenSocketId])
+  }, [])
 
   useEffect(() => drumMachine.subscribe(setMachineState), [])
   useEffect(() => roomSyncClient.subscribeRoomState(setRoomState), [])

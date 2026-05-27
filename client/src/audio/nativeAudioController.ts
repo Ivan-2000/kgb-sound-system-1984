@@ -140,6 +140,17 @@ class NativeAudioController {
   async reinit(partialOpts?: Partial<NativeAudioStreamOpts>): Promise<NativeAudioStreamResult> {
     if (!window.nativeAudio) return { ok: false, error: 'nativeAudio not available' }
 
+    // Snapshot current settings so we can roll back on failure — mutations
+    // happen before the async call and must not persist if reinit() rejects.
+    const prevSampleRate = this.sampleRate
+    const prevBufferSize = this.bufferSize
+    const prevInputChannels = this.inputChannels
+    const prevSelectedInputId = this.selectedInputId
+    const prevSelectedOutputId = this.selectedOutputId
+    const prevInputHostApiKind = this.inputHostApiKind
+    const prevOutputHostApiKind = this.outputHostApiKind
+    const prevMonitorGain = this.monitorGain
+
     if (partialOpts) {
       if (partialOpts.sampleRate !== undefined) this.sampleRate = partialOpts.sampleRate
       if (partialOpts.bufferSize !== undefined) this.bufferSize = partialOpts.bufferSize
@@ -151,9 +162,13 @@ class NativeAudioController {
       if (partialOpts.monitorGain !== undefined) this.monitorGain = partialOpts.monitorGain
     }
 
-    if (this.selectedInputId === null) return { ok: false, error: 'No input device selected' }
+    // Assign to a local const so TypeScript can narrow the null check below
+    // (class properties are not narrowed after an if-check in strict mode).
+    const inputDeviceId = this.selectedInputId
+    if (inputDeviceId === null) return { ok: false, error: 'No input device selected' }
 
     const opts: NativeAudioStreamOpts = {
+      inputDeviceId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
@@ -161,7 +176,6 @@ class NativeAudioController {
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
-    if (this.selectedInputId !== null) opts.inputDeviceId = this.selectedInputId
     if (this.selectedOutputId !== null) opts.outputDeviceId = this.selectedOutputId
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
     if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
@@ -173,6 +187,15 @@ class NativeAudioController {
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
     } else {
+      // Roll back all settings mutations so callers see a consistent state.
+      this.sampleRate = prevSampleRate
+      this.bufferSize = prevBufferSize
+      this.inputChannels = prevInputChannels
+      this.selectedInputId = prevSelectedInputId
+      this.selectedOutputId = prevSelectedOutputId
+      this.inputHostApiKind = prevInputHostApiKind
+      this.outputHostApiKind = prevOutputHostApiKind
+      this.monitorGain = prevMonitorGain
       this.error = result.error ?? 'reinit failed'
       this.inputLatencyMs = null
       this.outputLatencyMs = null
