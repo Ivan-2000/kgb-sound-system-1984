@@ -8,6 +8,7 @@ export interface NativeAudioSnapshot {
   sampleRate: number
   bufferSize: 64 | 128 | 256 | 512
   inputChannels: number
+  activeInputChannels: number
   monitorGain: number
   inputLatencyMs: number | null
   outputLatencyMs: number | null
@@ -26,6 +27,7 @@ class NativeAudioController {
   private sampleRate = 48000
   private bufferSize: 64 | 128 | 256 | 512 = 256
   private inputChannels = 2
+  private activeInputChannels = 0
   private monitorGain = 0
   private inputLatencyMs: number | null = null
   private outputLatencyMs: number | null = null
@@ -35,6 +37,7 @@ class NativeAudioController {
   constructor() {
     window.nativeAudio?.onEngineCrashed(() => {
       this.streamActive = false
+      this.activeInputChannels = 0
       this.inputLatencyMs = null
       this.outputLatencyMs = null
       this.error = 'Audio engine crashed'
@@ -58,6 +61,7 @@ class NativeAudioController {
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
+      activeInputChannels: this.activeInputChannels,
       monitorGain: this.monitorGain,
       inputLatencyMs: this.inputLatencyMs,
       outputLatencyMs: this.outputLatencyMs,
@@ -116,6 +120,7 @@ class NativeAudioController {
     const result = await window.nativeAudio.openStream(opts)
     if (result.ok) {
       this.streamActive = true
+      this.activeInputChannels = result.inputChannels ?? this.inputChannels
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
@@ -132,6 +137,7 @@ class NativeAudioController {
     if (!window.nativeAudio) return
     await window.nativeAudio.closeStream()
     this.streamActive = false
+    this.activeInputChannels = 0
     this.inputLatencyMs = null
     this.outputLatencyMs = null
     this.notify()
@@ -145,6 +151,7 @@ class NativeAudioController {
     const prevSampleRate = this.sampleRate
     const prevBufferSize = this.bufferSize
     const prevInputChannels = this.inputChannels
+    const prevActiveInputChannels = this.activeInputChannels
     const prevSelectedInputId = this.selectedInputId
     const prevSelectedOutputId = this.selectedOutputId
     const prevInputHostApiKind = this.inputHostApiKind
@@ -183,6 +190,7 @@ class NativeAudioController {
     const result = await window.nativeAudio.reinit(opts)
     if (result.ok) {
       this.streamActive = true
+      this.activeInputChannels = result.inputChannels ?? this.inputChannels
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
@@ -191,6 +199,7 @@ class NativeAudioController {
       this.sampleRate = prevSampleRate
       this.bufferSize = prevBufferSize
       this.inputChannels = prevInputChannels
+      this.activeInputChannels = prevActiveInputChannels
       this.selectedInputId = prevSelectedInputId
       this.selectedOutputId = prevSelectedOutputId
       this.inputHostApiKind = prevInputHostApiKind

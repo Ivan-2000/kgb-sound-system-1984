@@ -12,10 +12,11 @@ import { VALID_STEP_COUNTS, type StepCount } from './protocol/syncProtocol'
 import { roomSyncClient, type RoomState, type RoomParticipant } from './networking/roomSyncClient'
 import { peerManager } from './rtc/peerManager'
 import { nativeRtcManager } from './rtc/nativeRtcManager'
-import { nativeAudioController } from './audio/nativeAudioController'
+import { nativeAudioController, type NativeAudioSnapshot } from './audio/nativeAudioController'
 import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
+import { LocalMixerStrip } from './components/LocalMixerStrip'
 import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
 import type { SyncEvent } from './protocol/syncProtocol'
@@ -96,6 +97,8 @@ function App() {
   const [activeSpeakerSocketId, setActiveSpeakerSocketId] = useState<string | null>(null)
   const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
   const [nativeRttMap, setNativeRttMap] = useState<Record<string, number>>({})
+  const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
+  const [sendEnabled, setSendEnabled] = useState<ReadonlySet<number>>(new Set())
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -141,9 +144,23 @@ function App() {
   // 5e: Keep nativeRtcManager in sync with nativeAudioController stream state
   useEffect(() => {
     return nativeAudioController.subscribeState((snap) => {
+      setNativeSnapshot(snap)
       nativeRtcManager.setActive(snap.streamActive)
     })
   }, [])
+
+  // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
+  useEffect(() => {
+    if (!nativeSnapshot.streamActive) {
+      setSendEnabled(new Set())
+      nativeRtcManager.clearSendChannels()
+      return
+    }
+    const defaults = new Set([0])
+    setSendEnabled(defaults)
+    nativeRtcManager.clearSendChannels()
+    nativeRtcManager.setSendEnabled(0, true)
+  }, [nativeSnapshot.streamActive, nativeSnapshot.activeInputChannels])
 
   // Active speaker detection — polls mixer levels via requestAnimationFrame
   useEffect(() => {
@@ -675,6 +692,20 @@ function App() {
   const handleMasterVolume = (v: number) => {
     setMasterVolume(v)
     mixerEngine.setMasterVolume(v / 100)
+  }
+
+  const handleSendToggle = (channelIndex: number) => {
+    setSendEnabled((prev) => {
+      const next = new Set(prev)
+      if (next.has(channelIndex)) {
+        next.delete(channelIndex)
+        nativeRtcManager.setSendEnabled(channelIndex, false)
+      } else {
+        next.add(channelIndex)
+        nativeRtcManager.setSendEnabled(channelIndex, true)
+      }
+      return next
+    })
   }
 
   const handleCameraToggle = async () => {
@@ -1397,6 +1428,22 @@ function App() {
                 <span className="channel-value">{masterVolume}</span>
               </div>
             </div>
+
+            {/* Local input channels — visible when PortAudio stream is active */}
+            {nativeSnapshot.streamActive && nativeSnapshot.activeInputChannels > 0 && (
+              <div className="mixer-local">
+                <p className="eyebrow">Local</p>
+                {Array.from({ length: nativeSnapshot.activeInputChannels }, (_, i) => (
+                  <LocalMixerStrip
+                    key={i}
+                    channelIndex={i}
+                    label={`Ch ${i + 1}`}
+                    sendEnabled={sendEnabled.has(i)}
+                    onSendToggle={() => handleSendToggle(i)}
+                  />
+                ))}
+              </div>
+            )}
 
             {/* Remote participant channels — each routed through Web Audio */}
             {participants.length === 0 ? (

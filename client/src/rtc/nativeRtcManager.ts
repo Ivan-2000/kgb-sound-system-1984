@@ -68,9 +68,19 @@ class NativeRtcManager {
   private onOpusUnsub: (() => void) | null = null
   private active = false
   private rttListeners = new Set<(peerId: string, rttMs: number | null) => void>()
+  private sendEnabled = new Set<number>()
 
   setSendSignal(fn: SignalFn): void {
     this.sendSignalFn = fn
+  }
+
+  setSendEnabled(channelIndex: number, enabled: boolean): void {
+    if (enabled) this.sendEnabled.add(channelIndex)
+    else this.sendEnabled.delete(channelIndex)
+  }
+
+  clearSendChannels(): void {
+    this.sendEnabled.clear()
   }
 
   setActive(active: boolean): void {
@@ -293,6 +303,7 @@ class NativeRtcManager {
   }
 
   private broadcastOpusPacket(msg: OpusOutMessage): void {
+    if (!this.sendEnabled.has(msg.channelIndex)) return
     for (const entry of this.peers.values()) {
       if (entry.channel?.readyState === 'open') {
         entry.channel.send(encodePacket(msg))
