@@ -228,17 +228,20 @@ class NativeRtcManager {
       const entry = this.peers.get(socketId)
       if (!entry || !entry.isInitiator) return
       entry.pingTimer = setInterval(() => {
+        if (channel.readyState !== 'open') return
         const t = performance.now()
         entry.pendingSendTime = t
         channel.send(JSON.stringify({ type: 'ping', t }))
       }, 2000)
     }
     channel.onmessage = (e) => {
-      const msg = JSON.parse(e.data as string) as CtrlMsg
+      if (typeof e.data !== 'string') return
+      let msg: CtrlMsg
+      try { msg = JSON.parse(e.data) as CtrlMsg } catch { return }
       const entry = this.peers.get(socketId)
       if (!entry) return
       if (msg.type === 'ping') {
-        channel.send(JSON.stringify({ type: 'pong', t: msg.t }))
+        if (channel.readyState === 'open') channel.send(JSON.stringify({ type: 'pong', t: msg.t }))
       } else if (msg.type === 'pong') {
         entry.rttMs = Math.round(performance.now() - msg.t)
         for (const fn of this.rttListeners) fn(socketId, entry.rttMs)

@@ -311,6 +311,7 @@ function App() {
         nativeRtcManager.removeAllPeers() // 5f
         setNetworkError('You were removed from the room by the host.')
         setParticipants([])
+        setNativeRttMap({})
       }),
     [],
   )

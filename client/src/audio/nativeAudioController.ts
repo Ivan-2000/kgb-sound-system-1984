@@ -35,6 +35,8 @@ class NativeAudioController {
   constructor() {
     window.nativeAudio?.onEngineCrashed(() => {
       this.streamActive = false
+      this.inputLatencyMs = null
+      this.outputLatencyMs = null
       this.error = 'Audio engine crashed'
       this.notify()
     })
@@ -119,6 +121,8 @@ class NativeAudioController {
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
     } else {
       this.error = result.error ?? 'openStream failed'
+      this.inputLatencyMs = null
+      this.outputLatencyMs = null
     }
     this.notify()
     return result
@@ -170,6 +174,8 @@ class NativeAudioController {
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
     } else {
       this.error = result.error ?? 'reinit failed'
+      this.inputLatencyMs = null
+      this.outputLatencyMs = null
     }
     this.notify()
     return result
