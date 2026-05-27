@@ -91,6 +91,7 @@ function App() {
   const [masterVolume, setMasterVolume] = useState(100)
   const [activeSpeakerSocketId, setActiveSpeakerSocketId] = useState<string | null>(null)
   const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
+  const [nativeRttMap, setNativeRttMap] = useState<Record<string, number>>({})
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -222,6 +223,11 @@ function App() {
         peerManager.removePeer(socketId)
         nativeRtcManager.removePeer(socketId) // 5d
         if (fullscreenSocketId === socketId) setFullscreenSocketId(null)
+        setNativeRttMap((prev) => {
+          const next = { ...prev }
+          delete next[socketId]
+          return next
+        })
       }
     })
   }, [fullscreenSocketId])
@@ -275,6 +281,12 @@ function App() {
       }),
     [],
   )
+
+  useEffect(() => {
+    return nativeRtcManager.subscribeRtt((peerId, rttMs) => {
+      setNativeRttMap((prev) => ({ ...prev, [peerId]: rttMs }))
+    })
+  }, [])
 
   useEffect(
     () =>
@@ -1432,6 +1444,11 @@ function App() {
                       {rtts.has(p.socketId) ? (
                         <span className="rtt-badge">{rtts.get(p.socketId)} ms</span>
                       ) : null}
+                      {nativeRttMap[p.socketId] !== undefined && (
+                        <span className="participant-dc-rtt">
+                          DC {nativeRttMap[p.socketId]} ms
+                        </span>
+                      )}
                     </div>
                     <div className="participant-right">
                       {roomState.isHost && !p.isHost && (

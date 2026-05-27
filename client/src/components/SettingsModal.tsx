@@ -265,6 +265,15 @@ export function SettingsModal({ onClose }: Props) {
                   />
                 </div>
 
+                {(nativeSnapshot.inputLatencyMs !== null || nativeSnapshot.outputLatencyMs !== null) && (
+                  <div className="settings-field">
+                    <span className="settings-label">Audio latency</span>
+                    <span className="settings-stub">
+                      In: {nativeSnapshot.inputLatencyMs ?? '—'} ms &nbsp;|&nbsp; Out: {nativeSnapshot.outputLatencyMs ?? '—'} ms
+                    </span>
+                  </div>
+                )}
+
                 <div className="settings-field" style={{ gap: '0.5rem', display: 'flex', alignItems: 'center' }}>
                   <button
                     type="button"

@@ -20,8 +20,14 @@ const ICE_SERVERS: RTCIceServer[] = [
 type PeerData = {
   pc: RTCPeerConnection
   channel: RTCDataChannel | null
+  ctrl: RTCDataChannel | null
   pendingCandidates: RTCIceCandidateInit[]
+  isInitiator: boolean
+  rttMs: number | null
+  pingTimer: ReturnType<typeof setInterval> | null
+  pendingSendTime: number | null
 }
+type CtrlMsg = { type: 'ping'; t: number } | { type: 'pong'; t: number }
 type SignalFn = (targetSocketId: string, signal: unknown) => void
 
 // Header layout (13 bytes):
@@ -61,6 +67,7 @@ class NativeRtcManager {
   private sendSignalFn: SignalFn | null = null
   private onOpusUnsub: (() => void) | null = null
   private active = false
+  private rttListeners = new Set<(peerId: string, rttMs: number) => void>()
 
   setSendSignal(fn: SignalFn): void {
     this.sendSignalFn = fn
@@ -83,7 +90,7 @@ class NativeRtcManager {
     if (this.peers.has(socketId)) return
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    const entry: PeerData = { pc, channel: null, pendingCandidates: [] }
+    const entry: PeerData = { pc, channel: null, ctrl: null, pendingCandidates: [], isInitiator: initiator, rttMs: null, pingTimer: null, pendingSendTime: null }
     this.peers.set(socketId, entry)
 
     if (initiator) {
@@ -91,13 +98,21 @@ class NativeRtcManager {
         const ch = pc.createDataChannel('kgb-opus', { ordered: false, maxRetransmits: 0 })
         entry.channel = ch
         this.wireChannel(socketId, ch)
+        const ctrl = pc.createDataChannel('kgb-ctrl', { ordered: true })
+        entry.ctrl = ctrl
+        this.wireCtrl(socketId, ctrl)
       } catch (e) {
         console.error('[nativeRtc] createDataChannel failed', e)
       }
     } else {
       pc.ondatachannel = (e) => {
-        entry.channel = e.channel
-        this.wireChannel(socketId, e.channel)
+        if (e.channel.label === 'kgb-ctrl') {
+          entry.ctrl = e.channel
+          this.wireCtrl(socketId, e.channel)
+        } else {
+          entry.channel = e.channel
+          this.wireChannel(socketId, e.channel)
+        }
       }
     }
 
@@ -203,8 +218,45 @@ class NativeRtcManager {
   private cleanupPeer(socketId: string): void {
     const entry = this.peers.get(socketId)
     if (!entry) return
+    if (entry.pingTimer !== null) clearInterval(entry.pingTimer)
     try { entry.pc.close() } catch { /* ignored */ }
     this.peers.delete(socketId)
+  }
+
+  private wireCtrl(socketId: string, channel: RTCDataChannel): void {
+    channel.onopen = () => {
+      const entry = this.peers.get(socketId)
+      if (!entry || !entry.isInitiator) return
+      entry.pingTimer = setInterval(() => {
+        const t = performance.now()
+        entry.pendingSendTime = t
+        channel.send(JSON.stringify({ type: 'ping', t }))
+      }, 2000)
+    }
+    channel.onmessage = (e) => {
+      const msg = JSON.parse(e.data as string) as CtrlMsg
+      const entry = this.peers.get(socketId)
+      if (!entry) return
+      if (msg.type === 'ping') {
+        channel.send(JSON.stringify({ type: 'pong', t: msg.t }))
+      } else if (msg.type === 'pong') {
+        entry.rttMs = Math.round(performance.now() - msg.t)
+        for (const fn of this.rttListeners) fn(socketId, entry.rttMs)
+      }
+    }
+    channel.onclose = () => {
+      const entry = this.peers.get(socketId)
+      if (!entry) return
+      if (entry.pingTimer !== null) {
+        clearInterval(entry.pingTimer)
+        entry.pingTimer = null
+      }
+    }
+  }
+
+  subscribeRtt(fn: (peerId: string, rttMs: number) => void): () => void {
+    this.rttListeners.add(fn)
+    return () => this.rttListeners.delete(fn)
   }
 
   private wireChannel(socketId: string, channel: RTCDataChannel): void {

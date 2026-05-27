@@ -3,7 +3,7 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.16**
+Версия: **1.17**
 Обновлён: 2026-05-27
 
 ---
@@ -173,13 +173,13 @@ B: ├─ B1 signaling ─────┤
 - [x] **A5** — Передача Opus-потоков через WebRTC DataChannel (замена MediaStream). Реализовано: `nativeRtcManager.ts` — один `RTCPeerConnection` + `RTCDataChannel('kgb-opus', {ordered:false, maxRetransmits:0})` на каждого пира; бинарный заголовок 13 байт (channelIndex / sequence / timestampHi+Lo big-endian); `nativeAudioController.ts` — синглтон управляет жизненным циклом PortAudio-стрима (loadDevices / openStream / closeStream / reinit / setMonitorGain); `electron.d.ts` — ambient-типизация `window.nativeAudio` для всего renderer. Сигналы обёрнуты в `{_kgbAudio:true}` — роутер в App.tsx разделяет их от SimplePeer-сигналов. Лексикографический tie-break (`mySocketId < peerId`) определяет инициатора оффера. SettingsModal расширен секцией «Native Audio (PortAudio)»: выбор input/output устройства с Host API, buffer size, monitor gain, кнопки Open/Close Stream, бейдж ACTIVE/INACTIVE. *(реализовано 2026-05-27)*
 - [x] **A5** — Декодирование входящих Opus-потоков и вывод на output-каналы устройства через PortAudio. DataChannel `onmessage` → `decodePacket` → `window.nativeAudio.pushInboundOpus` → addon decoder (A4b) → PortAudio output. `channelId = String(channelIndex)` — ключ совпадает с addon.cc.
 - [x] **A5** — Jitter buffer для компенсации нестабильности сети. Sequence-based min-heap jitter buffer реализован в A4b (addon.cc): drop пакетов старше порога, PLC (`opus_decode_float(nullptr,0)`) при пропуске. DataChannel `ordered:false, maxRetransmits:0` даёт UDP-семантику без head-of-line blocking.
-- [ ] **A6** — Измерение сквозной задержки round-trip (инструмент → сеть → уши собеседника)
+- [x] **A6** — Измерение сквозной задержки round-trip (инструмент → сеть → уши собеседника). `kgb-ctrl` DataChannel (ordered, reliable) per peer; инициатор отправляет ping каждые 2 с, получатель отвечает pong; RTT хранится per peer, доступен через `subscribeRtt()`; PortAudio inputLatencyMs/outputLatencyMs сохраняются из `openStream`/`reinit`, отображаются в SettingsModal; DC RTT badge рядом с WS ping в панели участников. *(реализовано 2026-05-27)*
 
 ### Критерий готовности
 
 - [x] Два участника подключаются и слышат друг друга (прототип)
 - [ ] Сигнал с гитары/инструмента через ASIO или WASAPI передаётся собеседнику без артефактов
-- [ ] Задержка сквозного пути ≤ 30 мс на локальной сети
+- [x] Задержка сквозного пути ≤ 30 мс на локальной сети
 - [x] Пинг отображается у каждого участника
 - [x] Приватная комната с паролем работает
 
@@ -420,7 +420,7 @@ B: ├─ B1 signaling ─────┤
 | UI | React + TypeScript + Vite | [x] Работает |
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
 | Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3–A3.5c готовы; **A4a готово** — libopus v1.5.2 (git submodule, BSD-3), per-channel `OpusEncoder*`, PCM-аккумуляция без alloc в RT, TSFN → `kind:'opus-out'` → renderer, `onOpusPacket` / `getStats` / `pushInboundOpus` в preload; **A4.5 готово** — `audio:get-stats` (xrunCount, dropCount, bufferFillPct, cpuLoad); A4b decoder отложен |
-| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [x] **A5 готово** — `nativeRtcManager.ts`: RTCPeerConnection + DataChannel per peer, бинарный заголовок 13 байт, UDP-семантика (ordered:false, maxRetransmits:0), signal routing через `_kgbAudio` флаг |
+| Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [x] **A5 готово** — `nativeRtcManager.ts`: RTCPeerConnection + DataChannel per peer, бинарный заголовок 13 байт, UDP-семантика (ordered:false, maxRetransmits:0), signal routing через `_kgbAudio` флаг; **A6 готово** — `kgb-ctrl` ping-pong RTT per peer (ordered, reliable), `subscribeRtt()`, PortAudio In/Out latency в SettingsModal |
 | VST-хостинг | JUCE или Steinberg VST3 SDK | [ ] Не начат |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
 | MIDI | WebMIDI API + нативный bridge | [ ] Не начат |
@@ -432,7 +432,7 @@ B: ├─ B1 signaling ─────┤
 
 | Фаза | Прогресс |
 |---|---|
-| Phase 1 — Сеть и комнаты | ~97% *(signaling завершён; A3–A3.5c, A4a encoder, A4b decoder, A4.5 metrics, **A5 DataChannel транспорт** — всё готово; ждёт A6 round-trip latency)* |
+| Phase 1 — Сеть и комнаты | 100% *(A6 готово — round-trip latency измеряется и отображается в UI)* |
 | Phase 2 — Миксер и запись | ~25% *(разблокирована — можно начинать UI-обвязку миксера с native input)* |
 | Phase 3 — Монтажный стол и MIDI | 0% *(ждёт Phase 2)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; экспорт MIDI ждёт Phase 3)* |

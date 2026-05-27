@@ -9,6 +9,8 @@ export interface NativeAudioSnapshot {
   bufferSize: 64 | 128 | 256 | 512
   inputChannels: number
   monitorGain: number
+  inputLatencyMs: number | null
+  outputLatencyMs: number | null
   error: string | null
 }
 
@@ -25,6 +27,8 @@ class NativeAudioController {
   private bufferSize: 64 | 128 | 256 | 512 = 256
   private inputChannels = 2
   private monitorGain = 0
+  private inputLatencyMs: number | null = null
+  private outputLatencyMs: number | null = null
   private error: string | null = null
   private listeners = new Set<StateListener>()
 
@@ -53,6 +57,8 @@ class NativeAudioController {
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
       monitorGain: this.monitorGain,
+      inputLatencyMs: this.inputLatencyMs,
+      outputLatencyMs: this.outputLatencyMs,
       error: this.error,
     }
   }
@@ -109,6 +115,8 @@ class NativeAudioController {
     if (result.ok) {
       this.streamActive = true
       this.error = null
+      if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
+      if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
     } else {
       this.error = result.error ?? 'openStream failed'
     }
@@ -120,6 +128,8 @@ class NativeAudioController {
     if (!window.nativeAudio) return
     await window.nativeAudio.closeStream()
     this.streamActive = false
+    this.inputLatencyMs = null
+    this.outputLatencyMs = null
     this.notify()
   }
 
@@ -156,6 +166,8 @@ class NativeAudioController {
     if (result.ok) {
       this.streamActive = true
       this.error = null
+      if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
+      if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
     } else {
       this.error = result.error ?? 'reinit failed'
     }
