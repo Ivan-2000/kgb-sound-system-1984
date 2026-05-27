@@ -29,6 +29,8 @@ class NativeAudioController {
   private inputChannels = 2
   private activeInputChannels = 0
   private monitorGain = 0
+  private channelLevels: number[] = []
+  private pcmUnsub: (() => void) | null = null
   private inputLatencyMs: number | null = null
   private outputLatencyMs: number | null = null
   private error: string | null = null
@@ -38,11 +40,42 @@ class NativeAudioController {
     window.nativeAudio?.onEngineCrashed(() => {
       this.streamActive = false
       this.activeInputChannels = 0
+      this.unsubscribePcm()
       this.inputLatencyMs = null
       this.outputLatencyMs = null
       this.error = 'Audio engine crashed'
       this.notify()
     })
+  }
+
+  private subscribePcm(): void {
+    if (!window.nativeAudio || this.pcmUnsub) return
+    this.pcmUnsub = window.nativeAudio.onPcm((msg) => {
+      const { frames, channels } = msg
+      if (frames === 0 || channels === 0) return
+      const samples = new Float32Array(msg.payload)
+      const levels = new Array<number>(channels).fill(0)
+      for (let f = 0; f < frames; f++) {
+        for (let c = 0; c < channels; c++) {
+          const s = samples[f * channels + c]
+          levels[c] += s * s
+        }
+      }
+      for (let c = 0; c < channels; c++) {
+        levels[c] = Math.sqrt(levels[c] / frames)
+      }
+      this.channelLevels = levels
+    })
+  }
+
+  private unsubscribePcm(): void {
+    this.pcmUnsub?.()
+    this.pcmUnsub = null
+    this.channelLevels = []
+  }
+
+  getChannelLevel(channelIndex: number): number {
+    return this.channelLevels[channelIndex] ?? 0
   }
 
   private notify(): void {
@@ -121,6 +154,7 @@ class NativeAudioController {
     if (result.ok) {
       this.streamActive = true
       this.activeInputChannels = result.inputChannels ?? this.inputChannels
+      this.subscribePcm()
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
@@ -138,6 +172,7 @@ class NativeAudioController {
     await window.nativeAudio.closeStream()
     this.streamActive = false
     this.activeInputChannels = 0
+    this.unsubscribePcm()
     this.inputLatencyMs = null
     this.outputLatencyMs = null
     this.notify()
@@ -191,6 +226,7 @@ class NativeAudioController {
     if (result.ok) {
       this.streamActive = true
       this.activeInputChannels = result.inputChannels ?? this.inputChannels
+      this.subscribePcm()
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
