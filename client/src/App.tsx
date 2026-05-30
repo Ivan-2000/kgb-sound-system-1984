@@ -17,6 +17,7 @@ import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
 import { LocalMixerStrip } from './components/LocalMixerStrip'
+import { RemoteChannelStrip } from './components/RemoteChannelStrip'
 import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
 import type { SyncEvent } from './protocol/syncProtocol'
@@ -31,6 +32,8 @@ const trackLabels: Record<DrumTrack, string> = {
 }
 
 type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean; hostMuted: boolean }
+type RemoteChannelMeta = { channelCount: number; channelNames: string[] }
+type RemoteChannelGainState = { gain: number; muted: boolean }
 
 type RoomHistoryEntry = {
   shortCode: string
@@ -61,6 +64,73 @@ function friendlyError(code: string): string {
   if (code === 'ROOM_NOT_FOUND') return 'Room not found'
   if (code === 'USERNAME_REQUIRED') return 'Enter your name first'
   return code
+}
+
+type RemoteParticipantGroupProps = {
+  participant: LocalParticipant
+  channelMeta: RemoteChannelMeta | undefined
+  channelGains: ReadonlyMap<string, RemoteChannelGainState>
+  onGainChange: (channelIdx: number, gain: number) => void
+  onMuteToggle: (channelIdx: number) => void
+}
+
+function RemoteParticipantGroup({
+  participant,
+  channelMeta,
+  channelGains,
+  onGainChange,
+  onMuteToggle,
+}: RemoteParticipantGroupProps) {
+  const count = channelMeta?.channelCount ?? 0
+  const [levels, setLevels] = useState<number[]>([])
+  const rafRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (count === 0) return
+    const tick = () => {
+      const rms = mixerEngine.getLevelRms(participant.socketId) ?? 0
+      setLevels(Array.from({ length: count }, () => rms))
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [participant.socketId, count])
+
+  if (!channelMeta || channelMeta.channelCount === 0) {
+    return (
+      <MixerChannel
+        socketId={participant.socketId}
+        username={participant.username}
+        isHost={participant.isHost}
+      />
+    )
+  }
+
+  return (
+    <div className="mixer-participant-group">
+      <p className="eyebrow participant-group-name">
+        {participant.username}
+        {participant.isHost && <span className="participant-host-badge"> (Host)</span>}
+      </p>
+      {Array.from({ length: channelMeta.channelCount }, (_, i) => {
+        const gsKey = `${participant.socketId}:${i}`
+        const gs = channelGains.get(gsKey) ?? { gain: 1, muted: false }
+        return (
+          <RemoteChannelStrip
+            key={i}
+            peerId={participant.socketId}
+            channelIdx={i}
+            label={channelMeta.channelNames[i] ?? `Ch ${i + 1}`}
+            level={levels[i] ?? 0}
+            gain={gs.gain}
+            muted={gs.muted}
+            onGainChange={(g) => onGainChange(i, g)}
+            onMuteToggle={() => onMuteToggle(i)}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
 function App() {
@@ -99,6 +169,8 @@ function App() {
   const [nativeRttMap, setNativeRttMap] = useState<Record<string, number>>({})
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
   const [sendEnabled, setSendEnabled] = useState<ReadonlySet<number>>(new Set())
+  const [remoteChannelMeta, setRemoteChannelMeta] = useState<ReadonlyMap<string, RemoteChannelMeta>>(() => new Map())
+  const [remoteChannelGains, setRemoteChannelGains] = useState<ReadonlyMap<string, RemoteChannelGainState>>(() => new Map())
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -161,6 +233,16 @@ function App() {
     nativeRtcManager.clearSendChannels()
     nativeRtcManager.setSendEnabled(0, true)
   }, [nativeSnapshot.streamActive, nativeSnapshot.activeInputChannels])
+
+  // Broadcast local channel config to peers in the room.
+  // Fires on stream open/close and on sendEnabled change (ensures new peers get fresh state).
+  useEffect(() => {
+    if (!roomState.roomId) return
+    void roomSyncClient.sendChannelMeta(
+      nativeSnapshot.activeInputChannels,
+      nativeSnapshot.inputChannelNames,
+    ).catch(() => { /* fire-and-forget: no room to send to yet is expected */ })
+  }, [roomState.roomId, nativeSnapshot.streamActive, nativeSnapshot.activeInputChannels, sendEnabled])
 
   // Active speaker detection — polls mixer levels via requestAnimationFrame
   useEffect(() => {
@@ -249,7 +331,23 @@ function App() {
           delete next[socketId]
           return next
         })
+        setRemoteChannelMeta((prev) => {
+          if (!prev.has(socketId)) return prev
+          const next = new Map(prev)
+          next.delete(socketId)
+          return next
+        })
       }
+    })
+  }, [])
+
+  useEffect(() => {
+    return roomSyncClient.onChannelMeta(({ senderId, channelCount, channelNames }) => {
+      setRemoteChannelMeta((prev) => {
+        const next = new Map(prev)
+        next.set(senderId, { channelCount, channelNames })
+        return next
+      })
     })
   }, [])
 
@@ -704,6 +802,26 @@ function App() {
         next.add(channelIndex)
         nativeRtcManager.setSendEnabled(channelIndex, true)
       }
+      return next
+    })
+  }
+
+  const handleRemoteGainChange = (socketId: string, channelIdx: number, gain: number) => {
+    setRemoteChannelGains((prev) => {
+      const next = new Map(prev)
+      const key = `${socketId}:${channelIdx}`
+      const cur = next.get(key) ?? { gain: 1, muted: false }
+      next.set(key, { ...cur, gain })
+      return next
+    })
+  }
+
+  const handleRemoteMuteToggle = (socketId: string, channelIdx: number) => {
+    setRemoteChannelGains((prev) => {
+      const next = new Map(prev)
+      const key = `${socketId}:${channelIdx}`
+      const cur = next.get(key) ?? { gain: 1, muted: false }
+      next.set(key, { ...cur, muted: !cur.muted })
       return next
     })
   }
@@ -1437,7 +1555,8 @@ function App() {
                   <LocalMixerStrip
                     key={i}
                     channelIndex={i}
-                    label={`Ch ${i + 1}`}
+                    label={nativeSnapshot.inputChannelNames[i] ?? `Input ${i + 1}`}
+                    deviceId={nativeSnapshot.selectedInputId}
                     sendEnabled={sendEnabled.has(i)}
                     onSendToggle={() => handleSendToggle(i)}
                   />
@@ -1450,11 +1569,13 @@ function App() {
               <p className="mixer-empty">No participants yet</p>
             ) : (
               participants.map((p) => (
-                <MixerChannel
+                <RemoteParticipantGroup
                   key={p.socketId}
-                  socketId={p.socketId}
-                  username={p.username}
-                  isHost={p.isHost}
+                  participant={p}
+                  channelMeta={remoteChannelMeta.get(p.socketId)}
+                  channelGains={remoteChannelGains}
+                  onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
+                  onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
                 />
               ))
             )}

@@ -3,8 +3,8 @@
 Задачи по разработке. Основан на `kgb_sound_roadmap.md` v1.1.
 `[x]` — реализовано, `[ ]` — предстоит сделать.
 
-Версия: **1.18**
-Обновлён: 2026-05-28
+Версия: **1.21**
+Обновлён: 2026-05-30
 
 ---
 
@@ -200,11 +200,17 @@ B: ├─ B1 signaling ─────┤
 - [ ] Отображение списка устройств: название, доступные Host API (ASIO / WASAPI / DirectSound), число input/output каналов
 - [ ] Выбор устройства и Host API пользователем; авто-приоритет если не выбрано вручную
 - [ ] После выбора — автоматическое создание input-канала в миксере для каждого физического входа устройства
-- [ ] Название канала подтягивается из названия входа устройства (напр. «Line 1», «Mic», «Guitar»); пользователь может переименовать
 - [ ] Автоматическое создание output-шины для каждого физического выхода устройства
 - [ ] При смене устройства или Host API — пересоздание каналов миксера с сохранением настроек (fader, mute, VST) где возможно
 - [x] Передача по сети только тех input-каналов, которые пользователь явно включил для трансляции (кнопка «Send» на канале) — `nativeRtcManager.sendEnabled` Set + гейтинг в `broadcastOpusPacket`; App.tsx включает ch 0 по умолчанию при открытии стрима
-- [ ] Остальные участники комнаты видят в своём миксере входящие каналы каждого участника — по одному каналу на каждый транслируемый вход
+
+**Мультиканальный миксер** *(Phase 2 Step 2 — в работе)*:
+
+- [x] **M1 — Названия локальных каналов** — при открытии стрима брать имена каналов из метаданных устройства (`device.inputChannelNames[]` или генерировать «Input 1», «Input 2»); пользователь может переименовать; имена хранятся в `localStorage` по ключу `kgb_ch_name_{deviceId}_{channelIdx}`; передавать в `LocalMixerStrip` через проп `label`
+- [x] **M2 — Синк метаданных каналов** — новый sync-event `channel_meta: { channelCount: number, channelNames: string[] }` в `syncProtocol.ts`; отправляется при открытии стрима и при изменении send-toggle; сервер пробрасывает всем участникам комнаты; App.tsx хранит `remoteChannelMeta: Map<socketId, { channelCount: number, channelNames: string[] }>`
+- [x] **M3 — UI удалённых каналов** — новый компонент `RemoteChannelStrip`; вместо одного `MixerChannel` на пира рендерятся N стрипов (по `remoteChannelMeta[socketId].channelCount`); стрипы визуально сгруппированы под именем участника; `RemoteChannelStrip` принимает `{ peerId, channelIdx, label, socketId }`
+- [ ] **M4 — Per-channel gain в аддоне** — новый экспорт `addon.setRemoteChannelGain(peerId, channelId, gain)` применяет gain к конкретному каналу пира перед суммированием в PaCallback; цепочка: `addon → utilityHost (op: setRemoteChannelGain) → ipc.js → preload window.nativeAudio.setRemoteChannelGain()`; слайдер `RemoteChannelStrip` вызывает эту функцию
+- [ ] **M5 — VU-метр удалённых каналов** — расширить `addon.getStats()` полем `remoteChannelLevels: Record<peerId, number[]>` (RMS per channel); поллинг 30fps через `audio:get-stats` → передать в `RemoteChannelStrip` через проп `level`
 
 **Миксер (частично реализован):**
 - [x] Input-каналы для каждого участника
@@ -433,7 +439,7 @@ B: ├─ B1 signaling ─────┤
 | Фаза | Прогресс |
 |---|---|
 | Phase 1 — Сеть и комнаты | 100% *(A6 готово — round-trip latency измеряется и отображается в UI)* |
-| Phase 2 — Миксер и запись | ~35% *(Phase 2 step 1 готов: LocalMixerStrip с Send-гейтингом, activeInputChannels в snapshot, nativeRtcManager.sendEnabled)* |
+| Phase 2 — Миксер и запись | ~35% *(Step 1 готов: LocalMixerStrip + Send-гейтинг; в работе: M1–M5 мультиканальный миксер)* |
 | Phase 3 — Монтажный стол и MIDI | 0% *(ждёт Phase 2)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; экспорт MIDI ждёт Phase 3)* |
 | Phase 5 — UI и полировка | ~60% *(SettingsModal Native Audio секция реализована: выбор PortAudio устройств, buffer size, monitor gain, Open/Close Stream)* |
