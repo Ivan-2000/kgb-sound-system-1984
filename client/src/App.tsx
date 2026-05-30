@@ -337,6 +337,13 @@ function App() {
           next.delete(socketId)
           return next
         })
+        setRemoteChannelGains((prev) => {
+          const keysToDelete = [...prev.keys()].filter((k) => k.startsWith(`${socketId}:`))
+          if (keysToDelete.length === 0) return prev
+          const next = new Map(prev)
+          keysToDelete.forEach((k) => next.delete(k))
+          return next
+        })
       }
     })
   }, [])
