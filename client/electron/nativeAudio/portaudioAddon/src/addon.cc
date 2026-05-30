@@ -4,6 +4,7 @@
 #include <opus.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -150,6 +151,9 @@ struct PeerDecState {
   // M4: per-channel gain. Written from JS thread, read from RT callback — must be atomic.
   // Default 1.0 (unity). Mute is implemented as gain=0 by the JS caller.
   std::atomic<float>                       gain{1.0f};
+  // M5: per-channel RMS level, leaky integrator: lvl = 0.9*lvl + 0.1*frameRms.
+  // Written exclusively from PaCallback (RT), read from JS thread (GetStats) — atomic to prevent tearing.
+  std::atomic<float>                       rmsLevel{0.0f};
 
   PeerDecState() = default;
   PeerDecState(const PeerDecState&) = delete;
@@ -408,8 +412,9 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       }
     }
 
-    // A4b + M4: mix one mono PCM ring per remote peer into every output channel,
-    // scaled by the per-channel gain (default 1.0; 0.0 = muted).
+    // A4b + M4 + M5: mix one mono PCM ring per remote peer into every output channel,
+    // scaled by the per-channel gain (M4). Simultaneously compute pre-gain RMS for
+    // the leaky integrator (M5) so the VU meter reflects the actual decoded level.
     for (int s = 0; s < MAX_PEERS; s++) {
       PeerDecState* peer = g_peerSlots[s].load(std::memory_order_acquire);
       if (!peer) continue;
@@ -419,12 +424,26 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       const uint32_t avail = w - r; // unsigned subtraction handles wrap correctly
       const uint32_t take  = avail < static_cast<uint32_t>(frames)
                                ? avail : static_cast<uint32_t>(frames);
+
+      float sumSq = 0.0f;
       for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
-        const float samp = (f < take)
-            ? peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)] * peerGain
-            : 0.0f;
+        float raw = 0.0f;
+        if (f < take) {
+          raw = peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)];
+          sumSq += raw * raw;
+        }
+        const float samp = raw * peerGain;
         for (int c = 0; c < outCh; c++) out[f * outCh + c] += samp;
       }
+
+      // M5: leaky integrator — level = 0.9*level + 0.1*frameRms.
+      // RMS over decoded samples only (pre-gain); 0 when ring was empty (underrun).
+      const float frameRms = (take > 0)
+          ? std::sqrt(sumSq / static_cast<float>(take))
+          : 0.0f;
+      const float curLev = peer->rmsLevel.load(std::memory_order_relaxed);
+      peer->rmsLevel.store(0.9f * curLev + 0.1f * frameRms, std::memory_order_relaxed);
+
       peer->ring.rpos.store(r + take, std::memory_order_release);
     }
 
@@ -971,6 +990,44 @@ Napi::Value GetStats(const Napi::CallbackInfo& info) {
         Napi::Number::New(env, static_cast<double>(g_dropCount.load(std::memory_order_relaxed))));
   r.Set("bufferFillPct", Napi::Number::New(env, fillPct));
   r.Set("cpuLoad",       Napi::Number::New(env, cpuLoad));
+
+  // M5: per-channel RMS levels keyed by peerId.
+  // Iterates g_peerSlots, parses "peerId/channelId" key, builds
+  // remoteChannelLevels: { [peerId]: number[] } where index = channelIdx.
+  Napi::Object remoteLevels = Napi::Object::New(env);
+  for (int i = 0; i < MAX_PEERS; i++) {
+    PeerDecState* p = g_peerSlots[i].load(std::memory_order_acquire);
+    if (!p) continue;
+
+    const std::string& key = p->key;
+    const size_t sep = key.rfind('/');
+    if (sep == std::string::npos || sep == 0) continue;
+
+    const std::string peerId = key.substr(0, sep);
+    const std::string chStr  = key.substr(sep + 1);
+    int chIdx = 0;
+    try { chIdx = std::stoi(chStr); } catch (...) { continue; }
+    if (chIdx < 0 || chIdx > 63) continue;
+
+    const float lvl = p->rmsLevel.load(std::memory_order_relaxed);
+
+    // Get or create the per-peer level array.
+    Napi::Array arr;
+    Napi::Value existing = remoteLevels.Get(peerId);
+    if (existing.IsArray()) {
+      arr = existing.As<Napi::Array>();
+    } else {
+      arr = Napi::Array::New(env);
+      remoteLevels.Set(peerId, arr);
+    }
+    // Zero-fill up to chIdx so the array has contiguous indices.
+    while (arr.Length() <= static_cast<uint32_t>(chIdx)) {
+      arr.Set(arr.Length(), Napi::Number::New(env, 0.0));
+    }
+    arr.Set(static_cast<uint32_t>(chIdx), Napi::Number::New(env, static_cast<double>(lvl)));
+  }
+  r.Set("remoteChannelLevels", remoteLevels);
+
   return r;
 }
 

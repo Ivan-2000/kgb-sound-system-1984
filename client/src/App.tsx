@@ -72,6 +72,8 @@ type RemoteParticipantGroupProps = {
   channelGains: ReadonlyMap<string, RemoteChannelGainState>
   onGainChange: (channelIdx: number, gain: number) => void
   onMuteToggle: (channelIdx: number) => void
+  /** M5: per-channel RMS levels from native addon (index = channelIdx). */
+  peerLevels: number[]
 }
 
 function RemoteParticipantGroup({
@@ -80,21 +82,9 @@ function RemoteParticipantGroup({
   channelGains,
   onGainChange,
   onMuteToggle,
+  peerLevels,
 }: RemoteParticipantGroupProps) {
   const count = channelMeta?.channelCount ?? 0
-  const [levels, setLevels] = useState<number[]>([])
-  const rafRef = useRef<number>(0)
-
-  useEffect(() => {
-    if (count === 0) return
-    const tick = () => {
-      const rms = mixerEngine.getLevelRms(participant.socketId) ?? 0
-      setLevels(Array.from({ length: count }, () => rms))
-      rafRef.current = requestAnimationFrame(tick)
-    }
-    rafRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafRef.current)
-  }, [participant.socketId, count])
 
   if (!channelMeta || channelMeta.channelCount === 0) {
     return (
@@ -121,7 +111,7 @@ function RemoteParticipantGroup({
             peerId={participant.socketId}
             channelIdx={i}
             label={channelMeta.channelNames[i] ?? `Ch ${i + 1}`}
-            level={levels[i] ?? 0}
+            level={peerLevels[i] ?? 0}
             gain={gs.gain}
             muted={gs.muted}
             onGainChange={(g) => onGainChange(i, g)}
@@ -171,6 +161,8 @@ function App() {
   const [sendEnabled, setSendEnabled] = useState<ReadonlySet<number>>(new Set())
   const [remoteChannelMeta, setRemoteChannelMeta] = useState<ReadonlyMap<string, RemoteChannelMeta>>(() => new Map())
   const [remoteChannelGains, setRemoteChannelGains] = useState<ReadonlyMap<string, RemoteChannelGainState>>(() => new Map())
+  // M5: per-channel RMS levels from native addon, polled at ~30fps.
+  const [nativeRemoteLevels, setNativeRemoteLevels] = useState<Record<string, number[]>>({})
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -273,6 +265,17 @@ function App() {
       cancelAnimationFrame(rafId)
     }
   }, [participants])
+
+  // M5: poll native addon stats at ~30fps to drive remote channel VU meters.
+  // getStats() is a lightweight IPC call (<1ms round-trip); 33ms interval is safe.
+  useEffect(() => {
+    const id = setInterval(() => {
+      window.nativeAudio?.getStats().then((stats) => {
+        setNativeRemoteLevels(stats.remoteChannelLevels ?? {})
+      }).catch(() => { /* engine not running — keep previous levels */ })
+    }, 33)
+    return () => clearInterval(id)
+  }, [])
 
   // Remote stream events → React state + Web Audio mixer
   useEffect(() => {
@@ -1591,6 +1594,7 @@ function App() {
                   channelGains={remoteChannelGains}
                   onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
                   onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
+                  peerLevels={nativeRemoteLevels[p.socketId] ?? []}
                 />
               ))
             )}

@@ -62,6 +62,8 @@ interface NativeAudioStats {
   dropCount: number
   bufferFillPct: number
   cpuLoad: number
+  /** M5: per-channel RMS levels keyed by peerId. Index = channelIdx. */
+  remoteChannelLevels?: Record<string, number[]>
 }
 
 interface Window {
