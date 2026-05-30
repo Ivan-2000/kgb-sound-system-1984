@@ -818,7 +818,12 @@ function App() {
       const next = new Map(prev)
       const key = `${socketId}:${channelIdx}`
       const cur = next.get(key) ?? { gain: 1, muted: false }
-      next.set(key, { ...cur, gain })
+      const next2 = { ...cur, gain }
+      next.set(key, next2)
+      // M4: apply gain to addon unless muted (mute is gain=0 in the addon)
+      if (!next2.muted) {
+        window.nativeAudio?.setRemoteChannelGain(socketId, String(channelIdx), gain)
+      }
       return next
     })
   }
@@ -828,7 +833,10 @@ function App() {
       const next = new Map(prev)
       const key = `${socketId}:${channelIdx}`
       const cur = next.get(key) ?? { gain: 1, muted: false }
-      next.set(key, { ...cur, muted: !cur.muted })
+      const nowMuted = !cur.muted
+      next.set(key, { ...cur, muted: nowMuted })
+      // M4: mute = gain 0; unmute = restore saved gain
+      window.nativeAudio?.setRemoteChannelGain(socketId, String(channelIdx), nowMuted ? 0 : cur.gain)
       return next
     })
   }

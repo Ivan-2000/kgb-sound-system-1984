@@ -286,6 +286,22 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      // M4: set per-channel output gain for a remote peer.
+      case 'setRemoteChannelGain': {
+        const { peerId, channelId, gain } = opts ?? {}
+        if (typeof peerId !== 'string' || typeof channelId !== 'string' || typeof gain !== 'number') {
+          replyError(id, 'setRemoteChannelGain: peerId, channelId (strings) and gain (number) are required')
+          return
+        }
+        try {
+          loadAddon().setRemoteChannelGain(peerId, channelId, gain)
+          reply(id, { ok: true })
+        } catch (e) {
+          replyError(id, e)
+        }
+        return
+      }
+
       case 'shutdown': {
         // Graceful drain. closeStream is idempotent — call unconditionally
         // (33a6bb1 fix #5: a paused-but-open stream leaks driver handles

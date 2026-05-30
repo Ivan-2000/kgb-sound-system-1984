@@ -183,6 +183,12 @@ export function setupAudioIPC() {
     try { return await sendRequest('pushInboundOpus', packet) }
     catch (e) { return { ok: false, error: e.message } }
   })
+
+  // M4: per-channel remote gain control.
+  ipcMain.handle('audio:set-remote-channel-gain', async (_event, opts) => {
+    try { return await sendRequest('setRemoteChannelGain', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
 }
 
 // open-stream & reinit share the channel-minting logic.

@@ -86,5 +86,7 @@ interface Window {
     pushInboundOpus(packet: InboundOpusPacket): true | false | Promise<{ ok: boolean }>
     onLatency(handler: (latency: NativeAudioLatency) => void): () => void
     onEngineCrashed(handler: (info: { code: number }) => void): () => void
+    /** M4: Set per-channel output gain for a remote peer. gain ∈ [0, 4]; 0 = muted. */
+    setRemoteChannelGain(peerId: string, channelId: string, gain: number): Promise<{ ok: boolean }>
   }
 }

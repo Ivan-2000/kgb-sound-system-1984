@@ -160,4 +160,11 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     engineCrashHandlers.add(handler)
     return () => engineCrashHandlers.delete(handler)
   },
+
+  /** M4: Set per-channel output gain for a remote peer.
+   *  Mute: pass gain=0. Unmute: pass the saved gain value.
+   *  gain is clamped to [0, 4] in the addon (0 = muted, 1 = unity).
+   */
+  setRemoteChannelGain: (peerId, channelId, gain) =>
+    ipcRenderer.invoke('audio:set-remote-channel-gain', { peerId, channelId, gain }),
 })

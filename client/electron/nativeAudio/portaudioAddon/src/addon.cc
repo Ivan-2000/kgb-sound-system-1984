@@ -147,11 +147,18 @@ struct PeerDecState {
   bool                                     seqInit = false;
   std::map<uint32_t, std::vector<uint8_t>> jitter;
   PeerRing                                 ring;
+  // M4: per-channel gain. Written from JS thread, read from RT callback — must be atomic.
+  // Default 1.0 (unity). Mute is implemented as gain=0 by the JS caller.
+  std::atomic<float>                       gain{1.0f};
 
   PeerDecState() = default;
   PeerDecState(const PeerDecState&) = delete;
   PeerDecState& operator=(const PeerDecState&) = delete;
 };
+
+// M4: gains set before the first packet arrives (no PeerDecState yet).
+// Accessed only from the JS thread — no synchronisation needed.
+static std::map<std::string, float> g_pendingGains;
 
 // Zero-initialised at module load (nullptr for all slots).
 static std::atomic<PeerDecState*> g_peerSlots[MAX_PEERS];
@@ -279,6 +286,14 @@ static PeerDecState* findOrCreatePeer(const std::string& key) {
   np->key = key;
   np->dec = opus_decoder_create(48000, 1, &err);
   if (err != OPUS_OK || !np->dec) { delete np; return nullptr; }
+
+  // M4: apply any gain set before the first packet arrived.
+  auto git = g_pendingGains.find(key);
+  if (git != g_pendingGains.end()) {
+    np->gain.store(git->second, std::memory_order_relaxed);
+    g_pendingGains.erase(git);
+  }
+
   g_peerSlots[freeSlot].store(np, std::memory_order_release);
   return np;
 }
@@ -346,6 +361,7 @@ static void cleanupDecoderState() {
       delete p;
     }
   }
+  g_pendingGains.clear();
 }
 
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
@@ -392,10 +408,12 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       }
     }
 
-    // A4b: mix one mono PCM ring per remote peer into every output channel.
+    // A4b + M4: mix one mono PCM ring per remote peer into every output channel,
+    // scaled by the per-channel gain (default 1.0; 0.0 = muted).
     for (int s = 0; s < MAX_PEERS; s++) {
       PeerDecState* peer = g_peerSlots[s].load(std::memory_order_acquire);
       if (!peer) continue;
+      const float peerGain = peer->gain.load(std::memory_order_relaxed);
       const uint32_t r     = peer->ring.rpos.load(std::memory_order_relaxed);
       const uint32_t w     = peer->ring.wpos.load(std::memory_order_acquire);
       const uint32_t avail = w - r; // unsigned subtraction handles wrap correctly
@@ -403,7 +421,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
                                ? avail : static_cast<uint32_t>(frames);
       for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
         const float samp = (f < take)
-            ? peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)]
+            ? peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)] * peerGain
             : 0.0f;
         for (int c = 0; c < outCh; c++) out[f * outCh + c] += samp;
       }
@@ -1019,6 +1037,42 @@ Napi::Value PushInboundOpus(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// ─── M4: setRemoteChannelGain ─────────────────────────────────────────────────
+// JS-thread entry point. Sets the output gain for a specific remote peer channel.
+// Safe to call before any packet arrives — gain is stashed in g_pendingGains and
+// applied when the PeerDecState is created by the first pushInboundOpus call.
+//
+// Signature: setRemoteChannelGain(peerId: string, channelId: string, gain: number)
+//   gain: linear amplitude, clamped to [0, 4]. 0 = muted, 1 = unity, >1 = boost.
+Napi::Value SetRemoteChannelGain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[0].IsString() || !info[1].IsString() || !info[2].IsNumber()) {
+    Napi::TypeError::New(env, "setRemoteChannelGain(peerId, channelId, gain)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  const std::string peerId    = info[0].As<Napi::String>().Utf8Value();
+  const std::string channelId = info[1].As<Napi::String>().Utf8Value();
+  float gain = static_cast<float>(info[2].As<Napi::Number>().DoubleValue());
+  if (!(gain >= 0.0f)) gain = 0.0f;
+  if (gain > 4.0f)     gain = 4.0f;
+
+  const std::string key = peerId + "/" + channelId;
+
+  // Fast path: PeerDecState already exists — update atomically.
+  for (int i = 0; i < MAX_PEERS; i++) {
+    PeerDecState* p = g_peerSlots[i].load(std::memory_order_acquire);
+    if (p && p->key == key) {
+      p->gain.store(gain, std::memory_order_relaxed);
+      return env.Undefined();
+    }
+  }
+
+  // Slow path: peer not yet created — stash for when the first packet arrives.
+  g_pendingGains[key] = gain;
+  return env.Undefined();
+}
+
 // ─── Module init ──────────────────────────────────────────────────────────────
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("paInit",           Napi::Function::New(env, PaInit));
@@ -1029,8 +1083,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("isStreamActive",   Napi::Function::New(env, IsStreamActive));
   exports.Set("setMonitorGain",   Napi::Function::New(env, SetMonitorGain));
   exports.Set("getStreamLatency", Napi::Function::New(env, GetStreamLatency));
-  exports.Set("getStats",         Napi::Function::New(env, GetStats));
-  exports.Set("pushInboundOpus",  Napi::Function::New(env, PushInboundOpus));
+  exports.Set("getStats",              Napi::Function::New(env, GetStats));
+  exports.Set("pushInboundOpus",       Napi::Function::New(env, PushInboundOpus));
+  exports.Set("setRemoteChannelGain",  Napi::Function::New(env, SetRemoteChannelGain));
   return exports;
 }
 
