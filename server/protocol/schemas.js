@@ -140,6 +140,11 @@ const hostTargetSchema = z.object({
   targetSocketId: z.string().min(1),
 })
 
+const channelMetaSchema = z.object({
+  channelCount: z.number().int().min(0).max(32),
+  channelNames: z.array(z.string().max(64)).max(32),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
@@ -150,4 +155,5 @@ module.exports = {
   participantRttSchema,
   chatMessageSchema,
   hostTargetSchema,
+  channelMetaSchema,
 }

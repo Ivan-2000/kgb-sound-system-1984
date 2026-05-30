@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client'
-import { syncEventSchema, type SyncEvent } from '../protocol/syncProtocol'
+import { syncEventSchema, channelMetaSchema, type SyncEvent, type ChannelMetaWithSender } from '../protocol/syncProtocol'
 
 type RoomParticipant = {
   socketId: string
@@ -50,6 +50,7 @@ type RoomStateListener = (state: RoomState) => void
 type SyncListener = (event: SyncEvent) => void
 type ParticipantListener = (event: ParticipantEvent) => void
 type RtcSignalListener = (event: RtcSignalEvent) => void
+type ChannelMetaListener = (event: ChannelMetaWithSender) => void
 
 type RttEvent = { socketId: string; rtt: number }
 type RttListener = (event: RttEvent) => void
@@ -109,6 +110,7 @@ class RoomSyncClient {
   private chatListeners = new Set<ChatMessageListener>()
   private hostMutedListeners = new Set<HostMutedListener>()
   private kickedListeners = new Set<KickedListener>()
+  private channelMetaListeners = new Set<ChannelMetaListener>()
   private wasKicked = false
   private pingInterval: ReturnType<typeof setInterval> | null = null
 
@@ -211,6 +213,27 @@ class RoomSyncClient {
       this.state.hostSocketId = null
       this.kickedListeners.forEach((l) => l())
     })
+
+    this.socket.on('sync:channel_meta', (rawPayload: unknown) => {
+      const parsed = channelMetaSchema.safeParse(rawPayload)
+      if (!parsed.success || parsed.data.senderId === undefined) return
+      const event: ChannelMetaWithSender = {
+        channelCount: parsed.data.channelCount,
+        channelNames: parsed.data.channelNames,
+        senderId: parsed.data.senderId,
+      }
+      this.channelMetaListeners.forEach((l) => l(event))
+    })
+  }
+
+  onChannelMeta(listener: ChannelMetaListener): () => void {
+    this.channelMetaListeners.add(listener)
+    return () => { this.channelMetaListeners.delete(listener) }
+  }
+
+  async sendChannelMeta(channelCount: number, channelNames: string[]): Promise<void> {
+    const response = await this.emitWithAck('sync:channel_meta', { channelCount, channelNames })
+    if (!response.ok) throw new Error(response.error ?? 'CHANNEL_META_SEND_FAILED')
   }
 
   subscribeRoomState(listener: RoomStateListener) {

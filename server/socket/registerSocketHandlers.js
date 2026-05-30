@@ -8,6 +8,7 @@ const {
   participantRttSchema,
   chatMessageSchema,
   hostTargetSchema,
+  channelMetaSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -322,6 +323,32 @@ function registerSocketHandlers(io, roomManager) {
         targetSocket.emit('room:kicked')
         targetSocket.disconnect(true)
       }
+
+      ack?.({ ok: true })
+    })
+
+    socket.on('sync:channel_meta', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
+
+      const parsed = channelMetaSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+
+      io.to(roomId).except(socket.id).emit('sync:channel_meta', {
+        ...parsed.data,
+        senderId: socket.id,
+      })
 
       ack?.({ ok: true })
     })

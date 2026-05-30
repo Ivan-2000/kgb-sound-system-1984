@@ -17,6 +17,7 @@ export const syncEventTypeSchema = z.enum([
   'swing_change',
   'pattern_switch',
   'chain_set',
+  'channel_meta',
 ])
 
 export const drumTrackSchema = z.enum(['kick', 'snare', 'hat', 'crash'])
@@ -139,6 +140,16 @@ export const syncEventSchema = z.discriminatedUnion('type', [
   patternSwitchEventSchema,
   chainSetEventSchema,
 ])
+
+// channel_meta travels via sync:channel_meta — NOT through room:event/syncEventSchema.
+// senderId is absent when sending, injected by server before broadcast.
+export const channelMetaSchema = z.object({
+  channelCount: z.number().int().min(0).max(32),
+  channelNames: z.array(z.string().max(64)).max(32),
+  senderId: z.string().optional(),
+})
+export type ChannelMeta = z.infer<typeof channelMetaSchema>
+export type ChannelMetaWithSender = ChannelMeta & { senderId: string }
 
 export type SyncEvent = z.infer<typeof syncEventSchema>
 export type StepToggleEvent = z.infer<typeof stepToggleEventSchema>
