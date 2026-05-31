@@ -1242,6 +1242,41 @@ meter {
   vertical-align: middle;
 }
 
+/* ── Toolbar right group (view toggle + add) ─────────────── */
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.toolbar-add-btn {
+  font-size: 18px;
+  font-weight: 700;
+  min-width: 36px;
+  padding: 0 10px;
+}
+
+.toolbar-view-toggle {
+  border-radius: 20px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.toolbar-view-toggle.is-active {
+  background: #c8a84b;
+  border-color: #c8a84b;
+  color: #000;
+}
+
+.toolbar-view-toggle.is-active:hover {
+  background: #d9b85c;
+  border-color: #d9b85c;
+}
+
 /* ── Settings modal ──────────────────────────────────────── */
 .settings-overlay {
   position: fixed;

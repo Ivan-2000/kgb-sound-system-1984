@@ -12,8 +12,12 @@ export interface PanelState {
   isMinimized: boolean
 }
 
+export type ViewMode = 'panels' | 'canvas'
+
 interface PanelStore {
   panels: PanelState[]
+  viewMode: ViewMode
+  setViewMode: (mode: ViewMode) => void
   openPanel: (type: PanelType) => void
   /** Create a panel entry in closed state — mounts component (preserves subscriptions) without showing the UI */
   preloadPanel: (type: PanelType) => void
@@ -50,6 +54,11 @@ const nextId = (): string => `panel-${(++idCounter).toString()}`
 
 export const usePanelStore = create<PanelStore>((set, get) => ({
   panels: [],
+  viewMode: 'panels',
+
+  setViewMode(mode) {
+    set({ viewMode: mode })
+  },
 
   preloadPanel(type) {
     if (get().panels.some((p) => p.type === type)) return

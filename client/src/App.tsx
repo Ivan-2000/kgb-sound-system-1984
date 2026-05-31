@@ -858,6 +858,8 @@ function App() {
   const selfSocketId = roomState.socketId
   const openPanel = usePanelStore((s) => s.openPanel)
   const preloadPanel = usePanelStore((s) => s.preloadPanel)
+  const viewMode = usePanelStore((s) => s.viewMode)
+  const setViewMode = usePanelStore((s) => s.setViewMode)
 
   // Open mixer; preload chat (keeps subscription alive before user opens it)
   useEffect(() => {
@@ -1602,32 +1604,6 @@ function App() {
 
         <button
           type="button"
-          className="ghost-action chat-toolbar-btn"
-          onClick={() => {
-            openPanel('chat')
-            setChatUnread(0)
-          }}
-          aria-label="Open chat"
-        >
-          Chat
-          {chatUnread > 0 && (
-            <span className="chat-unread-badge" aria-label={`${chatUnread} unread messages`}>
-              {chatUnread > 9 ? '9+' : chatUnread}
-            </span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          className="ghost-action"
-          onClick={() => openPanel('drum-machine')}
-          aria-label="Open drum machine"
-        >
-          Drums
-        </button>
-
-        <button
-          type="button"
           className="ghost-action"
           onClick={() => void handleMicToggle()}
           aria-pressed={!micEnabled}
@@ -1664,6 +1640,27 @@ function App() {
         >
           Settings
         </button>
+
+        <div className="toolbar-right">
+          <button
+            type="button"
+            className="ghost-action toolbar-add-btn"
+            aria-label="Add module"
+            title="Add module (coming soon)"
+          >
+            +
+          </button>
+
+          <button
+            type="button"
+            className={['ghost-action', 'toolbar-view-toggle', viewMode === 'canvas' ? 'is-active' : ''].filter(Boolean).join(' ')}
+            onClick={() => setViewMode(viewMode === 'panels' ? 'canvas' : 'panels')}
+            aria-label={viewMode === 'panels' ? 'Switch to Canvas mode' : 'Switch to Panels mode'}
+            aria-pressed={viewMode === 'canvas'}
+          >
+            {viewMode === 'panels' ? '⊞ Canvas' : '⧉ Panels'}
+          </button>
+        </div>
       </section>
 
       <PanelsView

@@ -152,16 +152,16 @@ C9 (кабели + NodeRegistry — отложено)
 
 ### Задачи
 
-- [ ] Добавить кнопку `Canvas ⟷ Panels` в правую часть toolbar (переключает `viewMode: 'panels' | 'canvas'` в panelStore)
-- [ ] Убрать отдельную кнопку Drum Machine из toolbar (теперь через «+» меню)
-- [ ] Убрать кнопку вызова Chat из toolbar (теперь через «+» меню)
-- [ ] Кнопка Settings остаётся в toolbar
-- [ ] В Canvas режиме кнопка подсвечивается (active state)
+- [x] Добавить кнопку `Canvas ⟷ Panels` в правую часть toolbar (переключает `viewMode: 'panels' | 'canvas'` в panelStore)
+- [x] Убрать отдельную кнопку Drum Machine из toolbar (теперь через «+» меню)
+- [x] Убрать кнопку вызова Chat из toolbar (теперь через «+» меню)
+- [x] Кнопка Settings остаётся в toolbar
+- [x] В Canvas режиме кнопка подсвечивается (active state)
 
 ### Критерий готовности
 
-- [ ] Кнопка Canvas ⟷ Panels переключает режим
-- [ ] Toolbar не содержит кнопок модулей (только транспорт + settings + toggle)
+- [x] Кнопка Canvas ⟷ Panels переключает режим
+- [x] Toolbar не содержит кнопок модулей (только транспорт + settings + toggle)
 
 ---
 
@@ -315,7 +315,7 @@ C9 (кабели + NodeRegistry — отложено)
 |---|---|
 | C1 — Стартовый экран | 100% |
 | C2 — Floating Panels система | 100% |
-| C3 — Toolbar | 0% |
+| C3 — Toolbar | 100% |
 | C4 — Меню «+» и реестр модулей | 0% |
 | C5 — Video Grid панель | 0% |
 | C6 — Canvas режим | 0% |
