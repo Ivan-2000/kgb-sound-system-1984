@@ -35,6 +35,8 @@ type RoomState = {
   isHost: boolean
   username: string | null
   hostSocketId: string | null
+  /** True when room was created locally without a server connection */
+  isLocalRoom: boolean
 }
 
 type ParticipantEvent =
@@ -96,6 +98,7 @@ class RoomSyncClient {
     isHost: false,
     username: null,
     hostSocketId: null,
+    isLocalRoom: false,
   }
 
   // Set when we disconnect while in a room — triggers auto-rejoin on reconnect
@@ -279,6 +282,41 @@ class RoomSyncClient {
 
   getState() {
     return { ...this.state }
+  }
+
+  /**
+   * Create a local room without a server connection.
+   * All local features work (drum machine, mixer, metronome).
+   * No networking — other participants cannot join.
+   */
+  createLocalRoom(username: string): { shortCode: string } {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    const shortCode = Array.from(
+      { length: 4 },
+      () => chars[Math.floor(Math.random() * chars.length)],
+    ).join('')
+    this.state.roomId = `local-${shortCode}`
+    this.state.shortCode = shortCode
+    this.state.username = username
+    this.state.isHost = true
+    this.state.hostSocketId = 'local'
+    this.state.socketId = this.state.socketId ?? 'local'
+    this.state.isLocalRoom = true
+    this.emitState()
+    return { shortCode }
+  }
+
+  /** Exit a local room and reset state back to lobby. */
+  exitLocalRoom(): void {
+    if (!this.state.isLocalRoom) return
+    this.state.roomId = null
+    this.state.shortCode = null
+    this.state.username = null
+    this.state.isHost = false
+    this.state.hostSocketId = null
+    this.state.isLocalRoom = false
+    if (this.state.socketId === 'local') this.state.socketId = null
+    this.emitState()
   }
 
   async createRoom(username: string, options: { password?: string; maxParticipants?: number } = {}) {

@@ -700,6 +700,17 @@ function App() {
     setNetworkError(null)
     await acquireLocalStream()
 
+    // ── Local mode: no server connection ──────────────────────
+    if (!roomState.connected) {
+      const { shortCode } = roomSyncClient.createLocalRoom(username.trim())
+      addToRoomHistory(shortCode, username.trim())
+      setRoomHistory(loadRoomHistory())
+      // No remote participants in local mode
+      setParticipants([])
+      return
+    }
+
+    // ── Normal mode: server-connected ─────────────────────────
     try {
       const result = await roomSyncClient.createRoom(username.trim(), {
         password: hostPassword.trim() || undefined,
@@ -1306,14 +1317,13 @@ function App() {
                 </div>
                 {!roomState.connected && (
                   <span className="lobby-v2__offline-note">
-                    {roomState.reconnecting ? '○ Reconnecting…' : '○ Server offline'}
+                    {roomState.reconnecting ? '○ Reconnecting… — will create local room' : '○ Server offline — local room only'}
                   </span>
                 )}
                 <button
                   type="button"
                   className="primary-action lobby-v2__submit-btn"
                   onClick={() => void handleCreateRoom()}
-                  disabled={!roomState.connected}
                 >
                   Create Room
                 </button>
@@ -1410,7 +1420,23 @@ function App() {
         </section>
       ) : (
         <section className="room-active" aria-label="Active room">
-          {roomState.isHost && roomState.shortCode ? (
+          {roomState.isLocalRoom ? (
+            <div className="room-code-display">
+              <span className="eyebrow">Local room — no server</span>
+              <strong className="room-code">{roomState.shortCode}</strong>
+              <span className="room-local-badge">LOCAL</span>
+              <button
+                type="button"
+                className="ghost-action ghost-action--sm"
+                onClick={() => {
+                  roomSyncClient.exitLocalRoom()
+                  setParticipants([])
+                }}
+              >
+                Leave
+              </button>
+            </div>
+          ) : roomState.isHost && roomState.shortCode ? (
             <div className="room-code-display">
               <span className="eyebrow">Room code — share with others</span>
               <strong className="room-code">{roomState.shortCode}</strong>
