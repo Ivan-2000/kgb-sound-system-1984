@@ -1787,6 +1787,13 @@ meter {
   color: var(--text);
 }
 
+.lobby-v2__offline-note {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
 .lobby-v2__footer {
   display: flex;
   flex-direction: column;

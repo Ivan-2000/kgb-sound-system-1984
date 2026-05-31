@@ -1261,7 +1261,6 @@ function App() {
                 type="button"
                 className={`lobby-v2__btn lobby-v2__btn--host${lobbyPanel === 'host' ? ' is-active' : ''}`}
                 onClick={() => setLobbyPanel(lobbyPanel === 'host' ? null : 'host')}
-                disabled={!roomState.connected}
               >
                 Host Room
               </button>
@@ -1269,7 +1268,6 @@ function App() {
                 type="button"
                 className={`lobby-v2__btn lobby-v2__btn--join${lobbyPanel === 'join' ? ' is-active' : ''}`}
                 onClick={() => setLobbyPanel(lobbyPanel === 'join' ? null : 'join')}
-                disabled={!roomState.connected}
               >
                 Join Room
               </button>
@@ -1306,6 +1304,11 @@ function App() {
                     </select>
                   </label>
                 </div>
+                {!roomState.connected && (
+                  <span className="lobby-v2__offline-note">
+                    {roomState.reconnecting ? '○ Reconnecting…' : '○ Server offline'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="primary-action lobby-v2__submit-btn"
@@ -1338,6 +1341,11 @@ function App() {
                     value={joinPassword}
                   />
                 </div>
+                {!roomState.connected && (
+                  <span className="lobby-v2__offline-note">
+                    {roomState.reconnecting ? '○ Reconnecting…' : '○ Server offline'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="ghost-action lobby-v2__submit-btn"
@@ -1446,6 +1454,7 @@ function App() {
         </section>
       )}
 
+      {inRoom && <>
       {/* Video Grid */}
       {fullscreenTile ? (
         <section className="video-grid video-grid--theater" aria-label="Video grid">
@@ -1682,6 +1691,7 @@ function App() {
           ),
         }}
       />
+      </>}
     </main>
   )
 }
