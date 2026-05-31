@@ -906,7 +906,7 @@ function App() {
       'rehearsal-shell',
       beatFlash ? (metronomeState.isDownbeat ? 'beat-flash--down' : 'beat-flash--up') : '',
     ].filter(Boolean).join(' ')}>
-      <header className="app-header">
+      {inRoom && <header className="app-header">
         <div>
           <p className="eyebrow">KGB Sound System 85</p>
           <h1>Rehearsal Room</h1>
@@ -922,7 +922,7 @@ function App() {
             </span>
           )}
         </div>
-      </header>
+      </header>}
 
       {!inRoom ? (
         <section className="lobby-v2" aria-label="Join or host a room">
