@@ -553,14 +553,6 @@ function App() {
     [],
   )
 
-  const activePatternCount = useMemo(
-    () =>
-      DRUM_TRACKS.reduce(
-        (total, track) => total + machineState.pattern[track].filter(Boolean).length,
-        0,
-      ),
-    [machineState.pattern],
-  )
 
   const nextLogicalTimestamp = () => {
     logicalClockRef.current += 1
@@ -906,23 +898,6 @@ function App() {
       'rehearsal-shell',
       beatFlash ? (metronomeState.isDownbeat ? 'beat-flash--down' : 'beat-flash--up') : '',
     ].filter(Boolean).join(' ')}>
-      {inRoom && <header className="app-header">
-        <div>
-          <p className="eyebrow">KGB Sound System 85</p>
-          <h1>Rehearsal Room</h1>
-        </div>
-        <div className="session-strip" aria-label="Session status">
-          <span>{roomState.shortCode ? `Room ${roomState.shortCode}` : 'Room local'}</span>
-          <span>{roomState.isHost ? 'Host authority' : 'Guest follower'}</span>
-          <span>{machineState.isLoaded ? 'Samples ready' : 'Samples idle'}</span>
-          <span>{activePatternCount} steps armed</span>
-          {selfSocketId && (
-            <span className={roomState.connected ? 'status-online' : 'status-offline'}>
-              {roomState.reconnecting ? 'Reconnecting…' : roomState.connected ? 'Online' : 'Offline'}
-            </span>
-          )}
-        </div>
-      </header>}
 
       {!inRoom ? (
         <section className="lobby-v2" aria-label="Join or host a room">
@@ -1119,6 +1094,9 @@ function App() {
               </button>
             </div>
           ) : null}
+          <span className="room-role-badge">
+            {roomState.isHost ? 'Host' : 'Guest'}
+          </span>
           <span className="socket-status" style={{ marginLeft: 'auto' }}>
             {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
           </span>
