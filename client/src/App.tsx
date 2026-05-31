@@ -172,7 +172,6 @@ function App() {
   const [prerollBars, setPrerollBars] = useState(2)
 
   const [syncOnly, setSyncOnly] = useState(false)
-  const [chatUnread, setChatUnread] = useState(0)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -1111,6 +1110,27 @@ function App() {
 
   const mixerContent = (
     <>
+      <div className="mixer-local-controls">
+        <button
+          type="button"
+          className={['ghost-action', 'mixer-media-btn', micEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleMicToggle()}
+          aria-pressed={micEnabled}
+          aria-label={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
+        >
+          {micEnabled ? '🎤 Mic On' : '🔇 Mic Off'}
+        </button>
+        <button
+          type="button"
+          className={['ghost-action', 'mixer-media-btn', cameraEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleCameraToggle()}
+          aria-pressed={cameraEnabled}
+          aria-label={cameraEnabled ? 'Disable camera' : 'Enable camera'}
+        >
+          {cameraEnabled ? '📷 Cam On' : '📵 Cam Off'}
+        </button>
+      </div>
+
       <div className="mixer-master">
         <div className="channel-meta">
           <strong>Master</strong>
@@ -1605,17 +1625,6 @@ function App() {
           />
         </label>
 
-        <input
-          aria-label="BPM slider"
-          className="bpm-slider"
-          max={MAX_BPM}
-          min={MIN_BPM}
-          onChange={(event) => { void handleBpmChange(Number(event.target.value)) }}
-          type="range"
-          value={bpm}
-          disabled={inRoom && !roomState.isHost}
-        />
-
         <div className="metro-btn-group">
           <button
             type="button"
@@ -1640,40 +1649,11 @@ function App() {
         <button
           type="button"
           className="ghost-action"
-          onClick={() => void handleMicToggle()}
-          aria-pressed={!micEnabled}
-          aria-label={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
-        >
-          {micEnabled ? 'Mic On' : 'Mic Off'}
-        </button>
-
-        <button
-          type="button"
-          className="ghost-action"
-          onClick={() => void handleCameraToggle()}
-          aria-pressed={!cameraEnabled}
-          aria-label={cameraEnabled ? 'Disable camera' : 'Enable camera'}
-        >
-          {cameraEnabled ? 'Cam On' : 'Cam Off'}
-        </button>
-
-        <button
-          type="button"
-          className="ghost-action"
           onClick={handleClear}
           disabled={inRoom && !roomState.isHost}
           title={inRoom && !roomState.isHost ? 'Only host can clear the pattern' : undefined}
         >
           Clear
-        </button>
-
-        <button
-          type="button"
-          className="ghost-action"
-          onClick={() => openPanel('settings')}
-          aria-label="Open settings"
-        >
-          Settings
         </button>
 
         <div className="toolbar-right">
@@ -1703,13 +1683,7 @@ function App() {
           mixer: () => mixerContent,
           'drum-machine': () => drumMachineContent,
           chat: () => (
-            <ChatPanel
-              selfSocketId={selfSocketId}
-              onNewMessage={() => {
-                const chatPanel = usePanelStore.getState().panels.find((p) => p.type === 'chat')
-                if (!chatPanel?.isOpen || chatPanel.isMinimized) setChatUnread((n) => n + 1)
-              }}
-            />
+            <ChatPanel selfSocketId={selfSocketId} />
           ),
           metronome: () => metronomeContent,
           settings: (panelId) => (

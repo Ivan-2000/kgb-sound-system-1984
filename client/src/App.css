@@ -626,10 +626,6 @@ h2 {
   padding: 14px;
 }
 
-.transport-bar .bpm-slider {
-  flex: 1 1 160px;
-  min-width: 120px;
-}
 
 .status-online {
   color: #7ee4dc;
@@ -708,9 +704,6 @@ input[type='range'] {
   accent-color: var(--gold);
 }
 
-.bpm-slider {
-  width: 100%;
-}
 
 /* .workspace-grid — removed in C2 (Floating Panels) */
 /* .workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; margin-top: 14px; } */
@@ -802,6 +795,21 @@ input[type='range'] {
 }
 
 /* .side-stack — removed in C2 (Floating Panels) */
+
+/* Mic / Cam toggles at the top of the Mixer panel */
+.mixer-local-controls {
+  display: flex;
+  gap: 8px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mixer-media-btn {
+  flex: 1;
+  font-size: 12px;
+  padding: 0 8px;
+  min-height: 34px;
+}
 
 .mixer-master {
   display: grid;
@@ -1230,27 +1238,6 @@ meter {
   flex-shrink: 0;
 }
 
-/* Chat button with unread badge */
-.chat-toolbar-btn {
-  position: relative;
-}
-
-.chat-unread-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 3px;
-  margin-left: 5px;
-  border-radius: 8px;
-  background: var(--gold);
-  color: #090806;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
-  vertical-align: middle;
-}
 
 /* ── Toolbar right group (view toggle + add) ─────────────── */
 .toolbar-right {
@@ -1486,13 +1473,6 @@ meter {
     grid-column: 1 / -1;
   }
 
-  .transport-bar {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .bpm-slider {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 620px) {

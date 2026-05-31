@@ -28,7 +28,7 @@ interface PanelStore {
   minimizePanel: (id: string) => void
 }
 
-const SINGLETON_TYPES = new Set<PanelType>(['mixer', 'chat', 'video', 'metronome', 'settings'])
+const SINGLETON_TYPES = new Set<PanelType>(['mixer', 'drum-machine', 'chat', 'video', 'metronome', 'settings'])
 
 const DEFAULT_POSITIONS: Record<PanelType, { x: number; y: number }> = {
   mixer:          { x: 20,  y: 60 },
