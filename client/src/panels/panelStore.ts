@@ -31,7 +31,7 @@ interface PanelStore {
 const SINGLETON_TYPES = new Set<PanelType>(['mixer', 'drum-machine', 'chat', 'video', 'metronome', 'settings'])
 
 const DEFAULT_POSITIONS: Record<PanelType, { x: number; y: number }> = {
-  mixer:          { x: 20,  y: 60 },
+  mixer:          { x: 20,  y: 20 },
   'drum-machine': { x: 260, y: 60 },
   chat:           { x: 800, y: 60 },
   video:          { x: 20,  y: 200 },
@@ -40,7 +40,7 @@ const DEFAULT_POSITIONS: Record<PanelType, { x: number; y: number }> = {
 }
 
 const DEFAULT_SIZES: Record<PanelType, { w: number; h: number }> = {
-  mixer:          { w: 320, h: 380 },
+  mixer:          { w: 320, h: 360 },
   'drum-machine': { w: 520, h: 340 },
   chat:           { w: 300, h: 400 },
   video:          { w: 420, h: 300 },

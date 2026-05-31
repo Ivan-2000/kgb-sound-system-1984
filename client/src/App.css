@@ -710,7 +710,15 @@ input[type='range'] {
 
 /* .sequencer-section panel padding is now handled by FloatingPanel fp-content */
 .sequencer-section,
-.mixer-panel,
+.mixer-panel {
+  padding: 16px;
+}
+
+/* Compact inside floating panels — fp-content already adds 8px 12px */
+.fp-content .participants-panel {
+  padding: 10px;
+}
+
 .participants-panel {
   padding: 16px;
 }

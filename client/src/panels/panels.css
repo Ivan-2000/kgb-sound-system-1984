@@ -95,8 +95,9 @@
 /* ── Content area ───────────────────────────────────────────── */
 .fp-content {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
   min-height: 0;
+  padding: 8px 12px;
 }
 
 /* ── Resize handle (bottom-right corner) ───────────────────── */

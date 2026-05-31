@@ -1167,29 +1167,20 @@ function App() {
         </div>
       )}
 
-      {participants.length === 0 ? (
-        <p className="mixer-empty">No participants yet</p>
-      ) : (
-        participants.map((p) => (
-          <RemoteParticipantGroup
-            key={p.socketId}
-            participant={p}
-            channelMeta={remoteChannelMeta.get(p.socketId)}
-            channelGains={remoteChannelGains}
-            onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
-            onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
-            peerLevels={nativeRemoteLevels[p.socketId] ?? []}
-          />
-        ))
-      )}
+      {participants.map((p) => (
+        <RemoteParticipantGroup
+          key={p.socketId}
+          participant={p}
+          channelMeta={remoteChannelMeta.get(p.socketId)}
+          channelGains={remoteChannelGains}
+          onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
+          onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
+          peerLevels={nativeRemoteLevels[p.socketId] ?? []}
+        />
+      ))}
 
       <section className="participants-panel" aria-label="Participants">
-        <div className="section-heading compact">
-          <div>
-            <p className="eyebrow">Participants</p>
-            <h2>Room</h2>
-          </div>
-        </div>
+        <p className="eyebrow" style={{ marginBottom: 8 }}>Participants</p>
         <ul>
           <li>
             <div>
