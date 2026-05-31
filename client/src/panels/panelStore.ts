@@ -40,7 +40,7 @@ const DEFAULT_POSITIONS: Record<PanelType, { x: number; y: number }> = {
 }
 
 const DEFAULT_SIZES: Record<PanelType, { w: number; h: number }> = {
-  mixer:          { w: 320, h: 480 },
+  mixer:          { w: 320, h: 380 },
   'drum-machine': { w: 520, h: 340 },
   chat:           { w: 300, h: 400 },
   video:          { w: 420, h: 300 },

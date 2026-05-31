@@ -41,7 +41,10 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     return null
   }
 
-  const displayH = panel.isMinimized ? 36 : size.h
+  // Never let the panel overflow the viewport bottom
+  const viewportH = typeof window !== 'undefined' ? window.innerHeight : 9999
+  const maxH = Math.max(36, viewportH - pos.y - 8)
+  const displayH = panel.isMinimized ? 36 : Math.min(size.h, maxH)
 
   // ── Drag handlers ────────────────────────────────────────────────
   function onTitleDown(e: RPointerEvent<HTMLDivElement>) {
@@ -73,12 +76,20 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
   function onResizeMove(e: RPointerEvent<HTMLDivElement>) {
     if (!resize.current) return
     const { ox, oy, ow, oh } = resize.current
-    setSize({ w: Math.max(160, ow + e.clientX - ox), h: Math.max(60, oh + e.clientY - oy) })
+    const maxPanelH = Math.max(60, window.innerHeight - pos.y - 8)
+    setSize({
+      w: Math.max(160, ow + e.clientX - ox),
+      h: Math.min(maxPanelH, Math.max(60, oh + e.clientY - oy)),
+    })
   }
   function onResizeUp(e: RPointerEvent<HTMLDivElement>) {
     if (!resize.current) return
     const { ox, oy, ow, oh } = resize.current
-    const newSize = { w: Math.max(160, ow + e.clientX - ox), h: Math.max(60, oh + e.clientY - oy) }
+    const maxPanelH = Math.max(60, window.innerHeight - pos.y - 8)
+    const newSize = {
+      w: Math.max(160, ow + e.clientX - ox),
+      h: Math.min(maxPanelH, Math.max(60, oh + e.clientY - oy)),
+    }
     setSize(newSize)
     resizePanel(id, newSize)
     resize.current = null
