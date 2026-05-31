@@ -7,8 +7,10 @@
 }
 
 /* ── Floating Panel shell ───────────────────────────────────── */
-.fp-rnd {
-  pointer-events: all !important;
+.fp-wrapper {
+  position: absolute;   /* inside .panels-layer (position:fixed, inset:0) */
+  pointer-events: all;
+  box-sizing: border-box;
 }
 
 .fp-root {
@@ -95,6 +97,24 @@
   flex: 1;
   overflow: auto;
   min-height: 0;
+}
+
+/* ── Resize handle (bottom-right corner) ───────────────────── */
+.fp-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: se-resize;
+  /* subtle diagonal grip lines */
+  background:
+    linear-gradient(135deg,
+      transparent 40%, #444 40%, #444 50%,
+      transparent 50%, transparent 65%, #444 65%, #444 75%,
+      transparent 75%
+    );
+  border-bottom-right-radius: 6px;
 }
 
 /* ── Metro panel content padding ───────────────────────────── */

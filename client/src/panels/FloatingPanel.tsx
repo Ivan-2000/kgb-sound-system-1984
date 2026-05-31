@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { Rnd } from 'react-rnd'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import type { PointerEvent as RPointerEvent } from 'react'
 import { usePanelStore } from './panelStore'
 import './panels.css'
 
@@ -14,40 +14,89 @@ interface FloatingPanelProps {
 
 export function FloatingPanel({ id, title, icon, children, keepMounted = false }: FloatingPanelProps) {
   const panel = usePanelStore((s) => s.panels.find((p) => p.id === id))
-  // Methods are stable store references — access imperatively to avoid extra subscriptions
+  // Stable store references — no extra subscriptions
   const { closePanel, focusPanel, movePanel, resizePanel, minimizePanel } = usePanelStore.getState()
+
+  // Local pos/size drive rendering; synced from store on open/reopen
+  const [pos,  setPos]  = useState(() => panel?.position ?? { x: 20, y: 60 })
+  const [size, setSize] = useState(() => panel?.size     ?? { w: 320, h: 480 })
+
+  useEffect(() => {
+    // Read from store directly to avoid stale-closure deps on position/size
+    const stored = usePanelStore.getState().panels.find((p) => p.id === id)
+    if (!stored?.isOpen) return
+    setPos(stored.position)
+    setSize(stored.size)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, panel?.isOpen])
+
+  // Drag state stored in a ref — no re-renders during motion
+  const drag   = useRef<{ ox: number; oy: number; mx: number; my: number } | null>(null)
+  const resize = useRef<{ ox: number; oy: number; ow: number; oh: number } | null>(null)
 
   if (!panel) return null
 
   if (!panel.isOpen) {
-    if (keepMounted) {
-      return <div style={{ display: 'none' }}>{children}</div>
-    }
+    if (keepMounted) return <div style={{ display: 'none' }}>{children}</div>
     return null
   }
 
-  const displayH = panel.isMinimized ? 36 : panel.size.h
+  const displayH = panel.isMinimized ? 36 : size.h
+
+  // ── Drag handlers ────────────────────────────────────────────────
+  function onTitleDown(e: RPointerEvent<HTMLDivElement>) {
+    if ((e.target as HTMLElement).closest('button')) return   // let dot-buttons work
+    e.currentTarget.setPointerCapture(e.pointerId)           // keep events even off-element
+    drag.current = { ox: pos.x, oy: pos.y, mx: e.clientX, my: e.clientY }
+    focusPanel(id)
+  }
+  function onTitleMove(e: RPointerEvent<HTMLDivElement>) {
+    if (!drag.current) return
+    const { ox, oy, mx, my } = drag.current
+    setPos({ x: ox + e.clientX - mx, y: oy + e.clientY - my })
+  }
+  function onTitleUp(e: RPointerEvent<HTMLDivElement>) {
+    if (!drag.current) return
+    const { ox, oy, mx, my } = drag.current
+    const newPos = { x: ox + e.clientX - mx, y: oy + e.clientY - my }
+    setPos(newPos)
+    movePanel(id, newPos)
+    drag.current = null
+  }
+
+  // ── Resize handlers ──────────────────────────────────────────────
+  function onResizeDown(e: RPointerEvent<HTMLDivElement>) {
+    e.stopPropagation()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resize.current = { ox: e.clientX, oy: e.clientY, ow: size.w, oh: size.h }
+  }
+  function onResizeMove(e: RPointerEvent<HTMLDivElement>) {
+    if (!resize.current) return
+    const { ox, oy, ow, oh } = resize.current
+    setSize({ w: Math.max(160, ow + e.clientX - ox), h: Math.max(60, oh + e.clientY - oy) })
+  }
+  function onResizeUp(e: RPointerEvent<HTMLDivElement>) {
+    if (!resize.current) return
+    const { ox, oy, ow, oh } = resize.current
+    const newSize = { w: Math.max(160, ow + e.clientX - ox), h: Math.max(60, oh + e.clientY - oy) }
+    setSize(newSize)
+    resizePanel(id, newSize)
+    resize.current = null
+  }
 
   return (
-    <Rnd
-      className="fp-rnd"
-      position={{ x: panel.position.x, y: panel.position.y }}
-      size={{ width: panel.size.w, height: displayH }}
-      onDragStop={(_e, d) => movePanel(id, { x: d.x, y: d.y })}
-      onResizeStop={(_e, _dir, ref, _delta, pos) => {
-        resizePanel(id, { w: ref.offsetWidth, h: ref.offsetHeight })
-        movePanel(id, { x: pos.x, y: pos.y })
-      }}
-      dragHandleClassName="fp-titlebar"
-      enableResizing={!panel.isMinimized}
-      minWidth={160}
-      minHeight={36}
-      bounds="window"
-      style={{ zIndex: panel.zIndex }}
-      onMouseDown={() => focusPanel(id)}
+    <div
+      className="fp-wrapper"
+      style={{ left: pos.x, top: pos.y, width: size.w, height: displayH, zIndex: panel.zIndex }}
+      onPointerDown={() => focusPanel(id)}
     >
       <div className="fp-root">
-        <div className="fp-titlebar">
+        <div
+          className="fp-titlebar"
+          onPointerDown={onTitleDown}
+          onPointerMove={onTitleMove}
+          onPointerUp={onTitleUp}
+        >
           <div className="fp-dots">
             <button
               type="button"
@@ -68,12 +117,22 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
             {title}
           </span>
         </div>
+
         {!panel.isMinimized && (
           <div className="fp-content">
             {children}
           </div>
         )}
       </div>
-    </Rnd>
+
+      {!panel.isMinimized && (
+        <div
+          className="fp-resize-handle"
+          onPointerDown={onResizeDown}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeUp}
+        />
+      )}
+    </div>
   )
 }
