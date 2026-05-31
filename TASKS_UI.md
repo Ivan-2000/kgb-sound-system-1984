@@ -110,35 +110,35 @@ C9 (кабели + NodeRegistry — отложено)
 ### Задачи
 
 **PanelManager (zustand store):**
-- [ ] Создать `src/panels/panelStore.ts` на zustand — стейт всех панелей: `{ id, type, position: {x,y}, size: {w,h}, zIndex, isOpen, isMinimized }`
-- [ ] Методы: `openPanel(type)`, `closePanel(id)`, `focusPanel(id)` (поднять z-index), `movePanel(id, pos)`, `resizePanel(id, size)`
-- [ ] При `openPanel` — проверять нет ли уже открытой панели этого типа (синглтон для Mixer, Chat; мультиэкземпляр для будущих нод)
+- [x] Создать `src/panels/panelStore.ts` на zustand — стейт всех панелей: `{ id, type, position: {x,y}, size: {w,h}, zIndex, isOpen, isMinimized }`
+- [x] Методы: `openPanel(type)`, `closePanel(id)`, `focusPanel(id)` (поднять z-index), `movePanel(id, pos)`, `resizePanel(id, size)`
+- [x] При `openPanel` — проверять нет ли уже открытой панели этого типа (синглтон для Mixer, Chat; мультиэкземпляр для будущих нод)
 
 **FloatingPanel контейнер:**
-- [ ] Создать `src/panels/FloatingPanel.tsx` — обёртка над `react-rnd`
-- [ ] Тайтлбар: три dot-кнопки (close / minimize / —), название панели, иконка типа
-- [ ] Drag за тайтлбар, resize за края
-- [ ] Клик по панели → `focusPanel(id)` (z-index +1)
-- [ ] Минимизация: панель схлопывается до тайтлбара (height → 32px)
-- [ ] Стиль: Persian Luxury Cyber, `background: #141414`, `border: 1px solid #282828`, `box-shadow: 0 4px 24px rgba(0,0,0,.6)`
+- [x] Создать `src/panels/FloatingPanel.tsx` — обёртка над `react-rnd`
+- [x] Тайтлбар: три dot-кнопки (close / minimize / —), название панели, иконка типа
+- [x] Drag за тайтлбар, resize за края
+- [x] Клик по панели → `focusPanel(id)` (z-index +1)
+- [x] Минимизация: панель схлопывается до тайтлбара (height → 36px)
+- [x] Стиль: Persian Luxury Cyber, `background: #141414`, `border: 1px solid #282828`, `box-shadow: 0 4px 24px rgba(0,0,0,.6)`
 
 **Миграция существующих компонентов:**
-- [ ] Обернуть Mixer (`LocalMixerStrip` + `RemoteChannelStrip` + `MixerChannel`) в панель типа `'mixer'`
-- [ ] Обернуть Drum Machine в панель типа `'drum-machine'`
-- [ ] Обернуть Chat (`ChatPanel.tsx`) в панель типа `'chat'`
-- [ ] Обернуть Metronome settings в панель типа `'metronome'`
-- [ ] Обернуть Settings (`SettingsModal.tsx`) в панель типа `'settings'`
-- [ ] Mixer открывается автоматически при входе в комнату (`openPanel('mixer')` в useEffect при `inRoom`)
-- [ ] Удалить жёсткий CSS Grid layout (`.workspace-grid`, `.side-stack`, `.sequencer-section`) из App.tsx
-- [ ] Удалить булевые флаги `showDrumMachine`, `showChat`, `showArrange` — заменить на panelStore
+- [x] Обернуть Mixer (`LocalMixerStrip` + `RemoteChannelStrip` + `MixerChannel`) в панель типа `'mixer'`
+- [x] Обернуть Drum Machine в панель типа `'drum-machine'`
+- [x] Обернуть Chat (`ChatPanel.tsx`) в панель типа `'chat'`
+- [x] Обернуть Metronome settings в панель типа `'metronome'`
+- [x] Обернуть Settings (`SettingsModal.tsx`) в панель типа `'settings'`
+- [x] Mixer открывается автоматически при входе в комнату (`openPanel('mixer')` в useEffect при `inRoom`)
+- [x] Удалить жёсткий CSS Grid layout (`.workspace-grid`, `.side-stack`, `.sequencer-section`) из App.tsx
+- [x] Удалить булевые флаги `showDrumMachine`, `showChat`, `showArrange`, `showMetroSettings`, `showSettings` — заменить на panelStore
 
 ### Критерий готовности
 
-- [ ] Все существующие панели открываются через panelStore
-- [ ] Панели можно перетаскивать и ресайзить
-- [ ] Клик по панели поднимает её поверх остальных
-- [ ] Mixer открыт автоматически при входе в комнату
-- [ ] Минимизация работает
+- [x] Все существующие панели открываются через panelStore
+- [x] Панели можно перетаскивать и ресайзить
+- [x] Клик по панели поднимает её поверх остальных
+- [x] Mixer открыт автоматически при входе в комнату
+- [x] Минимизация работает
 
 ---
 
@@ -314,7 +314,7 @@ C9 (кабели + NodeRegistry — отложено)
 | Задача | Прогресс |
 |---|---|
 | C1 — Стартовый экран | 100% |
-| C2 — Floating Panels система | 0% |
+| C2 — Floating Panels система | 100% |
 | C3 — Toolbar | 0% |
 | C4 — Меню «+» и реестр модулей | 0% |
 | C5 — Video Grid панель | 0% |

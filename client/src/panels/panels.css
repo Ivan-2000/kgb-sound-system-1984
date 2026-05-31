@@ -1,0 +1,105 @@
+/* ── Panels layer — fixed full-screen overlay ───────────────── */
+.panels-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+/* ── Floating Panel shell ───────────────────────────────────── */
+.fp-rnd {
+  pointer-events: all !important;
+}
+
+.fp-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #141414;
+  border: 1px solid #282828;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  color: #e8e8e8;
+  font-size: 13px;
+}
+
+/* ── Titlebar ───────────────────────────────────────────────── */
+.fp-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 36px;
+  min-height: 36px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #282828;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.fp-titlebar:active {
+  cursor: grabbing;
+}
+
+.fp-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.fp-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.fp-dot--red    { background: #ff5f57; }
+.fp-dot--yellow { background: #ffbd2e; }
+.fp-dot--green  { background: #28c840; cursor: default; }
+
+.fp-dot--red:hover    { filter: brightness(0.85); }
+.fp-dot--yellow:hover { filter: brightness(0.85); }
+
+.fp-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.fp-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ── Content area ───────────────────────────────────────────── */
+.fp-content {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* ── Metro panel content padding ───────────────────────────── */
+.metro-panel-content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

@@ -23,6 +23,8 @@ import { SettingsModal } from './components/SettingsModal'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
+import { usePanelStore } from './panels/panelStore'
+import { PanelsView } from './panels/PanelsView'
 
 const trackLabels: Record<DrumTrack, string> = {
   kick: 'Kick',
@@ -171,14 +173,8 @@ function App() {
   const [showAllHistory, setShowAllHistory] = useState(false)
   const [prerollBars, setPrerollBars] = useState(2)
 
-  const metroSettingsRef = useRef<HTMLDivElement>(null)
-  const [showDrumMachine, setShowDrumMachine] = useState(true)
-  const [showArrange, setShowArrange] = useState(false)
-  const [showMetroSettings, setShowMetroSettings] = useState(false)
   const [syncOnly, setSyncOnly] = useState(false)
-  const [showChat, setShowChat] = useState(false)
   const [chatUnread, setChatUnread] = useState(0)
-  const [showSettings, setShowSettings] = useState(false)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -368,18 +364,6 @@ function App() {
   useEffect(() => metronome.subscribe((state) => {
     setMetronomeState(state)
   }), [])
-
-  // Close metro settings popover on outside click
-  useEffect(() => {
-    if (!showMetroSettings) return
-    const handleClickOutside = (e: MouseEvent) => {
-      if (metroSettingsRef.current && !metroSettingsRef.current.contains(e.target as Node)) {
-        setShowMetroSettings(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showMetroSettings])
 
   // Short visual flash on each beat tick
   useEffect(() => {
@@ -874,6 +858,13 @@ function App() {
 
   const inRoom = Boolean(roomState.roomId)
   const selfSocketId = roomState.socketId
+  const openPanel = usePanelStore((s) => s.openPanel)
+
+  // Open mixer panel automatically when entering a room
+  useEffect(() => {
+    if (inRoom) openPanel('mixer')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inRoom])
 
   // Client-side invite link for web deployments (not file:// Electron)
   const clientInviteLink =
@@ -892,6 +883,352 @@ function App() {
   const fullscreenTile = fullscreenSocketId
     ? remoteTiles.find((t) => t.participant.socketId === fullscreenSocketId) ?? null
     : null
+
+  // ── Panel content definitions ────────────────────────────────────
+  const metronomeContent = (
+    <div className="metro-panel-content">
+      <label className="metro-settings-row">
+        <span>Time sig</span>
+        <select
+          aria-label="Time signature"
+          className="time-sig-select"
+          disabled={inRoom && !roomState.isHost}
+          value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
+          onChange={(e) => {
+            const [b, d] = e.target.value.split('/').map(Number)
+            void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
+          }}
+        >
+          {COMMON_TIME_SIGNATURES.map((ts) => (
+            <option key={`${ts.beats}/${ts.division}`} value={`${ts.beats}/${ts.division}`}>
+              {ts.beats}/{ts.division}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="metro-settings-row">
+        <span>Preroll</span>
+        <select
+          aria-label="Preroll bars"
+          className="preroll-select"
+          value={prerollBars}
+          onChange={(e) => setPrerollBars(Number(e.target.value))}
+          disabled={isPlaying || isStarting}
+        >
+          <option value={0}>Off</option>
+          <option value={1}>1 bar</option>
+          <option value={2}>2 bars</option>
+          <option value={4}>4 bars</option>
+        </select>
+      </label>
+      <label className="metro-settings-row metro-settings-check">
+        <input
+          type="checkbox"
+          checked={syncOnly}
+          onChange={handleSyncOnlyToggle}
+          disabled={inRoom && !roomState.isHost}
+        />
+        <span>Sync only</span>
+      </label>
+    </div>
+  )
+
+  const drumMachineContent = (
+    <section className="sequencer-section" aria-label="Drum machine">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Drum Machine</p>
+          <h2>{machineState.stepCount} Step Pattern</h2>
+        </div>
+
+        <div className="pattern-bank" aria-label="Pattern bank">
+          {Array.from({ length: MAX_PATTERNS }, (_, i) => (
+            <button
+              key={i}
+              type="button"
+              className={[
+                'ghost-action ghost-action--sm',
+                i === machineState.activePatternIndex ? 'is-active' : '',
+                machineState.patternActivity[i] ? 'has-content' : '',
+              ].filter(Boolean).join(' ')}
+              onClick={() => { void handlePatternSwitch(i) }}
+              disabled={inRoom && !roomState.isHost}
+              aria-pressed={i === machineState.activePatternIndex}
+              aria-label={`Pattern ${i + 1}`}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+
+        <div className="sequencer-controls">
+          <div className="step-count-selector">
+            {VALID_STEP_COUNTS.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={['ghost-action ghost-action--sm', n === machineState.stepCount ? 'is-active' : ''].filter(Boolean).join(' ')}
+                onClick={() => { void handleStepCountChange(n) }}
+                disabled={inRoom && !roomState.isHost}
+                aria-pressed={n === machineState.stepCount}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+
+          <label className="swing-control">
+            <span>Swing</span>
+            <input
+              aria-label="Swing"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={machineState.swing}
+              onChange={(e) => { void handleSwingChange(Number(e.target.value)) }}
+              disabled={inRoom && !roomState.isHost}
+              className="swing-slider"
+            />
+            <span className="swing-value">{machineState.swing}%</span>
+          </label>
+        </div>
+      </div>
+
+      <div className="step-ruler" aria-hidden="true">
+        <span />
+        {Array.from({ length: machineState.stepCount }, (_, step) => (
+          <span key={step}>{step + 1}</span>
+        ))}
+      </div>
+
+      <div className="sequencer-grid">
+        {DRUM_TRACKS.map((track) => (
+          <div className="track-row" key={track}>
+            <div className="track-label">{trackLabels[track]}</div>
+            {machineState.pattern[track].map((enabled, step) => {
+              const isCurrent = isPlaying && machineState.currentStep === step
+              const vel = machineState.velocity[track][step] ?? 100
+              return (
+                <button
+                  aria-label={`${trackLabels[track]} step ${step + 1}`}
+                  aria-pressed={enabled}
+                  className={[
+                    'step-cell',
+                    enabled ? 'is-enabled' : '',
+                    isCurrent ? 'is-current' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  key={`${track}-${step}`}
+                  onClick={() => { void handleStepToggle(track, step) }}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    const v = Number(window.prompt(`Velocity for ${trackLabels[track]} step ${step + 1} (1–127)`, String(vel)))
+                    if (!Number.isNaN(v)) void handleVelocityChange(track, step, v)
+                  }}
+                  type="button"
+                  style={enabled ? { '--vel-alpha': String(vel / 127) } as React.CSSProperties : undefined}
+                />
+              )
+            })}
+          </div>
+        ))}
+      </div>
+
+      <div className="chain-editor" aria-label="Pattern chain">
+        <button
+          type="button"
+          className={['ghost-action ghost-action--sm', machineState.chain !== null ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleChainSet(
+            machineState.chain !== null ? null : [machineState.activePatternIndex]
+          )}
+          disabled={inRoom && !roomState.isHost}
+          aria-pressed={machineState.chain !== null}
+          title={machineState.chain !== null ? 'Disable chain mode' : 'Enable chain mode'}
+        >
+          Chain
+        </button>
+
+        {machineState.chain !== null && (
+          <>
+            <div className="chain-sequence">
+              {machineState.chain.map((patIdx, pos) => (
+                <button
+                  key={pos}
+                  type="button"
+                  className={[
+                    'chain-slot',
+                    isPlaying && pos === machineState.chainPosition ? 'is-current' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => {
+                    if (inRoom && !roomState.isHost) return
+                    const next = machineState.chain!.filter((_, i) => i !== pos)
+                    void handleChainSet(next.length > 0 ? next : null)
+                  }}
+                  disabled={inRoom && !roomState.isHost}
+                  title={`Pattern ${patIdx + 1} — click to remove`}
+                  aria-label={`Chain slot ${pos + 1}: pattern ${patIdx + 1}`}
+                >
+                  {patIdx + 1}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="ghost-action ghost-action--sm"
+              onClick={() => {
+                const next = [...(machineState.chain ?? []), machineState.activePatternIndex]
+                void handleChainSet(next)
+              }}
+              disabled={(inRoom && !roomState.isHost) || (machineState.chain?.length ?? 0) >= 32}
+              aria-label="Append active pattern to chain"
+              title="Append active pattern to end of chain"
+            >
+              +
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  )
+
+  const mixerContent = (
+    <>
+      <div className="mixer-master">
+        <div className="channel-meta">
+          <strong>Master</strong>
+          <span>Bus</span>
+        </div>
+        <div className="channel-row">
+          <span className="channel-label">Vol</span>
+          <input
+            aria-label="Master volume"
+            type="range"
+            min="0"
+            max="100"
+            value={masterVolume}
+            onChange={(e) => handleMasterVolume(Number(e.target.value))}
+            className="channel-slider"
+          />
+          <span className="channel-value">{masterVolume}</span>
+        </div>
+      </div>
+
+      {nativeSnapshot.streamActive && nativeSnapshot.activeInputChannels > 0 && (
+        <div className="mixer-local">
+          <p className="eyebrow">Local</p>
+          {Array.from({ length: nativeSnapshot.activeInputChannels }, (_, i) => (
+            <LocalMixerStrip
+              key={i}
+              channelIndex={i}
+              label={nativeSnapshot.inputChannelNames[i] ?? `Input ${i + 1}`}
+              deviceId={nativeSnapshot.selectedInputId}
+              sendEnabled={sendEnabled.has(i)}
+              onSendToggle={() => handleSendToggle(i)}
+            />
+          ))}
+        </div>
+      )}
+
+      {participants.length === 0 ? (
+        <p className="mixer-empty">No participants yet</p>
+      ) : (
+        participants.map((p) => (
+          <RemoteParticipantGroup
+            key={p.socketId}
+            participant={p}
+            channelMeta={remoteChannelMeta.get(p.socketId)}
+            channelGains={remoteChannelGains}
+            onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
+            onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
+            peerLevels={nativeRemoteLevels[p.socketId] ?? []}
+          />
+        ))
+      )}
+
+      <section className="participants-panel" aria-label="Participants">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Participants</p>
+            <h2>Room</h2>
+          </div>
+        </div>
+        <ul>
+          <li>
+            <div>
+              <span className={roomState.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
+                {roomState.isHost ? '★ Host' : '· Guest'}
+              </span>
+              <strong>{username}</strong>
+              <span className="participant-you">(you)</span>
+              {selfSocketId && rtts.has(selfSocketId) ? (
+                <span className="rtt-badge">{rtts.get(selfSocketId)} ms</span>
+              ) : null}
+            </div>
+            <span aria-label="Media status">
+              {micEnabled ? '🎤' : '🔇'} {cameraEnabled ? '📷' : '📵'}
+            </span>
+          </li>
+          {participants.map((p) => {
+            const isConnected = remoteStreams.has(p.socketId)
+            return (
+              <li key={p.socketId} className={p.hostMuted ? 'participant-host-muted' : ''}>
+                <div>
+                  <span className={p.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
+                    {p.isHost ? '★ Host' : '· Guest'}
+                  </span>
+                  <strong>{p.username}</strong>
+                  {p.hostMuted && <span className="muted-badge">Muted</span>}
+                  {rtts.has(p.socketId) ? (
+                    <span className="rtt-badge">{rtts.get(p.socketId)} ms</span>
+                  ) : null}
+                  {nativeRttMap[p.socketId] !== undefined && (
+                    <span className="participant-dc-rtt">
+                      DC {nativeRttMap[p.socketId]} ms
+                    </span>
+                  )}
+                </div>
+                <div className="participant-right">
+                  {roomState.isHost && !p.isHost && (
+                    <div className="participant-controls">
+                      <button
+                        type="button"
+                        className={['host-ctrl-btn', p.hostMuted ? 'host-ctrl-btn--active' : ''].filter(Boolean).join(' ')}
+                        onClick={() => void handleHostMute(p.socketId)}
+                        aria-label={p.hostMuted ? 'Unmute participant' : 'Mute participant'}
+                      >
+                        {p.hostMuted ? 'Unmute' : 'Mute'}
+                      </button>
+                      <button
+                        type="button"
+                        className="host-ctrl-btn host-ctrl-btn--kick"
+                        onClick={() => void handleHostKick(p.socketId)}
+                        aria-label="Kick participant"
+                      >
+                        Kick
+                      </button>
+                    </div>
+                  )}
+                  <span aria-label="Media status">
+                    <span
+                      className={isConnected ? 'status-online' : 'status-offline'}
+                      title={isConnected ? 'Stream connected' : 'Connecting…'}
+                    >
+                      {isConnected ? '●' : '○'}
+                    </span>
+                    {' '}
+                    {p.micEnabled && !p.hostMuted ? '🎤' : '🔇'} {p.cameraEnabled ? '📷' : '📵'}
+                  </span>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      </section>
+    </>
+  )
 
   return (
     <main className={[
@@ -1240,7 +1577,7 @@ function App() {
           disabled={inRoom && !roomState.isHost}
         />
 
-        <div className="metro-btn-group" ref={metroSettingsRef}>
+        <div className="metro-btn-group">
           <button
             type="button"
             className={['ghost-action', metronomeState.enabled ? 'is-active' : ''].filter(Boolean).join(' ')}
@@ -1253,81 +1590,22 @@ function App() {
           </button>
           <button
             type="button"
-            className={['ghost-action ghost-action--sm metro-settings-btn', showMetroSettings ? 'is-active' : ''].filter(Boolean).join(' ')}
-            onClick={() => setShowMetroSettings((v) => !v)}
+            className="ghost-action ghost-action--sm metro-settings-btn"
+            onClick={() => openPanel('metronome')}
             aria-label="Metronome settings"
-            aria-expanded={showMetroSettings}
           >
             ▾
           </button>
-          {showMetroSettings && (
-            <div className="metro-settings-popover" role="dialog" aria-label="Metronome settings">
-              <label className="metro-settings-row">
-                <span>Time sig</span>
-                <select
-                  aria-label="Time signature"
-                  className="time-sig-select"
-                  disabled={inRoom && !roomState.isHost}
-                  value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
-                  onChange={(e) => {
-                    const [b, d] = e.target.value.split('/').map(Number)
-                    void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
-                  }}
-                >
-                  {COMMON_TIME_SIGNATURES.map((ts) => (
-                    <option key={`${ts.beats}/${ts.division}`} value={`${ts.beats}/${ts.division}`}>
-                      {ts.beats}/{ts.division}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="metro-settings-row">
-                <span>Preroll</span>
-                <select
-                  aria-label="Preroll bars"
-                  className="preroll-select"
-                  value={prerollBars}
-                  onChange={(e) => setPrerollBars(Number(e.target.value))}
-                  disabled={isPlaying || isStarting}
-                >
-                  <option value={0}>Off</option>
-                  <option value={1}>1 bar</option>
-                  <option value={2}>2 bars</option>
-                  <option value={4}>4 bars</option>
-                </select>
-              </label>
-              <label className="metro-settings-row metro-settings-check">
-                <input
-                  type="checkbox"
-                  checked={syncOnly}
-                  onChange={handleSyncOnlyToggle}
-                  disabled={inRoom && !roomState.isHost}
-                />
-                <span>Sync only</span>
-              </label>
-            </div>
-          )}
         </div>
 
         <button
           type="button"
-          className={['ghost-action', showArrange ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => setShowArrange((v) => !v)}
-          aria-pressed={showArrange}
-          aria-label={showArrange ? 'Hide arrange panel' : 'Show arrange panel'}
-        >
-          Arrange
-        </button>
-
-        <button
-          type="button"
-          className={['ghost-action chat-toolbar-btn', showChat ? 'is-active' : ''].filter(Boolean).join(' ')}
+          className="ghost-action chat-toolbar-btn"
           onClick={() => {
-            setShowChat((v) => !v)
+            openPanel('chat')
             setChatUnread(0)
           }}
-          aria-pressed={showChat}
-          aria-label={showChat ? 'Hide chat' : 'Show chat'}
+          aria-label="Open chat"
         >
           Chat
           {chatUnread > 0 && (
@@ -1339,10 +1617,9 @@ function App() {
 
         <button
           type="button"
-          className={['ghost-action', showDrumMachine ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => setShowDrumMachine((v) => !v)}
-          aria-pressed={showDrumMachine}
-          aria-label={showDrumMachine ? 'Hide drum machine' : 'Show drum machine'}
+          className="ghost-action"
+          onClick={() => openPanel('drum-machine')}
+          aria-label="Open drum machine"
         >
           Drums
         </button>
@@ -1379,354 +1656,33 @@ function App() {
 
         <button
           type="button"
-          className={['ghost-action', showSettings ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => setShowSettings((v) => !v)}
-          aria-pressed={showSettings}
-          aria-label={showSettings ? 'Close settings' : 'Open settings'}
+          className="ghost-action"
+          onClick={() => openPanel('settings')}
+          aria-label="Open settings"
         >
           Settings
         </button>
       </section>
 
-      {showArrange && (
-        <section className="arrange-panel" aria-label="Arrange">
-          <div className="section-heading compact">
-            <div>
-              <p className="eyebrow">Arrange</p>
-              <h2>Timeline</h2>
-            </div>
-          </div>
-          <div className="arrange-placeholder">
-            <span>Arrange — coming in Phase 3</span>
-          </div>
-        </section>
-      )}
-
-      <section className={['workspace-grid', !showDrumMachine ? 'workspace-grid--sidebar-only' : ''].filter(Boolean).join(' ')}>
-        {showDrumMachine && (
-        <section className="sequencer-section" aria-label="Drum machine">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Drum Machine</p>
-              <h2>{machineState.stepCount} Step Pattern</h2>
-            </div>
-
-            {/* Pattern bank */}
-            <div className="pattern-bank" aria-label="Pattern bank">
-              {Array.from({ length: MAX_PATTERNS }, (_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className={[
-                    'ghost-action ghost-action--sm',
-                    i === machineState.activePatternIndex ? 'is-active' : '',
-                    machineState.patternActivity[i] ? 'has-content' : '',
-                  ].filter(Boolean).join(' ')}
-                  onClick={() => { void handlePatternSwitch(i) }}
-                  disabled={inRoom && !roomState.isHost}
-                  aria-pressed={i === machineState.activePatternIndex}
-                  aria-label={`Pattern ${i + 1}`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-
-            {/* Step count + swing */}
-            <div className="sequencer-controls">
-              <div className="step-count-selector">
-                {VALID_STEP_COUNTS.map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    className={['ghost-action ghost-action--sm', n === machineState.stepCount ? 'is-active' : ''].filter(Boolean).join(' ')}
-                    onClick={() => { void handleStepCountChange(n) }}
-                    disabled={inRoom && !roomState.isHost}
-                    aria-pressed={n === machineState.stepCount}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
-
-              <label className="swing-control">
-                <span>Swing</span>
-                <input
-                  aria-label="Swing"
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={machineState.swing}
-                  onChange={(e) => { void handleSwingChange(Number(e.target.value)) }}
-                  disabled={inRoom && !roomState.isHost}
-                  className="swing-slider"
-                />
-                <span className="swing-value">{machineState.swing}%</span>
-              </label>
-            </div>
-          </div>
-
-          <div className="step-ruler" aria-hidden="true">
-            <span />
-            {Array.from({ length: machineState.stepCount }, (_, step) => (
-              <span key={step}>{step + 1}</span>
-            ))}
-          </div>
-
-          <div className="sequencer-grid">
-            {DRUM_TRACKS.map((track) => (
-              <div className="track-row" key={track}>
-                <div className="track-label">{trackLabels[track]}</div>
-                {machineState.pattern[track].map((enabled, step) => {
-                  const isCurrent = isPlaying && machineState.currentStep === step
-                  const vel = machineState.velocity[track][step] ?? 100
-                  return (
-                    <button
-                      aria-label={`${trackLabels[track]} step ${step + 1}`}
-                      aria-pressed={enabled}
-                      className={[
-                        'step-cell',
-                        enabled ? 'is-enabled' : '',
-                        isCurrent ? 'is-current' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')}
-                      key={`${track}-${step}`}
-                      onClick={() => { void handleStepToggle(track, step) }}
-                      onContextMenu={(e) => {
-                        e.preventDefault()
-                        const v = Number(window.prompt(`Velocity for ${trackLabels[track]} step ${step + 1} (1–127)`, String(vel)))
-                        if (!Number.isNaN(v)) void handleVelocityChange(track, step, v)
-                      }}
-                      type="button"
-                      style={enabled ? { '--vel-alpha': String(vel / 127) } as React.CSSProperties : undefined}
-                    />
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-
-          {/* Chain editor */}
-          <div className="chain-editor" aria-label="Pattern chain">
-            <button
-              type="button"
-              className={['ghost-action ghost-action--sm', machineState.chain !== null ? 'is-active' : ''].filter(Boolean).join(' ')}
-              onClick={() => void handleChainSet(
-                machineState.chain !== null ? null : [machineState.activePatternIndex]
-              )}
-              disabled={inRoom && !roomState.isHost}
-              aria-pressed={machineState.chain !== null}
-              title={machineState.chain !== null ? 'Disable chain mode' : 'Enable chain mode'}
-            >
-              Chain
-            </button>
-
-            {machineState.chain !== null && (
-              <>
-                <div className="chain-sequence">
-                  {machineState.chain.map((patIdx, pos) => (
-                    <button
-                      key={pos}
-                      type="button"
-                      className={[
-                        'chain-slot',
-                        isPlaying && pos === machineState.chainPosition ? 'is-current' : '',
-                      ].filter(Boolean).join(' ')}
-                      onClick={() => {
-                        if (inRoom && !roomState.isHost) return
-                        const next = machineState.chain!.filter((_, i) => i !== pos)
-                        void handleChainSet(next.length > 0 ? next : null)
-                      }}
-                      disabled={inRoom && !roomState.isHost}
-                      title={`Pattern ${patIdx + 1} — click to remove`}
-                      aria-label={`Chain slot ${pos + 1}: pattern ${patIdx + 1}`}
-                    >
-                      {patIdx + 1}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  className="ghost-action ghost-action--sm"
-                  onClick={() => {
-                    const next = [...(machineState.chain ?? []), machineState.activePatternIndex]
-                    void handleChainSet(next)
-                  }}
-                  disabled={(inRoom && !roomState.isHost) || (machineState.chain?.length ?? 0) >= 32}
-                  aria-label="Append active pattern to chain"
-                  title="Append active pattern to end of chain"
-                >
-                  +
-                </button>
-              </>
-            )}
-          </div>
-
-        </section>
-        )}
-
-        <aside className="side-stack">
-          <section className="mixer-panel" aria-label="Mixer">
-            <div className="section-heading compact">
-              <div>
-                <p className="eyebrow">Mixer</p>
-                <h2>Participants</h2>
-              </div>
-            </div>
-
-            {/* Master bus */}
-            <div className="mixer-master">
-              <div className="channel-meta">
-                <strong>Master</strong>
-                <span>Bus</span>
-              </div>
-              <div className="channel-row">
-                <span className="channel-label">Vol</span>
-                <input
-                  aria-label="Master volume"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={masterVolume}
-                  onChange={(e) => handleMasterVolume(Number(e.target.value))}
-                  className="channel-slider"
-                />
-                <span className="channel-value">{masterVolume}</span>
-              </div>
-            </div>
-
-            {/* Local input channels — visible when PortAudio stream is active */}
-            {nativeSnapshot.streamActive && nativeSnapshot.activeInputChannels > 0 && (
-              <div className="mixer-local">
-                <p className="eyebrow">Local</p>
-                {Array.from({ length: nativeSnapshot.activeInputChannels }, (_, i) => (
-                  <LocalMixerStrip
-                    key={i}
-                    channelIndex={i}
-                    label={nativeSnapshot.inputChannelNames[i] ?? `Input ${i + 1}`}
-                    deviceId={nativeSnapshot.selectedInputId}
-                    sendEnabled={sendEnabled.has(i)}
-                    onSendToggle={() => handleSendToggle(i)}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Remote participant channels — each routed through Web Audio */}
-            {participants.length === 0 ? (
-              <p className="mixer-empty">No participants yet</p>
-            ) : (
-              participants.map((p) => (
-                <RemoteParticipantGroup
-                  key={p.socketId}
-                  participant={p}
-                  channelMeta={remoteChannelMeta.get(p.socketId)}
-                  channelGains={remoteChannelGains}
-                  onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
-                  onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
-                  peerLevels={nativeRemoteLevels[p.socketId] ?? []}
-                />
-              ))
-            )}
-          </section>
-
-          <div style={showChat ? undefined : { display: 'none' }}>
+      <PanelsView
+        panelContents={{
+          mixer: () => mixerContent,
+          'drum-machine': () => drumMachineContent,
+          chat: () => (
             <ChatPanel
               selfSocketId={selfSocketId}
               onNewMessage={() => {
-                if (!showChat) setChatUnread((n) => n + 1)
+                const chatPanel = usePanelStore.getState().panels.find((p) => p.type === 'chat')
+                if (!chatPanel?.isOpen || chatPanel.isMinimized) setChatUnread((n) => n + 1)
               }}
             />
-          </div>
-
-          <section className="participants-panel" aria-label="Participants">
-            <div className="section-heading compact">
-              <div>
-                <p className="eyebrow">Participants</p>
-                <h2>Room</h2>
-              </div>
-            </div>
-
-            <ul>
-              <li>
-                <div>
-                  <span className={roomState.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
-                    {roomState.isHost ? '★ Host' : '· Guest'}
-                  </span>
-                  <strong>{username}</strong>
-                  <span className="participant-you">(you)</span>
-                  {selfSocketId && rtts.has(selfSocketId) ? (
-                    <span className="rtt-badge">{rtts.get(selfSocketId)} ms</span>
-                  ) : null}
-                </div>
-                <span aria-label="Media status">
-                  {micEnabled ? '🎤' : '🔇'} {cameraEnabled ? '📷' : '📵'}
-                </span>
-              </li>
-              {participants.map((p) => {
-                const isConnected = remoteStreams.has(p.socketId)
-                return (
-                  <li key={p.socketId} className={p.hostMuted ? 'participant-host-muted' : ''}>
-                    <div>
-                      <span className={p.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
-                        {p.isHost ? '★ Host' : '· Guest'}
-                      </span>
-                      <strong>{p.username}</strong>
-                      {p.hostMuted && <span className="muted-badge">Muted</span>}
-                      {rtts.has(p.socketId) ? (
-                        <span className="rtt-badge">{rtts.get(p.socketId)} ms</span>
-                      ) : null}
-                      {nativeRttMap[p.socketId] !== undefined && (
-                        <span className="participant-dc-rtt">
-                          DC {nativeRttMap[p.socketId]} ms
-                        </span>
-                      )}
-                    </div>
-                    <div className="participant-right">
-                      {roomState.isHost && !p.isHost && (
-                        <div className="participant-controls">
-                          <button
-                            type="button"
-                            className={['host-ctrl-btn', p.hostMuted ? 'host-ctrl-btn--active' : ''].filter(Boolean).join(' ')}
-                            onClick={() => void handleHostMute(p.socketId)}
-                            aria-label={p.hostMuted ? 'Unmute participant' : 'Mute participant'}
-                          >
-                            {p.hostMuted ? 'Unmute' : 'Mute'}
-                          </button>
-                          <button
-                            type="button"
-                            className="host-ctrl-btn host-ctrl-btn--kick"
-                            onClick={() => void handleHostKick(p.socketId)}
-                            aria-label="Kick participant"
-                          >
-                            Kick
-                          </button>
-                        </div>
-                      )}
-                      <span aria-label="Media status">
-                        <span
-                          className={isConnected ? 'status-online' : 'status-offline'}
-                          title={isConnected ? 'Stream connected' : 'Connecting…'}
-                        >
-                          {isConnected ? '●' : '○'}
-                        </span>
-                        {' '}
-                        {p.micEnabled && !p.hostMuted ? '🎤' : '🔇'} {p.cameraEnabled ? '📷' : '📵'}
-                      </span>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          </section>
-        </aside>
-      </section>
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
+          ),
+          metronome: () => metronomeContent,
+          settings: (panelId) => (
+            <SettingsModal onClose={() => usePanelStore.getState().closePanel(panelId)} />
+          ),
+        }}
+      />
     </main>
   )
 }

@@ -438,10 +438,7 @@ h2 {
   letter-spacing: 0.03em;
 }
 
-/* ── workspace-grid modifier when drum machine hidden ───────── */
-.workspace-grid--sidebar-only {
-  grid-template-columns: 1fr;
-}
+/* .workspace-grid--sidebar-only — removed in C2 */
 
 /* ── Preroll selector ──────────────────────────────────────── */
 .preroll-control {
@@ -705,13 +702,10 @@ input[type='range'] {
   width: 100%;
 }
 
-.workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 14px;
-  margin-top: 14px;
-}
+/* .workspace-grid — removed in C2 (Floating Panels) */
+/* .workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; margin-top: 14px; } */
 
+/* .sequencer-section panel padding is now handled by FloatingPanel fp-content */
 .sequencer-section,
 .mixer-panel,
 .participants-panel {
@@ -797,11 +791,7 @@ input[type='range'] {
     0 0 18px rgba(126, 228, 220, 0.34);
 }
 
-.side-stack {
-  display: grid;
-  gap: 14px;
-  align-content: start;
-}
+/* .side-stack — removed in C2 (Floating Panels) */
 
 .mixer-master {
   display: grid;
@@ -1439,8 +1429,7 @@ meter {
     justify-content: flex-start;
   }
 
-  .video-grid,
-  .workspace-grid {
+  .video-grid {
     grid-template-columns: 1fr;
   }
 
