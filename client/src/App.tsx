@@ -167,6 +167,8 @@ function App() {
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
   const [roomHistory, setRoomHistory] = useState<RoomHistoryEntry[]>(() => loadRoomHistory())
+  const [lobbyPanel, setLobbyPanel] = useState<'host' | 'join' | 'history' | null>(null)
+  const [showAllHistory, setShowAllHistory] = useState(false)
   const [prerollBars, setPrerollBars] = useState(2)
 
   const metroSettingsRef = useRef<HTMLDivElement>(null)
@@ -923,111 +925,164 @@ function App() {
       </header>
 
       {!inRoom ? (
-        <section className="lobby" aria-label="Join or host a room">
-          <div className="lobby-name">
+        <section className="lobby-v2" aria-label="Join or host a room">
+          <div className="lobby-v2__card">
+            <div className="lobby-v2__logo">
+              <span className="lobby-v2__logo-text">KGB SOUND</span>
+            </div>
+
             <input
+              className="lobby-v2__name-input"
               aria-label="Your name"
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Your name"
               type="text"
               value={username}
             />
-          </div>
 
-          <div className="lobby-host">
-            <div className="lobby-host-options">
-              <input
-                aria-label="Room password (optional)"
-                onChange={(e) => setHostPassword(e.target.value)}
-                placeholder="Password (optional)"
-                type="password"
-                value={hostPassword}
-              />
-              <label className="lobby-limit-label">
-                <span>Max</span>
-                <select
-                  aria-label="Max participants"
-                  value={maxParticipants}
-                  onChange={(e) => setMaxParticipants(Number(e.target.value))}
-                >
-                  {[2, 3, 4, 5, 6, 7, 8].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
+            <div className="lobby-v2__actions">
+              <button
+                type="button"
+                className={`lobby-v2__btn lobby-v2__btn--host${lobbyPanel === 'host' ? ' is-active' : ''}`}
+                onClick={() => setLobbyPanel(lobbyPanel === 'host' ? null : 'host')}
+                disabled={!roomState.connected}
+              >
+                Host Room
+              </button>
+              <button
+                type="button"
+                className={`lobby-v2__btn lobby-v2__btn--join${lobbyPanel === 'join' ? ' is-active' : ''}`}
+                onClick={() => setLobbyPanel(lobbyPanel === 'join' ? null : 'join')}
+                disabled={!roomState.connected}
+              >
+                Join Room
+              </button>
+              <button
+                type="button"
+                className={`lobby-v2__btn lobby-v2__btn--history${lobbyPanel === 'history' ? ' is-active' : ''}`}
+                onClick={() => setLobbyPanel(lobbyPanel === 'history' ? null : 'history')}
+              >
+                Recent Rooms
+              </button>
             </div>
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => void handleCreateRoom()}
-              disabled={!roomState.connected}
-            >
-              Host Room
-            </button>
-          </div>
 
-          <div className="lobby-divider">or</div>
-
-          <div className="lobby-join">
-            <input
-              aria-label="Room code"
-              maxLength={4}
-              onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
-              placeholder="CODE"
-              style={{ textTransform: 'uppercase', letterSpacing: '0.2em' }}
-              type="text"
-              value={codeInput}
-            />
-            <input
-              aria-label="Room password (optional)"
-              onChange={(e) => setJoinPassword(e.target.value)}
-              placeholder="Password"
-              type="password"
-              value={joinPassword}
-            />
-            <button
-              type="button"
-              className="ghost-action"
-              onClick={() => void handleJoinByCode()}
-              disabled={!roomState.connected || codeInput.trim().length !== 4}
-            >
-              Connect
-            </button>
-          </div>
-
-          {roomHistory.length > 0 && (
-            <div className="lobby-history">
-              <p className="eyebrow">Recent rooms</p>
-              <ul className="history-list">
-                {roomHistory.map((entry) => (
-                  <li key={entry.shortCode} className="history-entry">
-                    <div className="history-entry-info">
-                      <strong className="history-code">{entry.shortCode}</strong>
-                      <span>{entry.lastUsername}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="ghost-action ghost-action--sm"
-                      disabled={!roomState.connected}
-                      onClick={() => {
-                        setCodeInput(entry.shortCode)
-                        setUsername(entry.lastUsername)
-                        void handleJoinByCode(entry.shortCode, entry.lastUsername)
-                      }}
+            {lobbyPanel === 'host' && (
+              <div className="lobby-v2__panel">
+                <div className="lobby-v2__panel-row">
+                  <input
+                    className="lobby-v2__panel-input"
+                    aria-label="Room password (optional)"
+                    onChange={(e) => setHostPassword(e.target.value)}
+                    placeholder="Password (optional)"
+                    type="password"
+                    value={hostPassword}
+                  />
+                  <label className="lobby-v2__limit-label">
+                    <span>Max</span>
+                    <select
+                      aria-label="Max participants"
+                      value={maxParticipants}
+                      onChange={(e) => setMaxParticipants(Number(e.target.value))}
                     >
-                      Join
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+                      {[2, 3, 4, 5, 6, 7, 8].map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="primary-action lobby-v2__submit-btn"
+                  onClick={() => void handleCreateRoom()}
+                  disabled={!roomState.connected}
+                >
+                  Create Room
+                </button>
+              </div>
+            )}
 
-          <span className="socket-status">
-            {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
-          </span>
-          {networkError ? <p className="network-error">{networkError}</p> : null}
-          {mediaError ? <p className="network-error">{mediaError}</p> : null}
+            {lobbyPanel === 'join' && (
+              <div className="lobby-v2__panel">
+                <div className="lobby-v2__panel-row">
+                  <input
+                    className="lobby-v2__panel-input lobby-v2__code-input"
+                    aria-label="Room code"
+                    maxLength={4}
+                    onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
+                    placeholder="CODE"
+                    type="text"
+                    value={codeInput}
+                  />
+                  <input
+                    className="lobby-v2__panel-input"
+                    aria-label="Room password (optional)"
+                    onChange={(e) => setJoinPassword(e.target.value)}
+                    placeholder="Password (optional)"
+                    type="password"
+                    value={joinPassword}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="ghost-action lobby-v2__submit-btn"
+                  onClick={() => void handleJoinByCode()}
+                  disabled={!roomState.connected || codeInput.trim().length !== 4}
+                >
+                  Connect
+                </button>
+              </div>
+            )}
+
+            {lobbyPanel === 'history' && (
+              <div className="lobby-v2__history">
+                {roomHistory.length === 0 ? (
+                  <p className="lobby-v2__history-empty">No recent rooms</p>
+                ) : (
+                  <>
+                    {(showAllHistory ? roomHistory : roomHistory.slice(0, 5)).map((entry) => (
+                      <button
+                        key={entry.shortCode}
+                        type="button"
+                        className="lobby-v2__history-card"
+                        disabled={!roomState.connected}
+                        onClick={() => {
+                          setCodeInput(entry.shortCode)
+                          setUsername(entry.lastUsername)
+                          void handleJoinByCode(entry.shortCode, entry.lastUsername)
+                        }}
+                      >
+                        <span className="lobby-v2__history-code">{entry.shortCode}</span>
+                        <span className="lobby-v2__history-meta">
+                          <span className="lobby-v2__history-name">{entry.lastUsername}</span>
+                          <span className="lobby-v2__history-date">
+                            {new Date(entry.lastJoinedAt).toLocaleDateString()}
+                          </span>
+                        </span>
+                        <span className="lobby-v2__history-join">Join →</span>
+                      </button>
+                    ))}
+                    {!showAllHistory && roomHistory.length > 5 && (
+                      <button
+                        type="button"
+                        className="lobby-v2__show-all"
+                        onClick={() => setShowAllHistory(true)}
+                      >
+                        Show all ({roomHistory.length})
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="lobby-v2__footer">
+            <span className="socket-status">
+              {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
+            </span>
+            {networkError ? <p className="network-error">{networkError}</p> : null}
+            {mediaError ? <p className="network-error">{mediaError}</p> : null}
+          </div>
         </section>
       ) : (
         <section className="room-active" aria-label="Active room">
