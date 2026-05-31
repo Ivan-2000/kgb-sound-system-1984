@@ -42,7 +42,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
       enableResizing={!panel.isMinimized}
       minWidth={160}
       minHeight={36}
-      bounds="parent"
+      bounds="window"
       style={{ zIndex: panel.zIndex }}
       onMouseDown={() => focusPanel(id)}
     >
