@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { MAX_BPM, MIN_BPM, audioEngine } from './audio/audioEngine'
 import { metronome, COMMON_TIME_SIGNATURES, type MetronomeState, type TimeSignature } from './audio/metronome'
 import {
@@ -86,8 +86,6 @@ function RemoteParticipantGroup({
   onMuteToggle,
   peerLevels,
 }: RemoteParticipantGroupProps) {
-  const count = channelMeta?.channelCount ?? 0
-
   if (!channelMeta || channelMeta.channelCount === 0) {
     return (
       <MixerChannel
@@ -623,7 +621,7 @@ function App() {
   const handleTimeSignatureChange = async (ts: TimeSignature) => {
     if (roomState.roomId && !roomState.isHost) return
     metronome.setTimeSignature(ts)
-    await emitSyncEvent({ type: 'time_signature_change', payload: { beats: ts.beats, division: ts.division } })
+    await emitSyncEvent({ type: 'time_signature_change', payload: { beats: ts.beats, division: ts.division as unknown as 4 | 8 | 16 } })
   }
 
   const handleSyncOnlyToggle = () => {
@@ -859,10 +857,14 @@ function App() {
   const inRoom = Boolean(roomState.roomId)
   const selfSocketId = roomState.socketId
   const openPanel = usePanelStore((s) => s.openPanel)
+  const preloadPanel = usePanelStore((s) => s.preloadPanel)
 
-  // Open mixer panel automatically when entering a room
+  // Open mixer; preload chat (keeps subscription alive before user opens it)
   useEffect(() => {
-    if (inRoom) openPanel('mixer')
+    if (inRoom) {
+      openPanel('mixer')
+      preloadPanel('chat')
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inRoom])
 
@@ -896,7 +898,7 @@ function App() {
           value={`${metronomeState.timeSignature.beats}/${metronomeState.timeSignature.division}`}
           onChange={(e) => {
             const [b, d] = e.target.value.split('/').map(Number)
-            void handleTimeSignatureChange({ beats: b, division: d as 4 | 8 | 16 })
+            void handleTimeSignatureChange({ beats: b, division: d as unknown as 4 | 8 | 16 })
           }}
         >
           {COMMON_TIME_SIGNATURES.map((ts) => (

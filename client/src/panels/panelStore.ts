@@ -15,6 +15,8 @@ export interface PanelState {
 interface PanelStore {
   panels: PanelState[]
   openPanel: (type: PanelType) => void
+  /** Create a panel entry in closed state — mounts component (preserves subscriptions) without showing the UI */
+  preloadPanel: (type: PanelType) => void
   closePanel: (id: string) => void
   focusPanel: (id: string) => void
   movePanel: (id: string, pos: { x: number; y: number }) => void
@@ -48,6 +50,22 @@ const nextId = (): string => `panel-${(++idCounter).toString()}`
 
 export const usePanelStore = create<PanelStore>((set, get) => ({
   panels: [],
+
+  preloadPanel(type) {
+    if (get().panels.some((p) => p.type === type)) return
+    const maxZ = get().panels.reduce((m, p) => Math.max(m, p.zIndex), BASE_Z)
+    set((s) => ({
+      panels: [...s.panels, {
+        id: nextId(),
+        type,
+        position: DEFAULT_POSITIONS[type],
+        size: DEFAULT_SIZES[type],
+        zIndex: maxZ + 1,
+        isOpen: false,
+        isMinimized: false,
+      }],
+    }))
+  },
 
   openPanel(type) {
     const { panels } = get()

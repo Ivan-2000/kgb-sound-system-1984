@@ -14,11 +14,8 @@ interface FloatingPanelProps {
 
 export function FloatingPanel({ id, title, icon, children, keepMounted = false }: FloatingPanelProps) {
   const panel = usePanelStore((s) => s.panels.find((p) => p.id === id))
-  const closePanel = usePanelStore((s) => s.closePanel)
-  const focusPanel = usePanelStore((s) => s.focusPanel)
-  const movePanel = usePanelStore((s) => s.movePanel)
-  const resizePanel = usePanelStore((s) => s.resizePanel)
-  const minimizePanel = usePanelStore((s) => s.minimizePanel)
+  // Methods are stable store references — access imperatively to avoid extra subscriptions
+  const { closePanel, focusPanel, movePanel, resizePanel, minimizePanel } = usePanelStore.getState()
 
   if (!panel) return null
 
@@ -45,6 +42,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
       enableResizing={!panel.isMinimized}
       minWidth={160}
       minHeight={36}
+      bounds="parent"
       style={{ zIndex: panel.zIndex }}
       onMouseDown={() => focusPanel(id)}
     >
