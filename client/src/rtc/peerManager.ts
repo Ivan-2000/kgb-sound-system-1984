@@ -1,6 +1,6 @@
 import SimplePeer from 'simple-peer'
 import type { SignalData, Instance } from 'simple-peer'
-import { requestAudioStream, MUSIC_AUDIO_CONSTRAINTS } from './mediaDevices'
+import { requestAudioStream } from './mediaDevices'
 
 // Required for P2P through NAT over the internet.
 // Without ICE servers, connections only work on the same LAN.
