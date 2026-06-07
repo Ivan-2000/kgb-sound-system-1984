@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
-import { setPreferredInputDevice, getPreferredInputDevice } from '../rtc/mediaDevices'
 
 type RecordingFormat = 'wav' | 'mp3'
 
@@ -70,29 +69,16 @@ interface Props {
 }
 
 export function SettingsModal({ onClose }: Props) {
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
-  // Initialise from persisted preference (getPreferredInputDevice reads localStorage).
-  const [selectedInput, setSelectedInput] = useState(() => getPreferredInputDevice())
-  const [selectedOutput, setSelectedOutput] = useState('')
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
   const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
   const overlayRef = useRef<HTMLDivElement>(null)
 
+  // Auto-load PortAudio devices when the modal opens (no manual button needed).
   useEffect(() => {
-    void navigator.mediaDevices.enumerateDevices().then((list) => {
-      setDevices(list)
-      // Only set selectedInput from enumeration if user hasn't already saved a preference.
-      if (!getPreferredInputDevice()) {
-        const firstInput = list.find((d) => d.kind === 'audioinput')
-        if (firstInput) {
-          setSelectedInput(firstInput.deviceId)
-          setPreferredInputDevice(firstInput.deviceId)
-        }
-      }
-      const firstOutput = list.find((d) => d.kind === 'audiooutput')
-      if (firstOutput) setSelectedOutput(firstOutput.deviceId)
-    }).catch(() => {})
+    if (window.nativeAudio !== undefined) {
+      void nativeAudioController.loadDevices()
+    }
   }, [])
 
   useEffect(() => {
@@ -110,9 +96,6 @@ export function SettingsModal({ onClose }: Props) {
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose])
-
-  const audioInputs = devices.filter((d) => d.kind === 'audioinput')
-  const audioOutputs = devices.filter((d) => d.kind === 'audiooutput')
 
   return (
     <div
@@ -141,65 +124,6 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-body">
 
-          {/* ── Audio Device ─────────────────────────────────── */}
-          <section className="settings-section">
-            <h3 className="settings-section-title">Audio Device</h3>
-
-            <div className="settings-field">
-              <label className="settings-label" htmlFor="settings-input-device">
-                Input device
-              </label>
-              {audioInputs.length === 0 ? (
-                <p className="settings-stub">No input devices found — grant microphone permission to see devices</p>
-              ) : (
-                <select
-                  id="settings-input-device"
-                  className="settings-select"
-                  value={selectedInput}
-                  onChange={(e) => {
-                    setSelectedInput(e.target.value)
-                    setPreferredInputDevice(e.target.value)
-                  }}
-                  aria-label="Audio input device"
-                >
-                  {audioInputs.map((d, i) => (
-                    <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Input ${i + 1}`}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {audioOutputs.length > 0 && (
-              <div className="settings-field">
-                <label className="settings-label" htmlFor="settings-output-device">
-                  Output device
-                </label>
-                <select
-                  id="settings-output-device"
-                  className="settings-select"
-                  value={selectedOutput}
-                  onChange={(e) => setSelectedOutput(e.target.value)}
-                  aria-label="Audio output device"
-                >
-                  {audioOutputs.map((d, i) => (
-                    <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Output ${i + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="settings-field">
-              <span className="settings-label">Host API</span>
-              <p className="settings-stub">
-                Configure in Native Audio section below (auto-selects ASIO → WASAPI Exclusive → WASAPI → DirectSound → MME)
-              </p>
-            </div>
-          </section>
-
           {/* ── Native Audio (PortAudio) ─────────────────────── */}
           {window.nativeAudio !== undefined && (() => {
             const inputGroups  = buildDeviceGroups(nativeSnapshot.devices, true)
@@ -215,49 +139,43 @@ export function SettingsModal({ onClose }: Props) {
 
             return (
               <section className="settings-section">
-                <h3 className="settings-section-title">Native Audio (PortAudio)</h3>
-
-                <div className="settings-field">
-                  <button
-                    type="button"
-                    className="ghost-action settings-reinit-btn"
-                    onClick={() => { void nativeAudioController.loadDevices() }}
-                  >
-                    Load devices
-                  </button>
-                </div>
+                <h3 className="settings-section-title">Audio (PortAudio)</h3>
 
                 {/* ── INPUT ── */}
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-input-device">
                     Input device
                   </label>
-                  <select
-                    id="native-input-device"
-                    className="settings-select"
-                    value={selInGroup?.name ?? ''}
-                    onChange={(e) => {
-                      const group = inputGroups.find((g) => g.name === e.target.value)
-                      if (!group) return
-                      // Auto-pick best driver for this device
-                      const best = group.apis[0]
-                      nativeAudioController.selectInput(best.deviceId, best.kind)
-                    }}
-                    aria-label="Input device"
-                  >
-                    <option value="">— выбрать —</option>
-                    {inputGroups.map((g) => (
-                      <option key={g.name} value={g.name}>
-                        {g.name}  ({g.channelCount} ch)
-                      </option>
-                    ))}
-                  </select>
+                  {inputGroups.length === 0 ? (
+                    <p className="settings-stub">Загрузка устройств…</p>
+                  ) : (
+                    <select
+                      id="native-input-device"
+                      className="settings-select"
+                      value={selInGroup?.name ?? ''}
+                      onChange={(e) => {
+                        const group = inputGroups.find((g) => g.name === e.target.value)
+                        if (!group) return
+                        // Auto-pick best driver for this device
+                        const best = group.apis[0]
+                        nativeAudioController.selectInput(best.deviceId, best.kind)
+                      }}
+                      aria-label="Input device"
+                    >
+                      <option value="">— выбрать —</option>
+                      {inputGroups.map((g) => (
+                        <option key={g.name} value={g.name}>
+                          {g.name}  ({g.channelCount} ch)
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
                 {selInGroup && (
                   <div className="settings-field">
                     <label className="settings-label" htmlFor="native-input-driver">
-                      Input driver
+                      Driver
                     </label>
                     <select
                       id="native-input-driver"
@@ -403,7 +321,7 @@ export function SettingsModal({ onClose }: Props) {
 
                 {(nativeSnapshot.inputLatencyMs !== null || nativeSnapshot.outputLatencyMs !== null) && (
                   <div className="settings-field">
-                    <span className="settings-label">Audio latency</span>
+                    <span className="settings-label">Latency</span>
                     <span className="settings-stub">
                       In: {nativeSnapshot.inputLatencyMs ?? '—'} ms &nbsp;|&nbsp; Out: {nativeSnapshot.outputLatencyMs ?? '—'} ms
                     </span>
@@ -448,7 +366,7 @@ export function SettingsModal({ onClose }: Props) {
                       nativeSnapshot.error.toLowerCase().includes('invalid') ||
                       nativeSnapshot.error.toLowerCase().includes('unavailable')) && (
                       <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#a09880' }}>
-                        Совет: переподключи USB-устройство, перезапусти ASIO-драйвер, затем нажми «Load devices».
+                        Совет: переподключи USB-устройство, перезапусти ASIO-драйвер, затем переоткрой Settings.
                       </p>
                     )}
                   </div>
