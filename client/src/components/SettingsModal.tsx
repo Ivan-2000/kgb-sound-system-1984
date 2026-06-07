@@ -74,19 +74,19 @@ export function SettingsModal({ onClose }: Props) {
   const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
   const overlayRef = useRef<HTMLDivElement>(null)
 
-  // Auto-load PortAudio devices when the modal opens (no manual button needed).
-  useEffect(() => {
-    if (window.nativeAudio !== undefined) {
-      void nativeAudioController.loadDevices()
-    }
-  }, [])
-
   useEffect(() => {
     localStorage.setItem('kgb_recording_format', recordingFormat)
   }, [recordingFormat])
 
   useEffect(() => {
-    return nativeAudioController.subscribeState(setNativeSnapshot)
+    // Subscribe first — then load so the notification is guaranteed to arrive.
+    const unsub = nativeAudioController.subscribeState(setNativeSnapshot)
+    // Load only if devices haven't been enumerated yet (avoids re-enumeration
+    // while a stream is active, which can crash ASIO drivers → black screen).
+    if (window.nativeAudio !== undefined && nativeAudioController.getSnapshot().devices.length === 0) {
+      void nativeAudioController.loadDevices()
+    }
+    return unsub
   }, [])
 
   useEffect(() => {

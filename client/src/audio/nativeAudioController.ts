@@ -212,7 +212,21 @@ class NativeAudioController {
 
   async loadDevices(): Promise<NativeAudioDevice[]> {
     if (!window.nativeAudio) return []
-    const list = await window.nativeAudio.getDevices()
+    // Never re-enumerate while a stream is active — some ASIO drivers crash when
+    // Pa_GetDeviceCount() is called while a stream is open, which kills the
+    // renderer (black screen). If devices were already loaded, just re-notify.
+    if (this.streamActive && this.devices.length > 0) {
+      this.notify()
+      return this.devices
+    }
+    let list: NativeAudioDevice[]
+    try {
+      list = await window.nativeAudio.getDevices()
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : 'Failed to enumerate devices'
+      this.notify()
+      return this.devices
+    }
     this.devices = list
     // A2: auto-select on first load if nothing is selected yet.
     if (this.selectedInputId === null) {
