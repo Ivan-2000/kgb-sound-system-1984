@@ -29,6 +29,7 @@
     "asarUnpack": [
       "electron/nativeAudio/portaudioAddon/build/**"
     ],
+    "afterPack": "./afterPack.mjs",
     "win": {
       "target": "nsis"
     }
