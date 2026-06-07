@@ -18,12 +18,13 @@ export class PianoTransport {
   private clock: Tone.Clock
   private step = 0
   private current = 0
+  private readonly emit: (n: NoteEvent) => void
+  private readonly getModel: () => Model
   isPlaying = false
 
-  constructor(
-    private readonly emit: (n: NoteEvent) => void,
-    private readonly getModel: () => Model,
-  ) {
+  constructor(emit: (n: NoteEvent) => void, getModel: () => Model) {
+    this.emit = emit
+    this.getModel = getModel
     this.clock = new Tone.Clock(() => this.onTick(), this.freq())
   }
 

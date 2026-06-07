@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from 'react'
 import type { NodeContext, NoteEvent } from '../graph/types'
 import { usePianoRollStore, STEPS_PER_BAR, DEFAULT_VELOCITY, type PianoNote } from './pianoRollStore'
 import type { PianoTransport } from './pianoTransport'
@@ -121,7 +121,7 @@ export function PianoRollPanel({ ctx, transport }: PianoRollPanelProps) {
     drag.current = { mode: 'move', id: n.id, x0: e.clientX, y0: e.clientY, start0: n.startStep, pitch0: n.pitch }
   }
 
-  const onResizeDown = (e: RPointerEvent<HTMLDivElement>, n: PianoNote) => {
+  const onResizeDown = (e: RPointerEvent<Element>, n: PianoNote) => {
     if (e.button !== 0) return
     e.stopPropagation()
     st().select(n.id)
@@ -129,7 +129,7 @@ export function PianoRollPanel({ ctx, transport }: PianoRollPanelProps) {
     drag.current = { mode: 'resize', id: n.id, x0: e.clientX, len0: n.lengthSteps }
   }
 
-  const onNoteContext = (e: RPointerEvent<HTMLDivElement>, n: PianoNote) => {
+  const onNoteContext = (e: RMouseEvent<HTMLDivElement>, n: PianoNote) => {
     e.preventDefault()
     e.stopPropagation()
     const v = Number(window.prompt(`Velocity for ${noteName(n.pitch)} (1–127)`, String(n.velocity)))
