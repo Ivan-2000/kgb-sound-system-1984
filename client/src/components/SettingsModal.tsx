@@ -3,6 +3,16 @@ import { nativeAudioController, type NativeAudioSnapshot } from '../audio/native
 
 type RecordingFormat = 'wav' | 'mp3'
 
+const API_LABELS: Record<string, string> = {
+  ASIO:             'ASIO  ★★  (наименьшая задержка)',
+  WASAPI_EXCLUSIVE: 'WASAPI Exclusive  ★  (низкая задержка)',
+  WASAPI:           'WASAPI Shared',
+  DirectSound:      'DirectSound',
+  WDMKS:            'WDM-KS',
+  MME:              'MME  (legacy)',
+}
+const apiLabel = (kind: string) => API_LABELS[kind] ?? kind
+
 function loadRecordingFormat(): RecordingFormat {
   return localStorage.getItem('kgb_recording_format') === 'mp3' ? 'mp3' : 'wav'
 }
@@ -173,13 +183,15 @@ export function SettingsModal({ onClose }: Props) {
                     aria-label="Native audio input device"
                   >
                     <option value="">— select —</option>
-                    {inputDevices.flatMap((dev) =>
-                      dev.hostApis.map((api) => (
-                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}] ({dev.inputChannels}in)
-                        </option>
-                      ))
-                    )}
+                    {inputDevices.map((dev) => (
+                      <optgroup key={dev.id} label={`${dev.name}  (${dev.inputChannels} ch)`}>
+                        {dev.hostApis.map((api) => (
+                          <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
+                            {apiLabel(api.kind)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                   </select>
                 </div>
 
@@ -197,7 +209,7 @@ export function SettingsModal({ onClose }: Props) {
                     >
                       {Array.from({ length: nativeSnapshot.maxInputChannels }, (_, i) => i + 1).map((n) => (
                         <option key={n} value={n}>
-                          {n} {n === 1 ? 'channel' : 'channels'}
+                          {n} {n === 1 ? 'канал' : n < 5 ? 'канала' : 'каналов'}
                           {n === nativeSnapshot.maxInputChannels ? ' (max)' : ''}
                         </option>
                       ))}
@@ -223,13 +235,15 @@ export function SettingsModal({ onClose }: Props) {
                     aria-label="Native audio output device"
                   >
                     <option value="">— same as input —</option>
-                    {outputDevices.flatMap((dev) =>
-                      dev.hostApis.map((api) => (
-                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}] ({dev.outputChannels}out)
-                        </option>
-                      ))
-                    )}
+                    {outputDevices.map((dev) => (
+                      <optgroup key={dev.id} label={`${dev.name}  (${dev.outputChannels} ch)`}>
+                        {dev.hostApis.map((api) => (
+                          <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
+                            {apiLabel(api.kind)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
                   </select>
                 </div>
 
