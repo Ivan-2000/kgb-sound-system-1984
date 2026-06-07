@@ -125,27 +125,9 @@ export function SettingsModal({ onClose }: Props) {
 
             <div className="settings-field">
               <span className="settings-label">Host API</span>
-              <p className="settings-stub settings-stub--phase">
-                ASIO / WASAPI / DirectSound — available in Phase 1
+              <p className="settings-stub">
+                Configure in Native Audio section below (auto-selects ASIO → WASAPI Exclusive → WASAPI → DirectSound → MME)
               </p>
-            </div>
-
-            <div className="settings-field">
-              <span className="settings-label">Buffer size</span>
-              <p className="settings-stub settings-stub--phase">
-                Available after native audio driver is implemented
-              </p>
-            </div>
-
-            <div className="settings-field">
-              <button
-                type="button"
-                className="ghost-action settings-reinit-btn"
-                disabled
-                title="Available after native audio driver is implemented"
-              >
-                Reinitialize device
-              </button>
             </div>
           </section>
 
@@ -194,12 +176,34 @@ export function SettingsModal({ onClose }: Props) {
                     {inputDevices.flatMap((dev) =>
                       dev.hostApis.map((api) => (
                         <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}]
+                          {dev.name} [{api.kind}] ({dev.inputChannels}in)
                         </option>
                       ))
                     )}
                   </select>
                 </div>
+
+                {nativeSnapshot.maxInputChannels > 0 && (
+                  <div className="settings-field">
+                    <label className="settings-label" htmlFor="native-input-channels">
+                      Input channels
+                    </label>
+                    <select
+                      id="native-input-channels"
+                      className="settings-select"
+                      value={nativeSnapshot.inputChannels}
+                      onChange={(e) => nativeAudioController.setInputChannels(Number(e.target.value))}
+                      aria-label="Input channel count"
+                    >
+                      {Array.from({ length: nativeSnapshot.maxInputChannels }, (_, i) => i + 1).map((n) => (
+                        <option key={n} value={n}>
+                          {n} {n === 1 ? 'channel' : 'channels'}
+                          {n === nativeSnapshot.maxInputChannels ? ' (max)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-output-device">
@@ -222,7 +226,7 @@ export function SettingsModal({ onClose }: Props) {
                     {outputDevices.flatMap((dev) =>
                       dev.hostApis.map((api) => (
                         <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}]
+                          {dev.name} [{api.kind}] ({dev.outputChannels}out)
                         </option>
                       ))
                     )}

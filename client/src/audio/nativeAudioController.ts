@@ -1,3 +1,13 @@
+// A2 — auto-select priority: best driver wins, user can override via Settings.
+const HOST_API_PRIORITY: readonly string[] = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'MME']
+
+function bestApiForDevice(device: NativeAudioDevice): string {
+  for (const kind of HOST_API_PRIORITY) {
+    if (device.hostApis.some((a) => a.kind === kind)) return kind
+  }
+  return device.hostApis[0]?.kind ?? ''
+}
+
 export interface NativeAudioSnapshot {
   streamActive: boolean
   devices: NativeAudioDevice[]
@@ -8,6 +18,8 @@ export interface NativeAudioSnapshot {
   sampleRate: number
   bufferSize: 64 | 128 | 256 | 512
   inputChannels: number
+  /** Maximum input channels the selected device supports (0 when no device selected). */
+  maxInputChannels: number
   activeInputChannels: number
   inputChannelNames: string[]
   monitorGain: number
@@ -83,9 +95,16 @@ class NativeAudioController {
 
   private buildChannelNames(count: number): string[] {
     const device = this.devices.find((d) => d.id === this.selectedInputId)
+    // A2: named channels — generic Ch.N labels; ASIO per-channel names require
+    // driver introspection (Phase 5 MI3) and will replace these labels then.
     return Array.from({ length: count }, (_, i) =>
-      device ? `${device.name} ${i + 1}` : `Input ${i + 1}`
+      device ? `${device.name} Ch.${i + 1}` : `Input ${i + 1}`
     )
+  }
+
+  private maxInputChannelsForCurrent(): number {
+    const dev = this.devices.find((d) => d.id === this.selectedInputId)
+    return dev?.inputChannels ?? 0
   }
 
   private notify(): void {
@@ -104,6 +123,7 @@ class NativeAudioController {
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
+      maxInputChannels: this.maxInputChannelsForCurrent(),
       activeInputChannels: this.activeInputChannels,
       inputChannelNames: this.inputChannelNames,
       monitorGain: this.monitorGain,
@@ -121,13 +141,27 @@ class NativeAudioController {
 
   selectInput(id: number, hostApiKind?: string): void {
     this.selectedInputId = id
-    if (hostApiKind !== undefined) this.inputHostApiKind = hostApiKind
+    const dev = this.devices.find((d) => d.id === id)
+    // A2: auto-select best API when caller doesn't specify one (manual override preserved).
+    this.inputHostApiKind = hostApiKind ?? (dev ? bestApiForDevice(dev) : '')
+    // Clamp channel count to device capability.
+    if (dev && this.inputChannels > dev.inputChannels && dev.inputChannels > 0) {
+      this.inputChannels = dev.inputChannels
+    }
     this.notify()
   }
 
   selectOutput(id: number, hostApiKind?: string): void {
     this.selectedOutputId = id
-    if (hostApiKind !== undefined) this.outputHostApiKind = hostApiKind
+    const dev = this.devices.find((d) => d.id === id)
+    this.outputHostApiKind = hostApiKind ?? (dev ? bestApiForDevice(dev) : '')
+    this.notify()
+  }
+
+  /** A2: set number of input channels to capture (1 .. maxInputChannels of selected device). */
+  setInputChannels(n: number): void {
+    const max = this.maxInputChannelsForCurrent()
+    this.inputChannels = max > 0 ? Math.max(1, Math.min(n, max)) : Math.max(1, n)
     this.notify()
   }
 
@@ -140,6 +174,15 @@ class NativeAudioController {
     if (!window.nativeAudio) return []
     const list = await window.nativeAudio.getDevices()
     this.devices = list
+    // A2: auto-select on first load if nothing is selected yet.
+    if (this.selectedInputId === null) {
+      const inputDev = list.find((d) => d.inputChannels > 0)
+      if (inputDev) {
+        this.selectedInputId = inputDev.id
+        this.inputHostApiKind = bestApiForDevice(inputDev)
+        this.inputChannels = Math.min(this.inputChannels, inputDev.inputChannels || this.inputChannels)
+      }
+    }
     this.notify()
     return list
   }

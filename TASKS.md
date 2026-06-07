@@ -133,8 +133,8 @@
 - [x] **A1** — Выбор binding-стратегии: naudiodon vs. node-addon-api + PortAudio C++; схема IPC между main process и renderer *(см. `docs/ADR_native_audio.md`)*
 - [x] **A2** — Интеграция PortAudio: перечисление всех аудиоустройств в системе (название, тип, число каналов)
 - [x] **A2** — Перечисление доступных Host API для каждого устройства (ASIO / WASAPI / DirectSound / MME на Windows; CoreAudio на macOS; ALSA / JACK на Linux)
-- [ ] **A2** — Авто-выбор оптимального Host API по приоритету: ASIO → WASAPI Exclusive → WASAPI Shared → DirectSound → MME; пользователь может переопределить
-- [ ] **A2** — Перечисление всех input/output каналов выбранного устройства с их названиями
+- [x] **A2** — Авто-выбор оптимального Host API по приоритету: ASIO → WASAPI_EXCLUSIVE → WASAPI → DirectSound → MME; пользователь может переопределить *(реализовано 2026-06-07: `bestApiForDevice()` + `HOST_API_PRIORITY` в `nativeAudioController.ts`; `loadDevices()` авто-выбирает первое input-устройство с лучшим API; `selectInput/selectOutput` без явного kind авто-выбирают API; Settings UI сохраняет ручной override через явную пару `deviceId::kind`)*
+- [x] **A2** — Перечисление всех input/output каналов выбранного устройства с их названиями *(реализовано 2026-06-07: `maxInputChannels` в снапшоте; Settings UI показывает `(Nin)/(Nout)` в опциях устройств; селектор числа каналов 1..maxInputChannels; `setInputChannels()` с зажимом по capacity устройства; `buildChannelNames()` генерирует `${device.name} Ch.N`; ASIO per-channel имена — Phase 5 MI3)*
 - [x] **A3** — Рефакторинг инициализации PortAudio: `Pa_Initialize()` вызывается один раз при старте приложения и живёт всё время его работы; `Pa_Terminate()` — только при выходе; `getDevices()` и стримы работают внутри одной сессии (текущая архитектура A2 вызывает `Pa_Initialize/Pa_Terminate` при каждом `getDevices()` — это несовместимо с открытым стримом)
 - [x] **A3** — Нативный захват аудио через Electron main process (минуя браузерный `getUserMedia`)
 - [x] **A3** — Настройка размера буфера (buffer size): цель ≤ 64 сэмпла для ASIO, ≤ 256 для WASAPI
@@ -438,7 +438,7 @@
 
 | Фаза | Прогресс |
 |---|---|
-| Phase 1 — Сеть и комнаты | ~95% *(A1–A6 готовы; остаток: A2 авто-выбор Host API + перечисление каналов; acceptance — гитара через ASIO end-to-end)* |
+| Phase 1 — Сеть и комнаты | ~98% *(A1–A6 + A2 авто-выбор + перечисление каналов готовы; acceptance — гитара через ASIO end-to-end)* |
 | Phase 2 — Миксер и запись | ~32% *(M1–M5 готовы и Send-toggle; выбор устройства/auto-fill (7 пунктов), V1–V10 VST/InsertChain, преролл — не начаты)* |
 | Phase 3 — Монтажный стол и MIDI | ~25% *(Timeline-скелет/Piano Roll-нода реализованы; впереди T1–T5 + PR1–PR5 + I1–I3 + экспорт)* |
 | Phase 4 — Метроном и драм-машина | ~80% *(остаток: NTP sync, drift correction; перенос паттерна в миди-клип ждёт Phase 3 PR5)* |
