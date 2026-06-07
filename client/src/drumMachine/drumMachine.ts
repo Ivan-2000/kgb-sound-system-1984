@@ -1,5 +1,4 @@
 import * as Tone from 'tone'
-import { audioEngine } from '../audio/audioEngine'
 import type { StepCount } from '../protocol/syncProtocol'
 
 export const DEFAULT_STEP_COUNT: StepCount = 16
@@ -23,6 +22,8 @@ export type PatternSlot = {
 export type DrumMachineState = {
   currentStep: number
   isLoaded: boolean
+  /** Whether this instance's sequencer is currently advancing (project transport running). */
+  running: boolean
   activePatternIndex: number
   swing: number
   // Active slot — convenience aliases for the sequencer grid
@@ -77,15 +78,13 @@ const createEmptySlot = (): PatternSlot => ({
   stepCount: DEFAULT_STEP_COUNT,
 })
 
-// Tone.js loop end for each step count (each step = one 16th note)
-const loopEnd: Record<StepCount, string> = { 8: '0:2:0', 16: '1m', 32: '2m' }
-
 const slotHasContent = (slot: PatternSlot): boolean =>
   DRUM_TRACKS.some((t) => slot.pattern[t].some(Boolean))
 
-class DrumMachine {
+export class DrumMachine {
   private currentStep = 0
   private loaded = false
+  private running = false
   private swing = 0
   private activePatternIndex = 0
   private chain: number[] | null = null
@@ -105,6 +104,7 @@ class DrumMachine {
     return {
       currentStep: this.currentStep,
       isLoaded: this.loaded,
+      running: this.running,
       activePatternIndex: this.activePatternIndex,
       swing: this.swing,
       pattern: clonePattern(slot.pattern),
@@ -145,6 +145,13 @@ class DrumMachine {
     await this.loadPromise
   }
 
+  /**
+   * Arm this instance's sequencer on the shared project transport. The CALLER
+   * owns the transport (App calls `audioEngine.play()` once) — a DrumMachine no
+   * longer starts/stops `Tone.Transport`, so multiple instances coexist without
+   * fighting over it. Each instance maintains its OWN `currentStep` and its own
+   * `scheduleRepeat`; no instance touches the global loop points.
+   */
   async start(options: DrumMachineStartOptions = {}) {
     await this.loadSamples()
     this.ensureScheduled()
@@ -153,14 +160,28 @@ class DrumMachine {
       Number.isInteger(rawStep) && rawStep >= 0 && rawStep < this.activeSlot.stepCount
         ? rawStep
         : 0
+    this.running = true
     this.emitChange()
-    await audioEngine.play({ position: 0 })
   }
 
   stop() {
-    audioEngine.stop()
+    this.running = false
     this.currentStep = 0
     this.emitChange()
+  }
+
+  /**
+   * Play a single drum voice immediately — used by the `midi`-in path (a Piano
+   * Roll or mask drives the kit via NoteEvents). Independent of the sequencer.
+   * Loads samples lazily; the first note before load completes is dropped.
+   */
+  triggerVoice(track: DrumTrack, velocity: number = DEFAULT_VELOCITY, time?: number) {
+    if (!this.loaded) { void this.loadSamples(); return }
+    if (!this.players?.loaded) return
+    const vel = Math.min(127, Math.max(1, Math.round(velocity)))
+    const player = this.players.player(track)
+    player.volume.value = 20 * Math.log10(vel / 127)
+    player.start(time)
   }
 
   // ── Pattern bank ─────────────────────────────────────────────────────────
@@ -321,8 +342,10 @@ class DrumMachine {
   }
 
   private installSchedule() {
-    Tone.Transport.loop = true
-    Tone.Transport.setLoopPoints(0, loopEnd[this.activeSlot.stepCount])
+    // No loop ownership here: the drum used to set Tone.Transport.loop +
+    // setLoopPoints, which made multiple instances fight over the global loop.
+    // Each instance now just self-increments its step on every 16th; the loop
+    // region (if any) belongs solely to the Timeline (audioEngine.setLoopRegion).
     this.scheduleId = Tone.Transport.scheduleRepeat((time) => {
       this.playStep(this.currentStep, time)
       const nextStep = (this.currentStep + 1) % this.activeSlot.stepCount
@@ -330,7 +353,6 @@ class DrumMachine {
       if (nextStep === 0 && this.chain !== null && this.chain.length > 0) {
         this.chainPosition = (this.chainPosition + 1) % this.chain.length
         this.activePatternIndex = this.chain[this.chainPosition]
-        Tone.Transport.setLoopPoints(0, loopEnd[this.activeSlot.stepCount])
       }
 
       this.currentStep = nextStep
@@ -384,5 +406,3 @@ function normalizeVelTrack(src: number[], stepCount: StepCount): number[] {
     return typeof v === 'number' && v >= 1 && v <= 127 ? Math.round(v) : DEFAULT_VELOCITY
   })
 }
-
-export const drumMachine = new DrumMachine()

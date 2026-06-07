@@ -1,3 +1,13 @@
+// A2 — auto-select priority: best driver wins, user can override via Settings.
+const HOST_API_PRIORITY: readonly string[] = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'MME']
+
+function bestApiForDevice(device: NativeAudioDevice): string {
+  for (const kind of HOST_API_PRIORITY) {
+    if (device.hostApis.some((a) => a.kind === kind)) return kind
+  }
+  return device.hostApis[0]?.kind ?? ''
+}
+
 export interface NativeAudioSnapshot {
   streamActive: boolean
   devices: NativeAudioDevice[]
@@ -8,6 +18,8 @@ export interface NativeAudioSnapshot {
   sampleRate: number
   bufferSize: 64 | 128 | 256 | 512
   inputChannels: number
+  /** Maximum input channels the selected device supports (0 when no device selected). */
+  maxInputChannels: number
   activeInputChannels: number
   inputChannelNames: string[]
   monitorGain: number
@@ -82,10 +94,50 @@ class NativeAudioController {
   }
 
   private buildChannelNames(count: number): string[] {
-    const device = this.devices.find((d) => d.id === this.selectedInputId)
-    return Array.from({ length: count }, (_, i) =>
-      device ? `${device.name} ${i + 1}` : `Input ${i + 1}`
-    )
+    // Use generic "Ch.N" labels — the full device name is local hardware info
+    // and should not be broadcast to remote peers via sync:channel_meta.
+    // (Remote peers see "BEHRINGER USB WDM AUDIO 2.8.40 Ch.1" which is confusing
+    // and makes it look like their machine should have that device.)
+    // ASIO per-channel names (Phase 5 MI3) will replace these labels when ready.
+    return Array.from({ length: count }, (_, i) => `Ch.${i + 1}`)
+  }
+
+  private maxInputChannelsForCurrent(): number {
+    const dev = this.devices.find((d) => d.id === this.selectedInputId)
+    return dev?.inputChannels ?? 0
+  }
+
+  /**
+   * Resolve the output device id + api kind to use for monitoring.
+   *
+   * Priority:
+   *   1. User-selected output device (selectedOutputId)
+   *   2. The input device itself, if it also has output channels (ASIO duplex)
+   *   3. Any device with output channels, best API first
+   *
+   * Returns null when no output device is found (input-only hardware).
+   */
+  private resolveOutputForMonitor(): { id: number; apiKind: string } | null {
+    // 1. Explicit user choice
+    if (this.selectedOutputId !== null) {
+      const dev = this.devices.find((d) => d.id === this.selectedOutputId)
+      return { id: this.selectedOutputId, apiKind: this.outputHostApiKind || (dev ? bestApiForDevice(dev) : '') }
+    }
+    // 2. Input device is duplex (ASIO)
+    const inputDev = this.devices.find((d) => d.id === this.selectedInputId)
+    if (inputDev && inputDev.outputChannels > 0) {
+      return { id: inputDev.id, apiKind: this.inputHostApiKind }
+    }
+    // 3. Best available output device
+    const outDev = this.devices
+      .filter((d) => d.outputChannels > 0)
+      .sort((a, b) => {
+        const rank = (d: NativeAudioDevice) =>
+          HOST_API_PRIORITY.findIndex((k) => d.hostApis.some((h) => h.kind === k))
+        return rank(a) - rank(b)
+      })[0]
+    if (outDev) return { id: outDev.id, apiKind: bestApiForDevice(outDev) }
+    return null
   }
 
   private notify(): void {
@@ -104,6 +156,7 @@ class NativeAudioController {
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
+      maxInputChannels: this.maxInputChannelsForCurrent(),
       activeInputChannels: this.activeInputChannels,
       inputChannelNames: this.inputChannelNames,
       monitorGain: this.monitorGain,
@@ -121,13 +174,34 @@ class NativeAudioController {
 
   selectInput(id: number, hostApiKind?: string): void {
     this.selectedInputId = id
-    if (hostApiKind !== undefined) this.inputHostApiKind = hostApiKind
+    const dev = this.devices.find((d) => d.id === id)
+    // A2: auto-select best API when caller doesn't specify one (manual override preserved).
+    this.inputHostApiKind = hostApiKind ?? (dev ? bestApiForDevice(dev) : '')
+    // Clamp channel count to device capability.
+    if (dev && this.inputChannels > dev.inputChannels && dev.inputChannels > 0) {
+      this.inputChannels = dev.inputChannels
+    }
     this.notify()
   }
 
   selectOutput(id: number, hostApiKind?: string): void {
     this.selectedOutputId = id
-    if (hostApiKind !== undefined) this.outputHostApiKind = hostApiKind
+    const dev = this.devices.find((d) => d.id === id)
+    this.outputHostApiKind = hostApiKind ?? (dev ? bestApiForDevice(dev) : '')
+    this.notify()
+  }
+
+  /** Reset output to "same as input" — resolveOutputForMonitor() handles auto-routing. */
+  clearOutput(): void {
+    this.selectedOutputId = null
+    this.outputHostApiKind = ''
+    this.notify()
+  }
+
+  /** A2: set number of input channels to capture (1 .. maxInputChannels of selected device). */
+  setInputChannels(n: number): void {
+    const max = this.maxInputChannelsForCurrent()
+    this.inputChannels = max > 0 ? Math.max(1, Math.min(n, max)) : Math.max(1, n)
     this.notify()
   }
 
@@ -138,8 +212,47 @@ class NativeAudioController {
 
   async loadDevices(): Promise<NativeAudioDevice[]> {
     if (!window.nativeAudio) return []
-    const list = await window.nativeAudio.getDevices()
+    // Never re-enumerate while a stream is active — some ASIO drivers crash when
+    // Pa_GetDeviceCount() is called while a stream is open, which kills the
+    // renderer (black screen). If devices were already loaded, just re-notify.
+    if (this.streamActive && this.devices.length > 0) {
+      this.notify()
+      return this.devices
+    }
+    let list: NativeAudioDevice[]
+    try {
+      list = await window.nativeAudio.getDevices()
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : 'Failed to enumerate devices'
+      this.notify()
+      return this.devices
+    }
     this.devices = list
+    // A2: auto-select on first load if nothing is selected yet.
+    if (this.selectedInputId === null) {
+      // IMPORTANT: do NOT auto-select ASIO. ASIO requires the exact USB hardware
+      // to be physically present and the driver initialised. Auto-selecting it on a
+      // machine where the device is absent causes PortAudio to return
+      // "Requested device not found" — confusing because the user never asked for it.
+      // Priority: WASAPI → DirectSound → MME → ASIO (only as last resort).
+      const AUTO_PRIORITY = ['WASAPI', 'WASAPI_EXCLUSIVE', 'DirectSound', 'MME', 'ASIO']
+      const autoRank = (dev: NativeAudioDevice) => {
+        for (let i = 0; i < AUTO_PRIORITY.length; i++) {
+          if (dev.hostApis.some((a) => a.kind === AUTO_PRIORITY[i])) return i
+        }
+        return AUTO_PRIORITY.length
+      }
+      const inputDevs = list.filter((d) => d.inputChannels > 0)
+      const inputDev = inputDevs.slice().sort((a, b) => autoRank(a) - autoRank(b))[0]
+      if (inputDev) {
+        this.selectedInputId = inputDev.id
+        // Use the best non-ASIO API available for the selected device.
+        this.inputHostApiKind = AUTO_PRIORITY
+          .find((kind) => inputDev.hostApis.some((a) => a.kind === kind))
+          ?? bestApiForDevice(inputDev)
+        this.inputChannels = Math.min(this.inputChannels, inputDev.inputChannels || this.inputChannels)
+      }
+    }
     this.notify()
     return list
   }
@@ -148,18 +261,27 @@ class NativeAudioController {
     if (!window.nativeAudio) return { ok: false, error: 'nativeAudio not available' }
     if (this.selectedInputId === null) return { ok: false, error: 'No input device selected' }
 
+    const monitoring = this.monitorGain > 0
+    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+
     const opts: NativeAudioStreamOpts = {
       inputDeviceId: this.selectedInputId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: this.monitorGain > 0,
+      monitor: monitoring,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
-    if (this.selectedOutputId !== null) opts.outputDeviceId = this.selectedOutputId
+    if (resolvedOut) {
+      opts.outputDeviceId = resolvedOut.id
+      if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
+      opts.outputChannels = 2  // stereo monitoring — both ears
+    } else if (this.selectedOutputId !== null) {
+      opts.outputDeviceId = this.selectedOutputId
+      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
+    }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
-    if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
 
     const result = await window.nativeAudio.openStream(opts)
     if (result.ok) {
@@ -223,18 +345,27 @@ class NativeAudioController {
     const inputDeviceId = this.selectedInputId
     if (inputDeviceId === null) return { ok: false, error: 'No input device selected' }
 
+    const monitoring = this.monitorGain > 0
+    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+
     const opts: NativeAudioStreamOpts = {
       inputDeviceId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: this.monitorGain > 0,
+      monitor: monitoring,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
-    if (this.selectedOutputId !== null) opts.outputDeviceId = this.selectedOutputId
+    if (resolvedOut) {
+      opts.outputDeviceId = resolvedOut.id
+      if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
+      opts.outputChannels = 2
+    } else if (this.selectedOutputId !== null) {
+      opts.outputDeviceId = this.selectedOutputId
+      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
+    }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
-    if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
 
     const result = await window.nativeAudio.reinit(opts)
     if (result.ok) {

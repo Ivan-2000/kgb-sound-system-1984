@@ -33,10 +33,77 @@ const eventBaseSchema = z.object({
   eventId: z.string().trim().min(1),
 })
 
+// Per-node drum routing (optional, back-compat): missing → primary 'drum-machine'.
+const drumNodeIdSchema = z.string().trim().min(1).max(64).optional()
+
+// Node graph (G2) — shared topology/params/positions
+const paramValueSchema = z.union([z.number(), z.string(), z.boolean()])
+const vec2Schema = z.object({ x: z.number(), y: z.number() })
+const sizeSchema = z.object({ w: z.number(), h: z.number() })
+const portRefSchema = z.object({
+  nodeId: z.string().trim().min(1).max(64),
+  portId: z.string().trim().min(1).max(64),
+})
+const graphNodeSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  type: z.string().trim().min(1).max(128),
+  params: z.record(z.string().max(64), paramValueSchema),
+  panelPos: vec2Schema,
+  canvasPos: vec2Schema,
+  size: sizeSchema,
+  zIndex: z.number(),
+  isMinimized: z.boolean(),
+})
+const graphEdgeSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  from: portRefSchema,
+  to: portRefSchema,
+})
+
 const clientEventSchema = z.discriminatedUnion('type', [
+  eventBaseSchema.extend({
+    type: z.literal('graph_node_add'),
+    payload: z.object({ node: graphNodeSchema }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_node_remove'),
+    payload: z.object({ nodeId: z.string().trim().min(1).max(64) }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_edge_connect'),
+    payload: z.object({ edge: graphEdgeSchema }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_edge_disconnect'),
+    payload: z.object({ edgeId: z.string().trim().min(1).max(64) }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_param_change'),
+    payload: z.object({
+      nodeId: z.string().trim().min(1).max(64),
+      paramId: z.string().trim().min(1).max(64),
+      value: paramValueSchema,
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_node_move'),
+    payload: z.object({
+      nodeId: z.string().trim().min(1).max(64),
+      view: z.enum(['panel', 'canvas']),
+      pos: vec2Schema,
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('graph_node_resize'),
+    payload: z.object({
+      nodeId: z.string().trim().min(1).max(64),
+      size: sizeSchema,
+    }),
+  }),
   eventBaseSchema.extend({
     type: z.literal('step_toggle'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       track: z.enum(['kick', 'snare', 'hat', 'crash']),
       step: z.number().int().min(0).max(31),
       value: z.boolean(),
@@ -75,12 +142,14 @@ const clientEventSchema = z.discriminatedUnion('type', [
   eventBaseSchema.extend({
     type: z.literal('step_count_change'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       stepCount: z.union([z.literal(8), z.literal(16), z.literal(32)]),
     }),
   }),
   eventBaseSchema.extend({
     type: z.literal('velocity_change'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       track: z.enum(['kick', 'snare', 'hat', 'crash']),
       step: z.number().int().min(0).max(31),
       velocity: z.number().int().min(1).max(127),
@@ -102,18 +171,21 @@ const clientEventSchema = z.discriminatedUnion('type', [
   eventBaseSchema.extend({
     type: z.literal('swing_change'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       swing: z.number().int().min(0).max(100),
     }),
   }),
   eventBaseSchema.extend({
     type: z.literal('pattern_switch'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       patternIndex: z.number().int().min(0).max(7),
     }),
   }),
   eventBaseSchema.extend({
     type: z.literal('chain_set'),
     payload: z.object({
+      nodeId: drumNodeIdSchema,
       chain: z.array(z.number().int().min(0).max(7)).max(32).nullable(),
     }),
   }),

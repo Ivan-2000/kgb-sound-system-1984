@@ -3,8 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
+    "dev": "concurrently -k -n SERVER,CLIENT -c cyan,yellow \"node server/index.js\" \"npm --prefix client run dev\"",
     "dev:server": "node server/index.js",
-    "dev": "npm --prefix client run dev",
+    "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix client run build",
     "build-win": "npm --prefix client run build-win",
     "start": "npm --prefix client run start",
@@ -13,5 +14,8 @@
   "dependencies": {
     "socket.io": "^4.8.1",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
   }
 }

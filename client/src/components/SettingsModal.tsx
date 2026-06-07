@@ -3,6 +3,63 @@ import { nativeAudioController, type NativeAudioSnapshot } from '../audio/native
 
 type RecordingFormat = 'wav' | 'mp3'
 
+const API_LABELS: Record<string, string> = {
+  ASIO:             'ASIO  ★★  (наименьшая задержка)',
+  WASAPI_EXCLUSIVE: 'WASAPI Exclusive  ★  (низкая задержка)',
+  WASAPI:           'WASAPI Shared',
+  DirectSound:      'DirectSound',
+  WDMKS:            'WDM-KS',
+  MME:              'MME  (legacy)',
+}
+const apiLabel = (kind: string) => API_LABELS[kind] ?? kind
+
+// Priority order — lower index = better driver
+const API_PRIORITY = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'WDMKS', 'MME']
+const apiRank = (kind: string) => { const i = API_PRIORITY.indexOf(kind); return i === -1 ? 99 : i }
+
+interface DeviceGroup {
+  name: string          // normalized physical device name (used as key + display)
+  channelCount: number
+  apis: Array<{ kind: string; deviceId: number }>
+}
+
+/**
+ * Windows PortAudio names follow two patterns:
+ *   ASIO      → "BEHRINGER USB WDM AUDIO 2.8.40"
+ *   WASAPI/DS/MME → "Динамики (2- BEHRINGER USB WDM AUDIO 2.8.40)"
+ *
+ * Normalize by extracting the content of the last parentheses (and stripping
+ * any leading "N- " channel prefix). This merges all API variants of the same
+ * physical device into one group so the driver selector shows ALL available
+ * APIs (including ASIO) for that device.
+ */
+function normalizeDeviceName(name: string): string {
+  const m = name.match(/\((.+)\)\s*$/)
+  if (m) return m[1].replace(/^\d+-\s*/, '').trim()
+  return name.trim()
+}
+
+function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): DeviceGroup[] {
+  const map = new Map<string, DeviceGroup>()
+  for (const dev of devices) {
+    const ch = forInput ? dev.inputChannels : dev.outputChannels
+    if (ch <= 0) continue
+    const key = normalizeDeviceName(dev.name)
+    if (!map.has(key)) map.set(key, { name: key, channelCount: ch, apis: [] })
+    const g = map.get(key)!
+    g.channelCount = Math.max(g.channelCount, ch)
+    for (const api of dev.hostApis) {
+      if (!g.apis.some((a) => a.kind === api.kind)) {
+        g.apis.push({ kind: api.kind, deviceId: dev.id })
+      }
+    }
+  }
+  for (const g of map.values()) {
+    g.apis.sort((a, b) => apiRank(a.kind) - apiRank(b.kind))
+  }
+  return [...map.values()]
+}
+
 function loadRecordingFormat(): RecordingFormat {
   return localStorage.getItem('kgb_recording_format') === 'mp3' ? 'mp3' : 'wav'
 }
@@ -12,29 +69,25 @@ interface Props {
 }
 
 export function SettingsModal({ onClose }: Props) {
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
-  const [selectedInput, setSelectedInput] = useState('')
-  const [selectedOutput, setSelectedOutput] = useState('')
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
+  const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
   const overlayRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    void navigator.mediaDevices.enumerateDevices().then((list) => {
-      setDevices(list)
-      const firstInput = list.find((d) => d.kind === 'audioinput')
-      const firstOutput = list.find((d) => d.kind === 'audiooutput')
-      if (firstInput) setSelectedInput(firstInput.deviceId)
-      if (firstOutput) setSelectedOutput(firstOutput.deviceId)
-    }).catch(() => {})
-  }, [])
 
   useEffect(() => {
     localStorage.setItem('kgb_recording_format', recordingFormat)
   }, [recordingFormat])
 
   useEffect(() => {
-    return nativeAudioController.subscribeState(setNativeSnapshot)
+    // Subscribe first — then load so the notification is guaranteed to arrive.
+    const unsub = nativeAudioController.subscribeState(setNativeSnapshot)
+    // Always request a device list when Settings opens.
+    // loadDevices() has an internal guard that skips re-enumeration while a
+    // stream is active (avoids crashing ASIO drivers on Pa_GetDeviceCount).
+    if (window.nativeAudio !== undefined) {
+      void nativeAudioController.loadDevices()
+    }
+    return unsub
   }, [])
 
   useEffect(() => {
@@ -44,9 +97,6 @@ export function SettingsModal({ onClose }: Props) {
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose])
-
-  const audioInputs = devices.filter((d) => d.kind === 'audioinput')
-  const audioOutputs = devices.filter((d) => d.kind === 'audiooutput')
 
   return (
     <div
@@ -75,159 +125,164 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-body">
 
-          {/* ── Audio Device ─────────────────────────────────── */}
-          <section className="settings-section">
-            <h3 className="settings-section-title">Audio Device</h3>
-
-            <div className="settings-field">
-              <label className="settings-label" htmlFor="settings-input-device">
-                Input device
-              </label>
-              {audioInputs.length === 0 ? (
-                <p className="settings-stub">No input devices found — grant microphone permission to see devices</p>
-              ) : (
-                <select
-                  id="settings-input-device"
-                  className="settings-select"
-                  value={selectedInput}
-                  onChange={(e) => setSelectedInput(e.target.value)}
-                  aria-label="Audio input device"
-                >
-                  {audioInputs.map((d, i) => (
-                    <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Input ${i + 1}`}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {audioOutputs.length > 0 && (
-              <div className="settings-field">
-                <label className="settings-label" htmlFor="settings-output-device">
-                  Output device
-                </label>
-                <select
-                  id="settings-output-device"
-                  className="settings-select"
-                  value={selectedOutput}
-                  onChange={(e) => setSelectedOutput(e.target.value)}
-                  aria-label="Audio output device"
-                >
-                  {audioOutputs.map((d, i) => (
-                    <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Output ${i + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="settings-field">
-              <span className="settings-label">Host API</span>
-              <p className="settings-stub settings-stub--phase">
-                ASIO / WASAPI / DirectSound — available in Phase 1
-              </p>
-            </div>
-
-            <div className="settings-field">
-              <span className="settings-label">Buffer size</span>
-              <p className="settings-stub settings-stub--phase">
-                Available after native audio driver is implemented
-              </p>
-            </div>
-
-            <div className="settings-field">
-              <button
-                type="button"
-                className="ghost-action settings-reinit-btn"
-                disabled
-                title="Available after native audio driver is implemented"
-              >
-                Reinitialize device
-              </button>
-            </div>
-          </section>
-
           {/* ── Native Audio (PortAudio) ─────────────────────── */}
           {window.nativeAudio !== undefined && (() => {
-            const inputDevices = nativeSnapshot.devices.filter((d) => d.inputChannels > 0)
-            const outputDevices = nativeSnapshot.devices.filter((d) => d.outputChannels > 0)
-            const currentInputValue = nativeSnapshot.selectedInputId !== null && nativeSnapshot.inputHostApiKind
-              ? `${nativeSnapshot.selectedInputId}::${nativeSnapshot.inputHostApiKind}`
-              : ''
-            const currentOutputValue = nativeSnapshot.selectedOutputId !== null && nativeSnapshot.outputHostApiKind
-              ? `${nativeSnapshot.selectedOutputId}::${nativeSnapshot.outputHostApiKind}`
-              : ''
+            const inputGroups  = buildDeviceGroups(nativeSnapshot.devices, true)
+            const outputGroups = buildDeviceGroups(nativeSnapshot.devices, false)
+
+            // Find which group the currently-selected device belongs to.
+            // normalizeDeviceName() bridges ASIO vs WASAPI/DS/MME naming differences
+            // (e.g. "BEHRINGER USB WDM AUDIO 2.8.40" vs "Динамики (2- BEHRINGER USB WDM AUDIO 2.8.40)").
+            const selInDev    = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedInputId)
+            const selInGroup  = inputGroups.find((g) => g.name === (selInDev ? normalizeDeviceName(selInDev.name) : ''))
+            const selOutDev   = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedOutputId)
+            const selOutGroup = outputGroups.find((g) => g.name === (selOutDev ? normalizeDeviceName(selOutDev.name) : ''))
+
             return (
               <section className="settings-section">
-                <h3 className="settings-section-title">Native Audio (PortAudio)</h3>
+                <h3 className="settings-section-title">Audio (PortAudio)</h3>
 
-                <div className="settings-field">
-                  <button
-                    type="button"
-                    className="ghost-action settings-reinit-btn"
-                    onClick={() => { void nativeAudioController.loadDevices() }}
-                  >
-                    Load devices
-                  </button>
-                </div>
-
+                {/* ── INPUT ── */}
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-input-device">
                     Input device
                   </label>
-                  <select
-                    id="native-input-device"
-                    className="settings-select"
-                    value={currentInputValue}
-                    onChange={(e) => {
-                      if (!e.target.value) return
-                      const sep = e.target.value.indexOf('::')
-                      const idStr = e.target.value.slice(0, sep)
-                      const kind = e.target.value.slice(sep + 2)
-                      nativeAudioController.selectInput(Number(idStr), kind)
-                    }}
-                    aria-label="Native audio input device"
-                  >
-                    <option value="">— select —</option>
-                    {inputDevices.flatMap((dev) =>
-                      dev.hostApis.map((api) => (
-                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}]
+                  {inputGroups.length === 0 ? (
+                    <p className="settings-stub">Загрузка устройств…</p>
+                  ) : (
+                    <select
+                      id="native-input-device"
+                      className="settings-select"
+                      value={selInGroup?.name ?? ''}
+                      onChange={(e) => {
+                        const group = inputGroups.find((g) => g.name === e.target.value)
+                        if (!group) return
+                        // Auto-pick best driver for this device
+                        const best = group.apis[0]
+                        nativeAudioController.selectInput(best.deviceId, best.kind)
+                      }}
+                      aria-label="Input device"
+                    >
+                      <option value="">— выбрать —</option>
+                      {inputGroups.map((g) => (
+                        <option key={g.name} value={g.name}>
+                          {g.name}  ({g.channelCount} ch)
                         </option>
-                      ))
-                    )}
-                  </select>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
-                <div className="settings-field">
-                  <label className="settings-label" htmlFor="native-output-device">
-                    Output device
-                  </label>
-                  <select
-                    id="native-output-device"
-                    className="settings-select"
-                    value={currentOutputValue}
-                    onChange={(e) => {
-                      if (!e.target.value) return
-                      const sep = e.target.value.indexOf('::')
-                      const idStr = e.target.value.slice(0, sep)
-                      const kind = e.target.value.slice(sep + 2)
-                      nativeAudioController.selectOutput(Number(idStr), kind)
-                    }}
-                    aria-label="Native audio output device"
-                  >
-                    <option value="">— same as input —</option>
-                    {outputDevices.flatMap((dev) =>
-                      dev.hostApis.map((api) => (
-                        <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                          {dev.name} [{api.kind}]
+                {selInGroup && (
+                  <div className="settings-field">
+                    <label className="settings-label" htmlFor="native-input-driver">
+                      Driver
+                    </label>
+                    <select
+                      id="native-input-driver"
+                      className="settings-select"
+                      value={nativeSnapshot.inputHostApiKind}
+                      onChange={(e) => {
+                        const entry = selInGroup.apis.find((a) => a.kind === e.target.value)
+                        if (entry) nativeAudioController.selectInput(entry.deviceId, entry.kind)
+                      }}
+                      aria-label="Input driver"
+                    >
+                      {selInGroup.apis.map((a) => (
+                        <option key={a.kind} value={a.kind}>{apiLabel(a.kind)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {nativeSnapshot.maxInputChannels > 0 && (
+                  <div className="settings-field">
+                    <label className="settings-label" htmlFor="native-input-channels">
+                      Input channels
+                    </label>
+                    <select
+                      id="native-input-channels"
+                      className="settings-select"
+                      value={nativeSnapshot.inputChannels}
+                      onChange={(e) => nativeAudioController.setInputChannels(Number(e.target.value))}
+                      aria-label="Input channel count"
+                    >
+                      {Array.from({ length: nativeSnapshot.maxInputChannels }, (_, i) => i + 1).map((n) => (
+                        <option key={n} value={n}>
+                          {n} {n === 1 ? 'канал' : n < 5 ? 'канала' : 'каналов'}
+                          {n === nativeSnapshot.maxInputChannels ? ' (max)' : ''}
                         </option>
-                      ))
-                    )}
-                  </select>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* ── OUTPUT ── */}
+                <div className="settings-field">
+                  <label className="settings-label settings-label--checkbox" htmlFor="native-custom-output">
+                    <input
+                      id="native-custom-output"
+                      type="checkbox"
+                      checked={useCustomOutput}
+                      onChange={(e) => {
+                        setUseCustomOutput(e.target.checked)
+                        if (!e.target.checked) nativeAudioController.clearOutput()
+                      }}
+                    />
+                    Отдельное output устройство
+                  </label>
                 </div>
+
+                {useCustomOutput && (
+                  <>
+                    <div className="settings-field">
+                      <label className="settings-label" htmlFor="native-output-device">
+                        Output device
+                      </label>
+                      <select
+                        id="native-output-device"
+                        className="settings-select"
+                        value={selOutGroup?.name ?? ''}
+                        onChange={(e) => {
+                          const group = outputGroups.find((g) => g.name === e.target.value)
+                          if (!group) return
+                          const best = group.apis[0]
+                          nativeAudioController.selectOutput(best.deviceId, best.kind)
+                        }}
+                        aria-label="Output device"
+                      >
+                        <option value="">— выбрать —</option>
+                        {outputGroups.map((g) => (
+                          <option key={g.name} value={g.name}>
+                            {g.name}  ({g.channelCount} ch)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selOutGroup && (
+                      <div className="settings-field">
+                        <label className="settings-label" htmlFor="native-output-driver">
+                          Output driver
+                        </label>
+                        <select
+                          id="native-output-driver"
+                          className="settings-select"
+                          value={nativeSnapshot.outputHostApiKind}
+                          onChange={(e) => {
+                            const entry = selOutGroup.apis.find((a) => a.kind === e.target.value)
+                            if (entry) nativeAudioController.selectOutput(entry.deviceId, entry.kind)
+                          }}
+                          aria-label="Output driver"
+                        >
+                          {selOutGroup.apis.map((a) => (
+                            <option key={a.kind} value={a.kind}>{apiLabel(a.kind)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </>
+                )}
 
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-buffer-size">
@@ -267,7 +322,7 @@ export function SettingsModal({ onClose }: Props) {
 
                 {(nativeSnapshot.inputLatencyMs !== null || nativeSnapshot.outputLatencyMs !== null) && (
                   <div className="settings-field">
-                    <span className="settings-label">Audio latency</span>
+                    <span className="settings-label">Latency</span>
                     <span className="settings-stub">
                       In: {nativeSnapshot.inputLatencyMs ?? '—'} ms &nbsp;|&nbsp; Out: {nativeSnapshot.outputLatencyMs ?? '—'} ms
                     </span>
@@ -308,6 +363,13 @@ export function SettingsModal({ onClose }: Props) {
                 {nativeSnapshot.error !== null && (
                   <div className="settings-field">
                     <p className="network-error" style={{ margin: 0 }}>{nativeSnapshot.error}</p>
+                    {(nativeSnapshot.error.toLowerCase().includes('not found') ||
+                      nativeSnapshot.error.toLowerCase().includes('invalid') ||
+                      nativeSnapshot.error.toLowerCase().includes('unavailable')) && (
+                      <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#a09880' }}>
+                        Совет: переподключи USB-устройство, перезапусти ASIO-драйвер, затем переоткрой Settings.
+                      </p>
+                    )}
                   </div>
                 )}
               </section>

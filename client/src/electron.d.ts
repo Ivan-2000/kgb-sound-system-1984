@@ -7,6 +7,9 @@ interface NativeAudioDevice {
   defaultSampleRate: number
 }
 
+/** Priority order for automatic Host API selection (best → worst). */
+type HostApiKind = 'ASIO' | 'WASAPI_EXCLUSIVE' | 'WASAPI' | 'DirectSound' | 'MME'
+
 interface NativeAudioStreamResult {
   ok: boolean
   streamId?: number

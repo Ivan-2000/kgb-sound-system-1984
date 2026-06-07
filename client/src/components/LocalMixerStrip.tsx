@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController } from '../audio/nativeAudioController'
+import { MixerStrip } from './MixerStrip'
 
 type LocalMixerStripProps = {
   channelIndex: number
@@ -7,14 +8,19 @@ type LocalMixerStripProps = {
   deviceId: number | null
   sendEnabled: boolean
   onSendToggle: () => void
+  recording?: boolean
+  onRecord?: () => void
 }
 
 function lsKey(deviceId: number | null, channelIndex: number): string | null {
   return deviceId !== null ? `kgb_ch_name_${deviceId}_${channelIndex}` : null
 }
 
-export function LocalMixerStrip({ channelIndex, label, deviceId, sendEnabled, onSendToggle }: LocalMixerStripProps) {
+export function LocalMixerStrip({ channelIndex, label, deviceId, sendEnabled, onSendToggle, recording, onRecord }: LocalMixerStripProps) {
   const [level, setLevel] = useState(0)
+  // Local fader/pan are visual for now — per-input gain/pan not yet wired to the engine.
+  const [gain, setGain] = useState(100)
+  const [pan, setPan] = useState(0)
   const [editing, setEditing] = useState(false)
   const [displayLabel, setDisplayLabel] = useState<string>(() => {
     const key = lsKey(deviceId, channelIndex)
@@ -77,57 +83,41 @@ export function LocalMixerStrip({ channelIndex, label, deviceId, sendEnabled, on
     }
   }
 
+  const nameNode = editing ? (
+    <input
+      ref={inputRef}
+      className="mfx-name-input"
+      value={displayLabel}
+      onChange={(e) => setDisplayLabel(e.target.value)}
+      onBlur={commitLabel}
+      onKeyDown={handleKeyDown}
+      aria-label={`Rename channel ${channelIndex + 1}`}
+    />
+  ) : (
+    <span
+      className="mfx-name"
+      onDoubleClick={handleDoubleClick}
+      title="Double-click to rename"
+      style={{ cursor: 'text' }}
+    >
+      {displayLabel}
+    </span>
+  )
+
   return (
-    <div className={`mixer-channel${sendEnabled ? ' mixer-channel--solo' : ''}`}>
-      <div className="channel-meta">
-        {editing ? (
-          <input
-            ref={inputRef}
-            className="channel-label-input"
-            value={displayLabel}
-            onChange={(e) => setDisplayLabel(e.target.value)}
-            onBlur={commitLabel}
-            onKeyDown={handleKeyDown}
-            aria-label={`Rename channel ${channelIndex + 1}`}
-          />
-        ) : (
-          <strong
-            onDoubleClick={handleDoubleClick}
-            title="Double-click to rename"
-            style={{ cursor: 'text' }}
-          >
-            {displayLabel}
-          </strong>
-        )}
-        <span>Local input {channelIndex + 1}</span>
-      </div>
-
-      <div className="level-meter" aria-hidden="true" title={`Level: ${Math.round(level * 100)}%`}>
-        <span
-          className="level-meter__bar"
-          style={{
-            width: `${Math.min(level, 1) * 100}%`,
-            background: level > 0.85
-              ? 'linear-gradient(90deg, #e07060, #f04040)'
-              : level > 0.6
-              ? 'linear-gradient(90deg, var(--gold), #d4a830)'
-              : 'linear-gradient(90deg, var(--crystal), var(--gold))',
-          }}
-        />
-      </div>
-
-      <div className="channel-actions">
-        <button
-          type="button"
-          className={`channel-btn${sendEnabled ? ' channel-btn--active channel-btn--send' : ''}`}
-          onClick={onSendToggle}
-          aria-pressed={sendEnabled}
-          aria-label={`${sendEnabled ? 'Disable' : 'Enable'} send for channel ${channelIndex + 1}`}
-          style={sendEnabled ? { color: 'var(--crystal)', borderColor: 'var(--crystal)' } : undefined}
-        >
-          {sendEnabled ? 'Sending' : 'Send'}
-        </button>
-      </div>
-    </div>
+    <MixerStrip
+      name={displayLabel}
+      nameNode={nameNode}
+      sub={`In ${channelIndex + 1}`}
+      value={gain}
+      onValue={setGain}
+      level={level}
+      pan={pan}
+      onPan={setPan}
+      send={sendEnabled}
+      onSend={onSendToggle}
+      recording={recording}
+      onRecord={onRecord}
+    />
   )
 }

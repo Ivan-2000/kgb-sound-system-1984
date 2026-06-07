@@ -3,6 +3,9 @@ const { randomUUID, randomBytes } = require('node:crypto')
 const DEFAULT_STEP_COUNT = 16
 const MAX_PATTERNS = 8
 const DEFAULT_VELOCITY = 100
+// The primary/singleton Drum Machine node. Drum sync events without a nodeId
+// target this one (back-compat); duplicated drums carry their own nodeId.
+const DEFAULT_DRUM_ID = 'drum-machine'
 
 // Safe alphabet: no 0/O/1/I to avoid visual confusion
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -44,17 +47,44 @@ function createEmptySlot(stepCount = DEFAULT_STEP_COUNT) {
   }
 }
 
+// Per-node Drum Machine state (one per drum node — keyed by nodeId in s.drums).
+function createDrumState() {
+  return {
+    activePatternIndex: 0,
+    swing: 0,
+    chain: null,
+    patternBank: Array.from({ length: MAX_PATTERNS }, () => createEmptySlot()),
+  }
+}
+
 function createInitialSyncState() {
   return {
     bpm: 120,
     isPlaying: false,
     currentStep: 0,
-    activePatternIndex: 0,
-    swing: 0,
-    patternBank: Array.from({ length: MAX_PATTERNS }, () => createEmptySlot()),
     metronomeEnabled: false,
     timeSignature: { beats: 4, division: 4 },
-    chain: null,
+    // Per-node drum patterns, keyed by nodeId. The primary kit is pre-created so
+    // its events (which omit nodeId) land somewhere from the first edit.
+    drums: { [DEFAULT_DRUM_ID]: createDrumState() },
+    // Node graph (G2): shared topology. Hydrated to late joiners via snapshot.
+    graph: { nodes: {}, edges: [] },
+  }
+}
+
+// Resolve (lazily creating) the drum state a per-node event targets.
+function getDrumStateFor(s, nodeId) {
+  const id = nodeId || DEFAULT_DRUM_ID
+  if (!s.drums[id]) s.drums[id] = createDrumState()
+  return s.drums[id]
+}
+
+function cloneDrumState(d) {
+  return {
+    activePatternIndex: d.activePatternIndex,
+    swing: d.swing,
+    chain: d.chain ? [...d.chain] : null,
+    patternBank: d.patternBank.map(cloneSlot),
   }
 }
 
@@ -189,16 +219,28 @@ class RoomManager {
     const room = this.rooms.get(roomId)
     if (!room) return null
     const s = room.syncState
+    const primary = getDrumStateFor(s, DEFAULT_DRUM_ID)
     return {
       bpm: s.bpm,
       isPlaying: s.isPlaying,
       currentStep: s.currentStep,
-      activePatternIndex: s.activePatternIndex,
-      swing: s.swing,
-      patternBank: s.patternBank.map(cloneSlot),
+      // Legacy top-level fields mirror the primary drum (back-compat for clients
+      // that read them directly); the full per-node map is in `drums`.
+      activePatternIndex: primary.activePatternIndex,
+      swing: primary.swing,
+      patternBank: primary.patternBank.map(cloneSlot),
+      chain: primary.chain ? [...primary.chain] : null,
+      drums: Object.fromEntries(
+        Object.entries(s.drums).map(([id, d]) => [id, cloneDrumState(d)]),
+      ),
       metronomeEnabled: s.metronomeEnabled,
       timeSignature: { ...s.timeSignature },
-      chain: s.chain ? [...s.chain] : null,
+      graph: {
+        nodes: Object.fromEntries(
+          Object.entries(s.graph.nodes).map(([id, n]) => [id, { ...n, params: { ...n.params } }]),
+        ),
+        edges: s.graph.edges.map((e) => ({ id: e.id, from: { ...e.from }, to: { ...e.to } })),
+      },
     }
   }
 
@@ -206,10 +248,10 @@ class RoomManager {
     const room = this.rooms.get(roomId)
     if (!room) return
     const s = room.syncState
-    const activeSlot = s.patternBank[s.activePatternIndex]
 
     if (event.type === 'step_toggle') {
-      activeSlot.pattern[event.payload.track][event.payload.step] = event.payload.value
+      const d = getDrumStateFor(s, event.payload.nodeId)
+      d.patternBank[d.activePatternIndex].pattern[event.payload.track][event.payload.step] = event.payload.value
       return
     }
 
@@ -224,6 +266,8 @@ class RoomManager {
     }
 
     if (event.type === 'step_count_change') {
+      const d = getDrumStateFor(s, event.payload.nodeId)
+      const activeSlot = d.patternBank[d.activePatternIndex]
       const next = event.payload.stepCount
       const tracks = ['kick', 'snare', 'hat', 'crash']
       for (const track of tracks) {
@@ -238,7 +282,8 @@ class RoomManager {
     }
 
     if (event.type === 'velocity_change') {
-      activeSlot.velocity[event.payload.track][event.payload.step] = event.payload.velocity
+      const d = getDrumStateFor(s, event.payload.nodeId)
+      d.patternBank[d.activePatternIndex].velocity[event.payload.track][event.payload.step] = event.payload.velocity
       return
     }
 
@@ -249,19 +294,69 @@ class RoomManager {
 
     if (event.type === 'metronome_toggle') { s.metronomeEnabled = event.payload.enabled; return }
 
-    if (event.type === 'swing_change') { s.swing = event.payload.swing; return }
+    if (event.type === 'swing_change') {
+      getDrumStateFor(s, event.payload.nodeId).swing = event.payload.swing
+      return
+    }
 
     if (event.type === 'pattern_switch') {
       const idx = event.payload.patternIndex
       if (idx >= 0 && idx < MAX_PATTERNS) {
-        s.activePatternIndex = idx
+        getDrumStateFor(s, event.payload.nodeId).activePatternIndex = idx
         s.currentStep = 0
       }
       return
     }
 
     if (event.type === 'chain_set') {
-      s.chain = event.payload.chain
+      getDrumStateFor(s, event.payload.nodeId).chain = event.payload.chain
+      return
+    }
+
+    // ── Node graph (G2) — LWW, collaborative (not host-gated) ──
+    const g = s.graph
+
+    if (event.type === 'graph_node_add') {
+      g.nodes[event.payload.node.id] = event.payload.node
+      return
+    }
+
+    if (event.type === 'graph_node_remove') {
+      const { nodeId } = event.payload
+      delete g.nodes[nodeId]
+      g.edges = g.edges.filter((e) => e.from.nodeId !== nodeId && e.to.nodeId !== nodeId)
+      return
+    }
+
+    if (event.type === 'graph_edge_connect') {
+      const { edge } = event.payload
+      if (!g.edges.some((e) => e.id === edge.id)) g.edges.push(edge)
+      return
+    }
+
+    if (event.type === 'graph_edge_disconnect') {
+      g.edges = g.edges.filter((e) => e.id !== event.payload.edgeId)
+      return
+    }
+
+    if (event.type === 'graph_param_change') {
+      const node = g.nodes[event.payload.nodeId]
+      if (node) node.params[event.payload.paramId] = event.payload.value
+      return
+    }
+
+    if (event.type === 'graph_node_move') {
+      const node = g.nodes[event.payload.nodeId]
+      if (node) {
+        if (event.payload.view === 'panel') node.panelPos = event.payload.pos
+        else node.canvasPos = event.payload.pos
+      }
+      return
+    }
+
+    if (event.type === 'graph_node_resize') {
+      const node = g.nodes[event.payload.nodeId]
+      if (node) node.size = event.payload.size
     }
   }
 }
