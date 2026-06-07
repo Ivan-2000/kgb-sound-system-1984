@@ -191,6 +191,13 @@ class NativeAudioController {
     this.notify()
   }
 
+  /** Reset output to "same as input" — resolveOutputForMonitor() handles auto-routing. */
+  clearOutput(): void {
+    this.selectedOutputId = null
+    this.outputHostApiKind = ''
+    this.notify()
+  }
+
   /** A2: set number of input channels to capture (1 .. maxInputChannels of selected device). */
   setInputChannels(n: number): void {
     const max = this.maxInputChannelsForCurrent()

@@ -27,6 +27,7 @@ export function SettingsModal({ onClose }: Props) {
   const [selectedOutput, setSelectedOutput] = useState('')
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
+  const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
   const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -145,12 +146,8 @@ export function SettingsModal({ onClose }: Props) {
           {window.nativeAudio !== undefined && (() => {
             const inputDevices = nativeSnapshot.devices.filter((d) => d.inputChannels > 0)
             const outputDevices = nativeSnapshot.devices.filter((d) => d.outputChannels > 0)
-            const currentInputValue = nativeSnapshot.selectedInputId !== null && nativeSnapshot.inputHostApiKind
-              ? `${nativeSnapshot.selectedInputId}::${nativeSnapshot.inputHostApiKind}`
-              : ''
-            const currentOutputValue = nativeSnapshot.selectedOutputId !== null && nativeSnapshot.outputHostApiKind
-              ? `${nativeSnapshot.selectedOutputId}::${nativeSnapshot.outputHostApiKind}`
-              : ''
+            const selectedInputDev = inputDevices.find((d) => d.id === nativeSnapshot.selectedInputId)
+            const selectedOutputDev = outputDevices.find((d) => d.id === nativeSnapshot.selectedOutputId)
             return (
               <section className="settings-section">
                 <h3 className="settings-section-title">Native Audio (PortAudio)</h3>
@@ -165,6 +162,7 @@ export function SettingsModal({ onClose }: Props) {
                   </button>
                 </div>
 
+                {/* ── INPUT ── */}
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-input-device">
                     Input device
@@ -172,28 +170,42 @@ export function SettingsModal({ onClose }: Props) {
                   <select
                     id="native-input-device"
                     className="settings-select"
-                    value={currentInputValue}
+                    value={nativeSnapshot.selectedInputId ?? ''}
                     onChange={(e) => {
                       if (!e.target.value) return
-                      const sep = e.target.value.indexOf('::')
-                      const idStr = e.target.value.slice(0, sep)
-                      const kind = e.target.value.slice(sep + 2)
-                      nativeAudioController.selectInput(Number(idStr), kind)
+                      nativeAudioController.selectInput(Number(e.target.value))
                     }}
                     aria-label="Native audio input device"
                   >
                     <option value="">— select —</option>
                     {inputDevices.map((dev) => (
-                      <optgroup key={dev.id} label={`${dev.name}  (${dev.inputChannels} ch)`}>
-                        {dev.hostApis.map((api) => (
-                          <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                            {apiLabel(api.kind)}
-                          </option>
-                        ))}
-                      </optgroup>
+                      <option key={dev.id} value={dev.id}>
+                        {dev.name} ({dev.inputChannels} ch)
+                      </option>
                     ))}
                   </select>
                 </div>
+
+                {selectedInputDev && (
+                  <div className="settings-field">
+                    <label className="settings-label" htmlFor="native-input-driver">
+                      Input driver
+                    </label>
+                    <select
+                      id="native-input-driver"
+                      className="settings-select"
+                      value={nativeSnapshot.inputHostApiKind}
+                      onChange={(e) => {
+                        nativeAudioController.selectInput(nativeSnapshot.selectedInputId!, e.target.value)
+                      }}
+                      aria-label="Input driver"
+                    >
+                      {selectedInputDev.hostApis.map((api) => (
+                        <option key={api.kind} value={api.kind}>{apiLabel(api.kind)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {nativeSnapshot.maxInputChannels > 0 && (
                   <div className="settings-field">
@@ -217,35 +229,69 @@ export function SettingsModal({ onClose }: Props) {
                   </div>
                 )}
 
+                {/* ── OUTPUT ── */}
                 <div className="settings-field">
-                  <label className="settings-label" htmlFor="native-output-device">
-                    Output device
+                  <label className="settings-label settings-label--checkbox" htmlFor="native-custom-output">
+                    <input
+                      id="native-custom-output"
+                      type="checkbox"
+                      checked={useCustomOutput}
+                      onChange={(e) => {
+                        setUseCustomOutput(e.target.checked)
+                        if (!e.target.checked) nativeAudioController.clearOutput()
+                      }}
+                    />
+                    Отдельное output устройство
                   </label>
-                  <select
-                    id="native-output-device"
-                    className="settings-select"
-                    value={currentOutputValue}
-                    onChange={(e) => {
-                      if (!e.target.value) return
-                      const sep = e.target.value.indexOf('::')
-                      const idStr = e.target.value.slice(0, sep)
-                      const kind = e.target.value.slice(sep + 2)
-                      nativeAudioController.selectOutput(Number(idStr), kind)
-                    }}
-                    aria-label="Native audio output device"
-                  >
-                    <option value="">— same as input —</option>
-                    {outputDevices.map((dev) => (
-                      <optgroup key={dev.id} label={`${dev.name}  (${dev.outputChannels} ch)`}>
-                        {dev.hostApis.map((api) => (
-                          <option key={`${dev.id}::${api.kind}`} value={`${dev.id}::${api.kind}`}>
-                            {apiLabel(api.kind)}
+                </div>
+
+                {useCustomOutput && (
+                  <>
+                    <div className="settings-field">
+                      <label className="settings-label" htmlFor="native-output-device">
+                        Output device
+                      </label>
+                      <select
+                        id="native-output-device"
+                        className="settings-select"
+                        value={nativeSnapshot.selectedOutputId ?? ''}
+                        onChange={(e) => {
+                          if (!e.target.value) return
+                          nativeAudioController.selectOutput(Number(e.target.value))
+                        }}
+                        aria-label="Native audio output device"
+                      >
+                        <option value="">— select —</option>
+                        {outputDevices.map((dev) => (
+                          <option key={dev.id} value={dev.id}>
+                            {dev.name} ({dev.outputChannels} ch)
                           </option>
                         ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </div>
+                      </select>
+                    </div>
+
+                    {selectedOutputDev && (
+                      <div className="settings-field">
+                        <label className="settings-label" htmlFor="native-output-driver">
+                          Output driver
+                        </label>
+                        <select
+                          id="native-output-driver"
+                          className="settings-select"
+                          value={nativeSnapshot.outputHostApiKind}
+                          onChange={(e) => {
+                            nativeAudioController.selectOutput(nativeSnapshot.selectedOutputId!, e.target.value)
+                          }}
+                          aria-label="Output driver"
+                        >
+                          {selectedOutputDev.hostApis.map((api) => (
+                            <option key={api.kind} value={api.kind}>{apiLabel(api.kind)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </>
+                )}
 
                 <div className="settings-field">
                   <label className="settings-label" htmlFor="native-buffer-size">

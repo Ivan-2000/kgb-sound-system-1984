@@ -2218,6 +2218,22 @@ meter {
   font-weight: 600;
 }
 
+.settings-label--checkbox {
+  padding-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.settings-label--checkbox input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--crystal);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .settings-select {
   background: var(--control);
   border: 1px solid var(--line);
