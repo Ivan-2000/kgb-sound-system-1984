@@ -1,11 +1,6 @@
 import SimplePeer from 'simple-peer'
 import type { SignalData, Instance } from 'simple-peer'
-
-const MUSIC_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
-  echoCancellation: false,
-  noiseSuppression: false,
-  autoGainControl: false,
-}
+import { requestAudioStream, MUSIC_AUDIO_CONSTRAINTS } from './mediaDevices'
 
 // Required for P2P through NAT over the internet.
 // Without ICE servers, connections only work on the same LAN.
@@ -78,25 +73,29 @@ class PeerManager {
       this.stopLocalStream()
     }
 
+    // requestAudioStream() handles: preferred device (from Settings), fallback to
+    // system default, and descriptive errors instead of raw "Requested device not found".
+    const audioStream = await requestAudioStream()
+
     let stream: MediaStream
     if (withVideo) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: MUSIC_AUDIO_CONSTRAINTS,
+        // Combine the audio tracks we already have with a video request.
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
           video: true,
         })
+        const combined = new MediaStream([
+          ...audioStream.getAudioTracks(),
+          ...videoStream.getVideoTracks(),
+        ])
+        stream = combined
       } catch {
-        // Camera not available — fall back to audio only
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: MUSIC_AUDIO_CONSTRAINTS,
-          video: false,
-        })
+        // Camera not available — use audio-only stream
+        stream = audioStream
       }
     } else {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: MUSIC_AUDIO_CONSTRAINTS,
-        video: false,
-      })
+      stream = audioStream
     }
 
     this.localStream = stream

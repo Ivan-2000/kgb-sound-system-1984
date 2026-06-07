@@ -94,12 +94,12 @@ class NativeAudioController {
   }
 
   private buildChannelNames(count: number): string[] {
-    const device = this.devices.find((d) => d.id === this.selectedInputId)
-    // A2: named channels — generic Ch.N labels; ASIO per-channel names require
-    // driver introspection (Phase 5 MI3) and will replace these labels then.
-    return Array.from({ length: count }, (_, i) =>
-      device ? `${device.name} Ch.${i + 1}` : `Input ${i + 1}`
-    )
+    // Use generic "Ch.N" labels — the full device name is local hardware info
+    // and should not be broadcast to remote peers via sync:channel_meta.
+    // (Remote peers see "BEHRINGER USB WDM AUDIO 2.8.40 Ch.1" which is confusing
+    // and makes it look like their machine should have that device.)
+    // ASIO per-channel names (Phase 5 MI3) will replace these labels when ready.
+    return Array.from({ length: count }, (_, i) => `Ch.${i + 1}`)
   }
 
   private maxInputChannelsForCurrent(): number {
@@ -216,10 +216,26 @@ class NativeAudioController {
     this.devices = list
     // A2: auto-select on first load if nothing is selected yet.
     if (this.selectedInputId === null) {
-      const inputDev = list.find((d) => d.inputChannels > 0)
+      // IMPORTANT: do NOT auto-select ASIO. ASIO requires the exact USB hardware
+      // to be physically present and the driver initialised. Auto-selecting it on a
+      // machine where the device is absent causes PortAudio to return
+      // "Requested device not found" — confusing because the user never asked for it.
+      // Priority: WASAPI → DirectSound → MME → ASIO (only as last resort).
+      const AUTO_PRIORITY = ['WASAPI', 'WASAPI_EXCLUSIVE', 'DirectSound', 'MME', 'ASIO']
+      const autoRank = (dev: NativeAudioDevice) => {
+        for (let i = 0; i < AUTO_PRIORITY.length; i++) {
+          if (dev.hostApis.some((a) => a.kind === AUTO_PRIORITY[i])) return i
+        }
+        return AUTO_PRIORITY.length
+      }
+      const inputDevs = list.filter((d) => d.inputChannels > 0)
+      const inputDev = inputDevs.slice().sort((a, b) => autoRank(a) - autoRank(b))[0]
       if (inputDev) {
         this.selectedInputId = inputDev.id
-        this.inputHostApiKind = bestApiForDevice(inputDev)
+        // Use the best non-ASIO API available for the selected device.
+        this.inputHostApiKind = AUTO_PRIORITY
+          .find((kind) => inputDev.hostApis.some((a) => a.kind === kind))
+          ?? bestApiForDevice(inputDev)
         this.inputChannels = Math.min(this.inputChannels, inputDev.inputChannels || this.inputChannels)
       }
     }

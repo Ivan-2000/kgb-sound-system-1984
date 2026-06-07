@@ -42,6 +42,8 @@ type SyncStateSnapshot = {
 type RoomState = {
   connected: boolean
   reconnecting: boolean
+  /** How many reconnect attempts have been made (resets to 0 on connect). */
+  reconnectAttempt: number
   socketId: string | null
   roomId: string | null
   shortCode: string | null
@@ -105,6 +107,7 @@ class RoomSyncClient {
   private state: RoomState = {
     connected: false,
     reconnecting: false,
+    reconnectAttempt: 0,
     socketId: null,
     roomId: null,
     shortCode: null,
@@ -134,13 +137,18 @@ class RoomSyncClient {
     this.socket = io(SERVER_URL, {
       autoConnect: true,
       transports: ['websocket'],
-      reconnectionAttempts: 10,
+      // Render free tier cold-starts in ~60s. 20 attempts × up to 5s = ~100s total,
+      // which is enough to survive the wake-up without giving up too early.
+      reconnectionAttempts: 20,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
     })
 
     this.socket.on('connect', () => {
       this.state.connected = true
       this.state.reconnecting = false
+      this.state.reconnectAttempt = 0
       this.state.socketId = this.socket.id ?? null
       this.emitState()
       this.startPingInterval()
@@ -169,8 +177,9 @@ class RoomSyncClient {
       this.emitState()
     })
 
-    this.socket.on('reconnect_attempt', () => {
+    this.socket.on('reconnect_attempt', (attempt: number) => {
       this.state.reconnecting = true
+      this.state.reconnectAttempt = attempt
       this.emitState()
     })
 

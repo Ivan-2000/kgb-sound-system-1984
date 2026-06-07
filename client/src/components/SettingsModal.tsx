@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
+import { setPreferredInputDevice, getPreferredInputDevice } from '../rtc/mediaDevices'
 
 type RecordingFormat = 'wav' | 'mp3'
 
@@ -18,26 +19,35 @@ const API_PRIORITY = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'WDMK
 const apiRank = (kind: string) => { const i = API_PRIORITY.indexOf(kind); return i === -1 ? 99 : i }
 
 interface DeviceGroup {
-  name: string
+  name: string          // normalized physical device name (used as key + display)
   channelCount: number
-  // One entry per available API. deviceId is the PortAudio id for THAT api.
   apis: Array<{ kind: string; deviceId: number }>
 }
 
 /**
- * PortAudio returns the same physical device once per Host API with different
- * deviceIds. Group them by name so the UI shows one row per physical device
- * and a separate driver selector.
+ * Windows PortAudio names follow two patterns:
+ *   ASIO      → "BEHRINGER USB WDM AUDIO 2.8.40"
+ *   WASAPI/DS/MME → "Динамики (2- BEHRINGER USB WDM AUDIO 2.8.40)"
+ *
+ * Normalize by extracting the content of the last parentheses (and stripping
+ * any leading "N- " channel prefix). This merges all API variants of the same
+ * physical device into one group so the driver selector shows ALL available
+ * APIs (including ASIO) for that device.
  */
+function normalizeDeviceName(name: string): string {
+  const m = name.match(/\((.+)\)\s*$/)
+  if (m) return m[1].replace(/^\d+-\s*/, '').trim()
+  return name.trim()
+}
+
 function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): DeviceGroup[] {
   const map = new Map<string, DeviceGroup>()
   for (const dev of devices) {
     const ch = forInput ? dev.inputChannels : dev.outputChannels
     if (ch <= 0) continue
-    if (!map.has(dev.name)) {
-      map.set(dev.name, { name: dev.name, channelCount: ch, apis: [] })
-    }
-    const g = map.get(dev.name)!
+    const key = normalizeDeviceName(dev.name)
+    if (!map.has(key)) map.set(key, { name: key, channelCount: ch, apis: [] })
+    const g = map.get(key)!
     g.channelCount = Math.max(g.channelCount, ch)
     for (const api of dev.hostApis) {
       if (!g.apis.some((a) => a.kind === api.kind)) {
@@ -45,7 +55,6 @@ function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): Dev
       }
     }
   }
-  // Sort drivers within each group by priority
   for (const g of map.values()) {
     g.apis.sort((a, b) => apiRank(a.kind) - apiRank(b.kind))
   }
@@ -62,7 +71,8 @@ interface Props {
 
 export function SettingsModal({ onClose }: Props) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
-  const [selectedInput, setSelectedInput] = useState('')
+  // Initialise from persisted preference (getPreferredInputDevice reads localStorage).
+  const [selectedInput, setSelectedInput] = useState(() => getPreferredInputDevice())
   const [selectedOutput, setSelectedOutput] = useState('')
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
@@ -72,9 +82,15 @@ export function SettingsModal({ onClose }: Props) {
   useEffect(() => {
     void navigator.mediaDevices.enumerateDevices().then((list) => {
       setDevices(list)
-      const firstInput = list.find((d) => d.kind === 'audioinput')
+      // Only set selectedInput from enumeration if user hasn't already saved a preference.
+      if (!getPreferredInputDevice()) {
+        const firstInput = list.find((d) => d.kind === 'audioinput')
+        if (firstInput) {
+          setSelectedInput(firstInput.deviceId)
+          setPreferredInputDevice(firstInput.deviceId)
+        }
+      }
       const firstOutput = list.find((d) => d.kind === 'audiooutput')
-      if (firstInput) setSelectedInput(firstInput.deviceId)
       if (firstOutput) setSelectedOutput(firstOutput.deviceId)
     }).catch(() => {})
   }, [])
@@ -140,7 +156,10 @@ export function SettingsModal({ onClose }: Props) {
                   id="settings-input-device"
                   className="settings-select"
                   value={selectedInput}
-                  onChange={(e) => setSelectedInput(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedInput(e.target.value)
+                    setPreferredInputDevice(e.target.value)
+                  }}
                   aria-label="Audio input device"
                 >
                   {audioInputs.map((d, i) => (
@@ -186,11 +205,13 @@ export function SettingsModal({ onClose }: Props) {
             const inputGroups  = buildDeviceGroups(nativeSnapshot.devices, true)
             const outputGroups = buildDeviceGroups(nativeSnapshot.devices, false)
 
-            // Find which group the currently-selected input device belongs to
-            const selInDev   = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedInputId)
-            const selInGroup = inputGroups.find((g) => g.name === selInDev?.name)
-            const selOutDev  = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedOutputId)
-            const selOutGroup = outputGroups.find((g) => g.name === selOutDev?.name)
+            // Find which group the currently-selected device belongs to.
+            // normalizeDeviceName() bridges ASIO vs WASAPI/DS/MME naming differences
+            // (e.g. "BEHRINGER USB WDM AUDIO 2.8.40" vs "Динамики (2- BEHRINGER USB WDM AUDIO 2.8.40)").
+            const selInDev    = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedInputId)
+            const selInGroup  = inputGroups.find((g) => g.name === (selInDev ? normalizeDeviceName(selInDev.name) : ''))
+            const selOutDev   = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedOutputId)
+            const selOutGroup = outputGroups.find((g) => g.name === (selOutDev ? normalizeDeviceName(selOutDev.name) : ''))
 
             return (
               <section className="settings-section">
@@ -423,6 +444,13 @@ export function SettingsModal({ onClose }: Props) {
                 {nativeSnapshot.error !== null && (
                   <div className="settings-field">
                     <p className="network-error" style={{ margin: 0 }}>{nativeSnapshot.error}</p>
+                    {(nativeSnapshot.error.toLowerCase().includes('not found') ||
+                      nativeSnapshot.error.toLowerCase().includes('invalid') ||
+                      nativeSnapshot.error.toLowerCase().includes('unavailable')) && (
+                      <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#a09880' }}>
+                        Совет: переподключи USB-устройство, перезапусти ASIO-драйвер, затем нажми «Load devices».
+                      </p>
+                    )}
                   </div>
                 )}
               </section>

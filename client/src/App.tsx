@@ -1340,7 +1340,9 @@ function App() {
                 </div>
                 {!roomState.connected && (
                   <span className="lobby-v2__offline-note">
-                    {roomState.reconnecting ? '○ Reconnecting… — will create local room' : '○ Server offline — local room only'}
+                    {roomState.reconnecting
+                      ? (roomState.reconnectAttempt >= 3 ? '○ Waking up server… (may take ~60s)' : '○ Connecting…')
+                      : '○ Server offline — local room only'}
                   </span>
                 )}
                 <button
@@ -1376,7 +1378,9 @@ function App() {
                 </div>
                 {!roomState.connected && (
                   <span className="lobby-v2__offline-note">
-                    {roomState.reconnecting ? '○ Reconnecting…' : '○ Server offline'}
+                    {roomState.reconnecting
+                      ? (roomState.reconnectAttempt >= 3 ? '○ Waking up server…' : '○ Connecting…')
+                      : '○ Server offline'}
                   </span>
                 )}
                 <button
@@ -1435,7 +1439,9 @@ function App() {
 
           <div className="lobby-v2__footer">
             <span className="socket-status">
-              {roomState.reconnecting ? '○ Reconnecting…' : roomState.connected ? '● Online' : '○ Offline'}
+              {roomState.reconnecting
+                ? (roomState.reconnectAttempt >= 3 ? '○ Waking up server…' : '○ Connecting…')
+                : roomState.connected ? '● Online' : '○ Offline'}
             </span>
             {networkError ? <p className="network-error">{networkError}</p> : null}
             {mediaError ? <p className="network-error">{mediaError}</p> : null}
