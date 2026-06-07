@@ -13,6 +13,45 @@ const API_LABELS: Record<string, string> = {
 }
 const apiLabel = (kind: string) => API_LABELS[kind] ?? kind
 
+// Priority order — lower index = better driver
+const API_PRIORITY = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'WDMKS', 'MME']
+const apiRank = (kind: string) => { const i = API_PRIORITY.indexOf(kind); return i === -1 ? 99 : i }
+
+interface DeviceGroup {
+  name: string
+  channelCount: number
+  // One entry per available API. deviceId is the PortAudio id for THAT api.
+  apis: Array<{ kind: string; deviceId: number }>
+}
+
+/**
+ * PortAudio returns the same physical device once per Host API with different
+ * deviceIds. Group them by name so the UI shows one row per physical device
+ * and a separate driver selector.
+ */
+function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): DeviceGroup[] {
+  const map = new Map<string, DeviceGroup>()
+  for (const dev of devices) {
+    const ch = forInput ? dev.inputChannels : dev.outputChannels
+    if (ch <= 0) continue
+    if (!map.has(dev.name)) {
+      map.set(dev.name, { name: dev.name, channelCount: ch, apis: [] })
+    }
+    const g = map.get(dev.name)!
+    g.channelCount = Math.max(g.channelCount, ch)
+    for (const api of dev.hostApis) {
+      if (!g.apis.some((a) => a.kind === api.kind)) {
+        g.apis.push({ kind: api.kind, deviceId: dev.id })
+      }
+    }
+  }
+  // Sort drivers within each group by priority
+  for (const g of map.values()) {
+    g.apis.sort((a, b) => apiRank(a.kind) - apiRank(b.kind))
+  }
+  return [...map.values()]
+}
+
 function loadRecordingFormat(): RecordingFormat {
   return localStorage.getItem('kgb_recording_format') === 'mp3' ? 'mp3' : 'wav'
 }
@@ -144,10 +183,15 @@ export function SettingsModal({ onClose }: Props) {
 
           {/* ── Native Audio (PortAudio) ─────────────────────── */}
           {window.nativeAudio !== undefined && (() => {
-            const inputDevices = nativeSnapshot.devices.filter((d) => d.inputChannels > 0)
-            const outputDevices = nativeSnapshot.devices.filter((d) => d.outputChannels > 0)
-            const selectedInputDev = inputDevices.find((d) => d.id === nativeSnapshot.selectedInputId)
-            const selectedOutputDev = outputDevices.find((d) => d.id === nativeSnapshot.selectedOutputId)
+            const inputGroups  = buildDeviceGroups(nativeSnapshot.devices, true)
+            const outputGroups = buildDeviceGroups(nativeSnapshot.devices, false)
+
+            // Find which group the currently-selected input device belongs to
+            const selInDev   = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedInputId)
+            const selInGroup = inputGroups.find((g) => g.name === selInDev?.name)
+            const selOutDev  = nativeSnapshot.devices.find((d) => d.id === nativeSnapshot.selectedOutputId)
+            const selOutGroup = outputGroups.find((g) => g.name === selOutDev?.name)
+
             return (
               <section className="settings-section">
                 <h3 className="settings-section-title">Native Audio (PortAudio)</h3>
@@ -170,23 +214,26 @@ export function SettingsModal({ onClose }: Props) {
                   <select
                     id="native-input-device"
                     className="settings-select"
-                    value={nativeSnapshot.selectedInputId ?? ''}
+                    value={selInGroup?.name ?? ''}
                     onChange={(e) => {
-                      if (!e.target.value) return
-                      nativeAudioController.selectInput(Number(e.target.value))
+                      const group = inputGroups.find((g) => g.name === e.target.value)
+                      if (!group) return
+                      // Auto-pick best driver for this device
+                      const best = group.apis[0]
+                      nativeAudioController.selectInput(best.deviceId, best.kind)
                     }}
-                    aria-label="Native audio input device"
+                    aria-label="Input device"
                   >
-                    <option value="">— select —</option>
-                    {inputDevices.map((dev) => (
-                      <option key={dev.id} value={dev.id}>
-                        {dev.name} ({dev.inputChannels} ch)
+                    <option value="">— выбрать —</option>
+                    {inputGroups.map((g) => (
+                      <option key={g.name} value={g.name}>
+                        {g.name}  ({g.channelCount} ch)
                       </option>
                     ))}
                   </select>
                 </div>
 
-                {selectedInputDev && (
+                {selInGroup && (
                   <div className="settings-field">
                     <label className="settings-label" htmlFor="native-input-driver">
                       Input driver
@@ -196,12 +243,13 @@ export function SettingsModal({ onClose }: Props) {
                       className="settings-select"
                       value={nativeSnapshot.inputHostApiKind}
                       onChange={(e) => {
-                        nativeAudioController.selectInput(nativeSnapshot.selectedInputId!, e.target.value)
+                        const entry = selInGroup.apis.find((a) => a.kind === e.target.value)
+                        if (entry) nativeAudioController.selectInput(entry.deviceId, entry.kind)
                       }}
                       aria-label="Input driver"
                     >
-                      {selectedInputDev.hostApis.map((api) => (
-                        <option key={api.kind} value={api.kind}>{apiLabel(api.kind)}</option>
+                      {selInGroup.apis.map((a) => (
+                        <option key={a.kind} value={a.kind}>{apiLabel(a.kind)}</option>
                       ))}
                     </select>
                   </div>
@@ -254,23 +302,25 @@ export function SettingsModal({ onClose }: Props) {
                       <select
                         id="native-output-device"
                         className="settings-select"
-                        value={nativeSnapshot.selectedOutputId ?? ''}
+                        value={selOutGroup?.name ?? ''}
                         onChange={(e) => {
-                          if (!e.target.value) return
-                          nativeAudioController.selectOutput(Number(e.target.value))
+                          const group = outputGroups.find((g) => g.name === e.target.value)
+                          if (!group) return
+                          const best = group.apis[0]
+                          nativeAudioController.selectOutput(best.deviceId, best.kind)
                         }}
-                        aria-label="Native audio output device"
+                        aria-label="Output device"
                       >
-                        <option value="">— select —</option>
-                        {outputDevices.map((dev) => (
-                          <option key={dev.id} value={dev.id}>
-                            {dev.name} ({dev.outputChannels} ch)
+                        <option value="">— выбрать —</option>
+                        {outputGroups.map((g) => (
+                          <option key={g.name} value={g.name}>
+                            {g.name}  ({g.channelCount} ch)
                           </option>
                         ))}
                       </select>
                     </div>
 
-                    {selectedOutputDev && (
+                    {selOutGroup && (
                       <div className="settings-field">
                         <label className="settings-label" htmlFor="native-output-driver">
                           Output driver
@@ -280,12 +330,13 @@ export function SettingsModal({ onClose }: Props) {
                           className="settings-select"
                           value={nativeSnapshot.outputHostApiKind}
                           onChange={(e) => {
-                            nativeAudioController.selectOutput(nativeSnapshot.selectedOutputId!, e.target.value)
+                            const entry = selOutGroup.apis.find((a) => a.kind === e.target.value)
+                            if (entry) nativeAudioController.selectOutput(entry.deviceId, entry.kind)
                           }}
                           aria-label="Output driver"
                         >
-                          {selectedOutputDev.hostApis.map((api) => (
-                            <option key={api.kind} value={api.kind}>{apiLabel(api.kind)}</option>
+                          {selOutGroup.apis.map((a) => (
+                            <option key={a.kind} value={a.kind}>{apiLabel(a.kind)}</option>
                           ))}
                         </select>
                       </div>

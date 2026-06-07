@@ -2235,7 +2235,7 @@ meter {
 }
 
 .settings-select {
-  background: var(--control);
+  background: #181b22;
   border: 1px solid var(--line);
   color: var(--text);
   padding: 6px 10px;
@@ -2247,6 +2247,19 @@ meter {
 .settings-select:focus-visible {
   outline: 2px solid var(--crystal);
   outline-offset: 1px;
+}
+
+/* Style the native dropdown popup in Electron/Chromium */
+.settings-select option {
+  background: #181b22;
+  color: #d6d0c4;
+  font-size: 13px;
+}
+
+.settings-select option:checked,
+.settings-select option:hover {
+  background: #24293a;
+  color: #fff7df;
 }
 
 .settings-stub {
