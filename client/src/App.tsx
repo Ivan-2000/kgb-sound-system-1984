@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import { MAX_BPM, MIN_BPM, audioEngine } from './audio/audioEngine'
+import { useEffect, useRef, useState, lazy, Suspense, type CSSProperties } from 'react'
+import { audioEngine } from './audio/audioEngine'
 import { metronome, COMMON_TIME_SIGNATURES, type MetronomeState, type TimeSignature } from './audio/metronome'
 import {
-  DRUM_TRACKS,
-  MAX_PATTERNS,
-  drumMachine,
-  type DrumMachineState,
-  type DrumTrack,
-} from './drumMachine/drumMachine'
-import { VALID_STEP_COUNTS, type StepCount } from './protocol/syncProtocol'
+  getDrum,
+  forEachDrum,
+  connectDrumRoom,
+  disconnectDrumRoom,
+  setDrumEditable,
+  type DrumSyncCmd,
+} from './drumMachine/drumNodes'
 import { roomSyncClient, type RoomState, type RoomParticipant } from './networking/roomSyncClient'
 import { peerManager } from './rtc/peerManager'
 import { nativeRtcManager } from './rtc/nativeRtcManager'
@@ -18,20 +18,27 @@ import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
 import { LocalMixerStrip } from './components/LocalMixerStrip'
 import { RemoteChannelStrip } from './components/RemoteChannelStrip'
+import { MixerStrip } from './components/MixerStrip'
+import { getTimeline } from './timeline/timelineNodes'
+import { usePianoRollStore } from './pianoRoll/pianoRollStore'
+import { participantColor } from './utils/participantColor'
 import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
-import { usePanelStore } from './panels/panelStore'
 import { PanelsView } from './panels/PanelsView'
+import type { PanelContentFn } from './panels/PanelsView'
+import { useGraphStore, nodeRegistry, registerBuiltinNodes, setClientTag, connectGraphSync, disconnectGraphSync, hydrateGraph } from './graph'
 
-const trackLabels: Record<DrumTrack, string> = {
-  kick: 'Kick',
-  snare: 'Snare',
-  hat: 'Hat',
-  crash: 'Crash',
-}
+// Canvas view (G4) is lazy-loaded so React Flow stays out of the startup bundle.
+const CanvasView = lazy(() => import('./canvas/CanvasView'))
+
+// The drum machine is a singleton node → its node id equals its type. App reaches
+// the per-node engine through the drumNodes registry (getDrum / forEachDrum).
+const DRUM_NODE_ID = 'drum-machine'
+// Primary Timeline node id (singleton); the Mixer's Record button targets it.
+const TIMELINE_NODE_ID = 'timeline'
 
 type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean; hostMuted: boolean }
 type RemoteChannelMeta = { channelCount: number; channelNames: string[] }
@@ -76,6 +83,8 @@ type RemoteParticipantGroupProps = {
   onMuteToggle: (channelIdx: number) => void
   /** M5: per-channel RMS levels from native addon (index = channelIdx). */
   peerLevels: number[]
+  armed: ReadonlySet<string>
+  onToggleRecord: (key: string) => void
 }
 
 function RemoteParticipantGroup({
@@ -85,23 +94,24 @@ function RemoteParticipantGroup({
   onGainChange,
   onMuteToggle,
   peerLevels,
+  armed,
+  onToggleRecord,
 }: RemoteParticipantGroupProps) {
   if (!channelMeta || channelMeta.channelCount === 0) {
+    const key = `peer:${participant.socketId}`
     return (
       <MixerChannel
         socketId={participant.socketId}
         username={participant.username}
         isHost={participant.isHost}
+        recording={armed.has(key)}
+        onRecord={() => onToggleRecord(key)}
       />
     )
   }
 
   return (
-    <div className="mixer-participant-group">
-      <p className="eyebrow participant-group-name">
-        {participant.username}
-        {participant.isHost && <span className="participant-host-badge"> (Host)</span>}
-      </p>
+    <>
       {Array.from({ length: channelMeta.channelCount }, (_, i) => {
         const gsKey = `${participant.socketId}:${i}`
         const gs = channelGains.get(gsKey) ?? { gain: 1, muted: false }
@@ -110,21 +120,22 @@ function RemoteParticipantGroup({
             key={i}
             peerId={participant.socketId}
             channelIdx={i}
-            label={channelMeta.channelNames[i] ?? `Ch ${i + 1}`}
+            label={channelMeta.channelNames[i] ?? `${participant.username} ${i + 1}`}
             level={peerLevels[i] ?? 0}
             gain={gs.gain}
             muted={gs.muted}
             onGainChange={(g) => onGainChange(i, g)}
             onMuteToggle={() => onMuteToggle(i)}
+            recording={armed.has(`peer:${participant.socketId}:${i}`)}
+            onRecord={() => onToggleRecord(`peer:${participant.socketId}:${i}`)}
           />
         )
       })}
-    </div>
+    </>
   )
 }
 
 function App() {
-  const [machineState, setMachineState] = useState<DrumMachineState>(() => drumMachine.getState())
   const [bpm, setBpm] = useState(() => audioEngine.getBpm())
   const [bpmText, setBpmText] = useState(() => String(audioEngine.getBpm()))
   const [metronomeState, setMetronomeState] = useState<MetronomeState>(() => metronome.getState())
@@ -154,6 +165,8 @@ function App() {
   const fullscreenSocketIdRef = useRef(fullscreenSocketId)
   fullscreenSocketIdRef.current = fullscreenSocketId
   const [masterVolume, setMasterVolume] = useState(100)
+  // Master pan is visual for now — there is no master-bus pan in the engine yet.
+  const [masterPan, setMasterPan] = useState(0)
   const [activeSpeakerSocketId, setActiveSpeakerSocketId] = useState<string | null>(null)
   const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
   const [nativeRttMap, setNativeRttMap] = useState<Record<string, number>>({})
@@ -163,6 +176,11 @@ function App() {
   const [remoteChannelGains, setRemoteChannelGains] = useState<ReadonlyMap<string, RemoteChannelGainState>>(() => new Map())
   // M5: per-channel RMS levels from native addon, polled at ~30fps.
   const [nativeRemoteLevels, setNativeRemoteLevels] = useState<Record<string, number[]>>({})
+  // Record-arm state per channel key ('master' | 'local:i' | 'peer:id:i').
+  // Visual for now — actual capture + timeline track lands with the Timeline node.
+  const [armed, setArmed] = useState<ReadonlySet<string>>(() => new Set())
+  // Rapid-click guard: keys currently mid-arm (between click and microtask cleanup).
+  const pendingArmRef = useRef(new Set<string>())
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -172,6 +190,8 @@ function App() {
   const [prerollBars, setPrerollBars] = useState(2)
 
   const [syncOnly, setSyncOnly] = useState(false)
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
 
   const stepLwwRef = useRef(new Map<string, number>())
   const logicalClockRef = useRef(0)
@@ -180,6 +200,21 @@ function App() {
   useEffect(() => {
     localStorage.setItem('kgb_username', username)
   }, [username])
+
+  // Close the "+" add-node menu on outside click / Escape.
+  useEffect(() => {
+    if (!addMenuOpen) return
+    const onDown = (e: PointerEvent) => {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) setAddMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setAddMenuOpen(false) }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [addMenuOpen])
 
   // Keep bpmText field in sync when bpm changes from slider or network
   useEffect(() => {
@@ -356,7 +391,6 @@ function App() {
     })
   }, [])
 
-  useEffect(() => drumMachine.subscribe(setMachineState), [])
   useEffect(() => roomSyncClient.subscribeRoomState(setRoomState), [])
   useEffect(() => metronome.subscribe((state) => {
     setMetronomeState(state)
@@ -442,11 +476,12 @@ function App() {
     () =>
       roomSyncClient.subscribeSyncEvents(async (event) => {
         if (event.type === 'step_toggle') {
-          const lwwKey = `${event.payload.track}-${event.payload.step}`
+          const id = event.payload.nodeId ?? DRUM_NODE_ID
+          const lwwKey = `${id}:${event.payload.track}-${event.payload.step}`
           const previousTimestamp = stepLwwRef.current.get(lwwKey) ?? 0
           if (event.timestamp >= previousTimestamp) {
             stepLwwRef.current.set(lwwKey, event.timestamp)
-            drumMachine.toggleStep(event.payload.track, event.payload.step, event.payload.value)
+            getDrum(id)?.toggleStep(event.payload.track, event.payload.step, event.payload.value)
           }
           return
         }
@@ -458,14 +493,19 @@ function App() {
         }
 
         if (event.type === 'transport_play') {
-          await drumMachine.start({ step: event.payload.step })
+          // App owns the project transport; each drum just arms its sequencer.
+          await audioEngine.play({ position: 0 })
+          const starts: Promise<void>[] = []
+          forEachDrum((d) => starts.push(d.start({ step: event.payload.step })))
+          await Promise.all(starts)
           metronome.start()
           setIsPlaying(true)
           return
         }
 
         if (event.type === 'transport_stop') {
-          drumMachine.stop()
+          audioEngine.stop()
+          forEachDrum((d) => d.stop())
           metronome.stop()
           setIsPlaying(false)
           return
@@ -482,25 +522,26 @@ function App() {
         }
 
         if (event.type === 'step_count_change') {
-          drumMachine.setStepCount(event.payload.stepCount)
+          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setStepCount(event.payload.stepCount)
           return
         }
 
         if (event.type === 'swing_change') {
-          drumMachine.setSwing(event.payload.swing)
+          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setSwing(event.payload.swing)
           return
         }
 
         if (event.type === 'pattern_switch') {
-          drumMachine.switchPattern(event.payload.patternIndex)
-          // Clear LWW map so stale timestamps from the previous pattern don't bleed
-          stepLwwRef.current.clear()
+          const id = event.payload.nodeId ?? DRUM_NODE_ID
+          getDrum(id)?.switchPattern(event.payload.patternIndex)
+          // Clear only this drum's LWW so stale timestamps from its previous pattern don't bleed
+          clearDrumLww(id)
           return
         }
 
         if (event.type === 'velocity_change') {
           try {
-            drumMachine.setVelocity(event.payload.track, event.payload.step, event.payload.velocity)
+            getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setVelocity(event.payload.track, event.payload.step, event.payload.velocity)
           } catch {
             // step out of range for current pattern length — stale event, ignore
           }
@@ -518,7 +559,7 @@ function App() {
         }
 
         if (event.type === 'chain_set') {
-          drumMachine.setChain(event.payload.chain)
+          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setChain(event.payload.chain)
           return
         }
 
@@ -540,6 +581,14 @@ function App() {
     return logicalClockRef.current
   }
 
+  // step_toggle LWW is keyed `${nodeId}:${track}-${step}`. On a pattern switch we
+  // drop only the switching drum's entries so stale timestamps don't bleed.
+  const clearDrumLww = (nodeId: string) => {
+    for (const key of [...stepLwwRef.current.keys()]) {
+      if (key.startsWith(`${nodeId}:`)) stepLwwRef.current.delete(key)
+    }
+  }
+
   const emitSyncEvent = async (
     partial: Omit<SyncEvent, 'timestamp' | 'eventId'> & { timestamp?: number },
   ) => {
@@ -558,14 +607,34 @@ function App() {
     }
   }
 
+  // App owns the project transport: it starts/stops audioEngine once, then arms
+  // every drum instance's sequencer. The drums no longer touch Tone.Transport.
+  const startAllDrums = async () => {
+    await audioEngine.play({ position: 0 })
+    const starts: Promise<void>[] = []
+    forEachDrum((d) => starts.push(d.start()))
+    await Promise.all(starts)
+    metronome.start()
+  }
+
   const handlePlayStop = async () => {
     if (roomState.roomId && !roomState.isHost) return
 
+    // Mid-preroll: the button acts as Cancel. metronome.stop() rejects the
+    // pending preroll promise (PREROLL_CANCELLED), whose handler resets isStarting.
+    if (isStarting) {
+      metronome.stop()
+      setIsStarting(false)
+      return
+    }
+
     if (isPlaying) {
-      drumMachine.stop()
+      const step = getDrum(DRUM_NODE_ID)?.getState().currentStep ?? 0
+      audioEngine.stop()
+      forEachDrum((d) => d.stop())
       metronome.stop()
       setIsPlaying(false)
-      await emitSyncEvent({ type: 'transport_stop', payload: { step: machineState.currentStep } })
+      await emitSyncEvent({ type: 'transport_stop', payload: { step } })
       return
     }
 
@@ -574,11 +643,15 @@ function App() {
     if (prerollBars > 0) {
       try {
         await metronome.startPreroll(prerollBars)
-        await drumMachine.start()
-        metronome.start()
+        await startAllDrums()
         setIsPlaying(true)
         await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
       } catch (err) {
+        // Ensure the engine is stopped regardless of where in the sequence it failed.
+        // audioEngine.stop() is a no-op if it wasn't started yet (preroll cancel path).
+        audioEngine.stop()
+        forEachDrum((d) => d.stop())
+        metronome.stop()
         if (!(err instanceof Error && err.message === 'PREROLL_CANCELLED')) {
           setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
         }
@@ -589,10 +662,14 @@ function App() {
     }
 
     try {
-      await drumMachine.start()
-      metronome.start()
+      await startAllDrums()
       setIsPlaying(true)
       await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
+    } catch (err) {
+      audioEngine.stop()
+      forEachDrum((d) => d.stop())
+      metronome.stop()
+      setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
     } finally {
       setIsStarting(false)
     }
@@ -603,11 +680,6 @@ function App() {
     const safeBpm = audioEngine.setBpm(nextBpm)
     setBpm(safeBpm)
     await emitSyncEvent({ type: 'bpm_change', payload: { bpm: safeBpm } })
-  }
-
-  const handleVelocityChange = async (track: DrumTrack, step: number, velocity: number) => {
-    const clamped = drumMachine.setVelocity(track, step, velocity)
-    await emitSyncEvent({ type: 'velocity_change', payload: { track, step, velocity: clamped } })
   }
 
   const handleMetronomeToggle = async () => {
@@ -629,37 +701,48 @@ function App() {
     metronome.setSoundEnabled(!next)
   }
 
-  const handleSwingChange = async (swing: number) => {
-    if (roomState.roomId && !roomState.isHost) return
-    drumMachine.setSwing(swing)
-    await emitSyncEvent({ type: 'swing_change', payload: { swing } })
+  // Drum room glue: the self-contained DrumNodePanel mutates its OWN instance,
+  // then asks App (via emitDrumSync) to broadcast the intent as a room event.
+  // Host-gating is enforced in the panel (disabled), driven by setDrumEditable.
+  // A latest-ref keeps the closure fresh (emitSyncEvent closes over roomState)
+  // while connectDrumRoom is wired only once.
+  const drumEmitRef = useRef<(nodeId: string, cmd: DrumSyncCmd) => void>(() => {})
+  drumEmitRef.current = (nodeId: string, cmd: DrumSyncCmd) => {
+    switch (cmd.type) {
+      case 'step_toggle': {
+        const timestamp = nextLogicalTimestamp()
+        stepLwwRef.current.set(`${nodeId}:${cmd.track}-${cmd.step}`, timestamp)
+        void emitSyncEvent({ type: 'step_toggle', payload: { nodeId, track: cmd.track, step: cmd.step, value: cmd.value }, timestamp })
+        break
+      }
+      case 'velocity_change':
+        void emitSyncEvent({ type: 'velocity_change', payload: { nodeId, track: cmd.track, step: cmd.step, velocity: cmd.velocity } })
+        break
+      case 'pattern_switch':
+        clearDrumLww(nodeId)
+        void emitSyncEvent({ type: 'pattern_switch', payload: { nodeId, patternIndex: cmd.patternIndex } })
+        break
+      case 'step_count_change':
+        void emitSyncEvent({ type: 'step_count_change', payload: { nodeId, stepCount: cmd.stepCount } })
+        break
+      case 'swing_change':
+        void emitSyncEvent({ type: 'swing_change', payload: { nodeId, swing: cmd.swing } })
+        break
+      case 'chain_set':
+        void emitSyncEvent({ type: 'chain_set', payload: { nodeId, chain: cmd.chain } })
+        break
+    }
   }
 
-  const handlePatternSwitch = async (index: number) => {
-    if (roomState.roomId && !roomState.isHost) return
-    drumMachine.switchPattern(index)
-    stepLwwRef.current.clear()
-    await emitSyncEvent({ type: 'pattern_switch', payload: { patternIndex: index } })
-  }
+  useEffect(() => {
+    connectDrumRoom({ emit: (nodeId, cmd) => drumEmitRef.current(nodeId, cmd) })
+    return () => disconnectDrumRoom()
+  }, [])
 
-  const handleStepCountChange = async (next: StepCount) => {
-    if (roomState.roomId && !roomState.isHost) return
-    drumMachine.setStepCount(next)
-    await emitSyncEvent({ type: 'step_count_change', payload: { stepCount: next } })
-  }
-
-  const handleChainSet = async (chain: number[] | null) => {
-    if (roomState.roomId && !roomState.isHost) return
-    drumMachine.setChain(chain)
-    await emitSyncEvent({ type: 'chain_set', payload: { chain } })
-  }
-
-  const handleStepToggle = async (track: DrumTrack, step: number) => {
-    const value = drumMachine.toggleStep(track, step)
-    const timestamp = nextLogicalTimestamp()
-    stepLwwRef.current.set(`${track}-${step}`, timestamp)
-    await emitSyncEvent({ type: 'step_toggle', payload: { track, step, value }, timestamp })
-  }
+  // Host-gating: only the host edits drum params in a room; offline/solo is open.
+  useEffect(() => {
+    setDrumEditable(!(roomState.roomId && !roomState.isHost))
+  }, [roomState.roomId, roomState.isHost])
 
   const handleHostMute = async (targetSocketId: string) => {
     try {
@@ -678,7 +761,8 @@ function App() {
   }
 
   const handleClear = () => {
-    drumMachine.clearPattern()
+    // Local-only, host-gated via the button (existing behaviour — not synced).
+    getDrum(DRUM_NODE_ID)?.clearPattern()
   }
 
   const acquireLocalStream = async () => {
@@ -840,42 +924,92 @@ function App() {
 
   const applySyncSnapshot = async (snapshot: SyncStateSnapshot | null) => {
     if (!snapshot) return
+    // Node graph: hydrate room topology from the join snapshot (G2/G3)
+    hydrateGraph(snapshot)
 
-    drumMachine.setPatternBank(
-      snapshot.patternBank as Parameters<typeof drumMachine.setPatternBank>[0],
-      snapshot.activePatternIndex,
-    )
-    drumMachine.setSwing(snapshot.swing ?? 0)
-    drumMachine.setChain(snapshot.chain ?? null)
+    // Ensure the primary drum instance exists (it may not be in the hydrated
+    // graph yet) so the room's pattern/swing/chain land in a live engine even
+    // before the user opens the panel. Duplicated drums come in via hydrateGraph.
+    useGraphStore.getState().preloadNodeByType('drum-machine')
+    // Per-node drum state: iterate the `drums` map (primary + duplicates). Fall
+    // back to the legacy top-level fields if an older server omits `drums`.
+    const drumsSnap = snapshot.drums ?? {
+      [DRUM_NODE_ID]: {
+        patternBank: snapshot.patternBank,
+        activePatternIndex: snapshot.activePatternIndex,
+        swing: snapshot.swing,
+        chain: snapshot.chain,
+      },
+    }
+    for (const [id, d] of Object.entries(drumsSnap)) {
+      const inst = getDrum(id)
+      if (!inst) continue
+      inst.setPatternBank(
+        d.patternBank as Parameters<typeof inst.setPatternBank>[0],
+        d.activePatternIndex,
+      )
+      inst.setSwing(d.swing ?? 0)
+      inst.setChain(d.chain ?? null)
+    }
     const safeBpm = audioEngine.setBpm(snapshot.bpm)
     setBpm(safeBpm)
     metronome.setTimeSignature(snapshot.timeSignature as TimeSignature)
     metronome.setEnabled(snapshot.metronomeEnabled)
 
     if (snapshot.isPlaying) {
-      await drumMachine.start({ step: snapshot.currentStep })
+      await audioEngine.play({ position: 0 })
+      const starts: Promise<void>[] = []
+      forEachDrum((d) => starts.push(d.start({ step: snapshot.currentStep })))
+      await Promise.all(starts)
       metronome.start()
       setIsPlaying(true)
       return
     }
 
-    drumMachine.stop()
+    audioEngine.stop()
+    forEachDrum((d) => d.stop())
     metronome.stop()
     setIsPlaying(false)
   }
 
   const inRoom = Boolean(roomState.roomId)
   const selfSocketId = roomState.socketId
-  const openPanel = usePanelStore((s) => s.openPanel)
-  const preloadPanel = usePanelStore((s) => s.preloadPanel)
-  const viewMode = usePanelStore((s) => s.viewMode)
-  const setViewMode = usePanelStore((s) => s.setViewMode)
+  const openPanel = useGraphStore((s) => s.openNodeByType)
+  const preloadPanel = useGraphStore((s) => s.preloadNodeByType)
+  const viewMode = useGraphStore((s) => s.viewMode)
+  const setViewMode = useGraphStore((s) => s.setViewMode)
 
-  // Open mixer; preload chat (keeps subscription alive before user opens it)
+  // Node graph: register built-in node types once (idempotent), before any node creation
+  useEffect(() => { registerBuiltinNodes() }, [])
+
+  // Node graph: activate room sync (G2/G3) BEFORE opening builtins, so their
+  // node_add mutations broadcast. Outgoing mutations → room:events; incoming →
+  // applyRemote. Local (settings) and per-client builtins don't depend on this.
+  useEffect(() => {
+    if (!inRoom || !selfSocketId) return
+    setClientTag(selfSocketId)
+    connectGraphSync()
+    return () => { disconnectGraphSync() }
+  }, [inRoom, selfSocketId])
+
+  // Node graph + timeline: reset on leaving a room so a rejoin starts clean (no
+  // stale nodes/positions or timeline tracks). Hydration repopulates shared nodes.
+  useEffect(() => {
+    if (!inRoom) {
+      // Graph reset disposes node instances (incl. per-node Timeline stores).
+      useGraphStore.getState().reset()
+      usePianoRollStore.getState().clear()
+    }
+  }, [inRoom])
+
+  // Open mixer; preload chat + drum (keeps their per-node instances mounted so
+  // room sync / snapshot state lands even before the user opens the panel).
   useEffect(() => {
     if (inRoom) {
       openPanel('mixer')
       preloadPanel('chat')
+      preloadPanel('drum-machine')
+      preloadPanel('timeline') // so Mixer Record can arm the primary timeline before it's opened
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inRoom])
@@ -947,243 +1081,105 @@ function App() {
     </div>
   )
 
-  const drumMachineContent = (
-    <section className="sequencer-section" aria-label="Drum machine">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Drum Machine</p>
-          <h2>{machineState.stepCount} Step Pattern</h2>
-        </div>
+  // Arming a channel creates a Timeline track + a proxy clip at the playhead.
+  // Real native capture → audio data (and per-room file sync) lands later.
+  const armTimelineTrack = (key: string) => {
+    let name = 'Track'
+    let color = 'var(--gold)'
+    if (key === 'master') { name = 'Master' }
+    else if (key.startsWith('local:')) { name = `Input ${Number(key.slice(6)) + 1}`; color = 'var(--crystal)' }
+    else if (key.startsWith('peer:')) {
+      const sid = key.slice(5).split(':')[0]
+      const p = participants.find((x) => x.socketId === sid)
+      name = p ? p.username : 'Peer'
+      color = participantColor(sid)
+    }
+    const store = getTimeline(TIMELINE_NODE_ID)
+    if (!store) return // primary timeline not mounted yet
+    const tl = store.getState()
+    tl.pushHistory() // one undo step for the whole arm gesture (track + clip)
+    const trackId = tl.ensureTrack(key, { name, kind: 'audio', color })
+    tl.addClip({ trackId, startSec: audioEngine.getTransportSeconds(), durSec: 4, label: name, kind: 'audio', proxy: true })
+  }
 
-        <div className="pattern-bank" aria-label="Pattern bank">
-          {Array.from({ length: MAX_PATTERNS }, (_, i) => (
-            <button
-              key={i}
-              type="button"
-              className={[
-                'ghost-action ghost-action--sm',
-                i === machineState.activePatternIndex ? 'is-active' : '',
-                machineState.patternActivity[i] ? 'has-content' : '',
-              ].filter(Boolean).join(' ')}
-              onClick={() => { void handlePatternSwitch(i) }}
-              disabled={inRoom && !roomState.isHost}
-              aria-pressed={i === machineState.activePatternIndex}
-              aria-label={`Pattern ${i + 1}`}
-            >
-              {i + 1}
-            </button>
-          ))}
-        </div>
-
-        <div className="sequencer-controls">
-          <div className="step-count-selector">
-            {VALID_STEP_COUNTS.map((n) => (
-              <button
-                key={n}
-                type="button"
-                className={['ghost-action ghost-action--sm', n === machineState.stepCount ? 'is-active' : ''].filter(Boolean).join(' ')}
-                onClick={() => { void handleStepCountChange(n) }}
-                disabled={inRoom && !roomState.isHost}
-                aria-pressed={n === machineState.stepCount}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-
-          <label className="swing-control">
-            <span>Swing</span>
-            <input
-              aria-label="Swing"
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={machineState.swing}
-              onChange={(e) => { void handleSwingChange(Number(e.target.value)) }}
-              disabled={inRoom && !roomState.isHost}
-              className="swing-slider"
-            />
-            <span className="swing-value">{machineState.swing}%</span>
-          </label>
-        </div>
-      </div>
-
-      <div className="step-ruler" aria-hidden="true">
-        <span />
-        {Array.from({ length: machineState.stepCount }, (_, step) => (
-          <span key={step}>{step + 1}</span>
-        ))}
-      </div>
-
-      <div className="sequencer-grid">
-        {DRUM_TRACKS.map((track) => (
-          <div className="track-row" key={track}>
-            <div className="track-label">{trackLabels[track]}</div>
-            {machineState.pattern[track].map((enabled, step) => {
-              const isCurrent = isPlaying && machineState.currentStep === step
-              const vel = machineState.velocity[track][step] ?? 100
-              return (
-                <button
-                  aria-label={`${trackLabels[track]} step ${step + 1}`}
-                  aria-pressed={enabled}
-                  className={[
-                    'step-cell',
-                    enabled ? 'is-enabled' : '',
-                    isCurrent ? 'is-current' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  key={`${track}-${step}`}
-                  onClick={() => { void handleStepToggle(track, step) }}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    const v = Number(window.prompt(`Velocity for ${trackLabels[track]} step ${step + 1} (1–127)`, String(vel)))
-                    if (!Number.isNaN(v)) void handleVelocityChange(track, step, v)
-                  }}
-                  type="button"
-                  style={enabled ? { '--vel-alpha': String(vel / 127) } as React.CSSProperties : undefined}
-                />
-              )
-            })}
-          </div>
-        ))}
-      </div>
-
-      <div className="chain-editor" aria-label="Pattern chain">
-        <button
-          type="button"
-          className={['ghost-action ghost-action--sm', machineState.chain !== null ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => void handleChainSet(
-            machineState.chain !== null ? null : [machineState.activePatternIndex]
-          )}
-          disabled={inRoom && !roomState.isHost}
-          aria-pressed={machineState.chain !== null}
-          title={machineState.chain !== null ? 'Disable chain mode' : 'Enable chain mode'}
-        >
-          Chain
-        </button>
-
-        {machineState.chain !== null && (
-          <>
-            <div className="chain-sequence">
-              {machineState.chain.map((patIdx, pos) => (
-                <button
-                  key={pos}
-                  type="button"
-                  className={[
-                    'chain-slot',
-                    isPlaying && pos === machineState.chainPosition ? 'is-current' : '',
-                  ].filter(Boolean).join(' ')}
-                  onClick={() => {
-                    if (inRoom && !roomState.isHost) return
-                    const next = machineState.chain!.filter((_, i) => i !== pos)
-                    void handleChainSet(next.length > 0 ? next : null)
-                  }}
-                  disabled={inRoom && !roomState.isHost}
-                  title={`Pattern ${patIdx + 1} — click to remove`}
-                  aria-label={`Chain slot ${pos + 1}: pattern ${patIdx + 1}`}
-                >
-                  {patIdx + 1}
-                </button>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              className="ghost-action ghost-action--sm"
-              onClick={() => {
-                const next = [...(machineState.chain ?? []), machineState.activePatternIndex]
-                void handleChainSet(next)
-              }}
-              disabled={(inRoom && !roomState.isHost) || (machineState.chain?.length ?? 0) >= 32}
-              aria-label="Append active pattern to chain"
-              title="Append active pattern to end of chain"
-            >
-              +
-            </button>
-          </>
-        )}
-      </div>
-    </section>
-  )
+  const toggleArmed = (key: string) => {
+    const willArm = !armed.has(key)
+    setArmed((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+    // Side effect kept OUT of the state updater (updaters must be pure; StrictMode
+    // double-invokes them, which would create duplicate clips).
+    // pendingArmRef guards against rapid double-clicks: the second click arrives
+    // before the first state update commits, so both see willArm=true from the
+    // same stale armed state. The ref is cleared via microtask after synchronous
+    // event processing completes, allowing normal disarm→re-arm to still work.
+    if (willArm) {
+      if (pendingArmRef.current.has(key)) return
+      pendingArmRef.current.add(key)
+      armTimelineTrack(key)
+      queueMicrotask(() => pendingArmRef.current.delete(key))
+    }
+  }
 
   const mixerContent = (
     <>
-      <div className="mixer-local-controls">
-        <button
-          type="button"
-          className={['ghost-action', 'mixer-media-btn', micEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => void handleMicToggle()}
-          aria-pressed={micEnabled}
-          aria-label={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
-        >
-          {micEnabled ? '🎤 Mic On' : '🔇 Mic Off'}
-        </button>
-        <button
-          type="button"
-          className={['ghost-action', 'mixer-media-btn', cameraEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
-          onClick={() => void handleCameraToggle()}
-          aria-pressed={cameraEnabled}
-          aria-label={cameraEnabled ? 'Disable camera' : 'Enable camera'}
-        >
-          {cameraEnabled ? '📷 Cam On' : '📵 Cam Off'}
-        </button>
-      </div>
+      <div className="mixer-rack">
+        <MixerStrip
+          variant="master"
+          name="Master"
+          sub="Project"
+          value={masterVolume}
+          onValue={handleMasterVolume}
+          pan={masterPan}
+          onPan={setMasterPan}
+          recording={armed.has('master')}
+          onRecord={() => toggleArmed('master')}
+        />
 
-      <div className="mixer-master">
-        <div className="channel-meta">
-          <strong>Master</strong>
-          <span>Bus</span>
-        </div>
-        <div className="channel-row">
-          <span className="channel-label">Vol</span>
-          <input
-            aria-label="Master volume"
-            type="range"
-            min="0"
-            max="100"
-            value={masterVolume}
-            onChange={(e) => handleMasterVolume(Number(e.target.value))}
-            className="channel-slider"
-          />
-          <span className="channel-value">{masterVolume}</span>
-        </div>
-      </div>
-
-      {nativeSnapshot.streamActive && nativeSnapshot.activeInputChannels > 0 && (
-        <div className="mixer-local">
-          <p className="eyebrow">Local</p>
-          {Array.from({ length: nativeSnapshot.activeInputChannels }, (_, i) => (
+        {nativeSnapshot.streamActive && nativeSnapshot.activeInputChannels > 0 &&
+          Array.from({ length: nativeSnapshot.activeInputChannels }, (_, i) => (
             <LocalMixerStrip
-              key={i}
+              key={`local-${i}`}
               channelIndex={i}
               label={nativeSnapshot.inputChannelNames[i] ?? `Input ${i + 1}`}
               deviceId={nativeSnapshot.selectedInputId}
               sendEnabled={sendEnabled.has(i)}
               onSendToggle={() => handleSendToggle(i)}
+              recording={armed.has(`local:${i}`)}
+              onRecord={() => toggleArmed(`local:${i}`)}
             />
           ))}
-        </div>
-      )}
 
-      {participants.map((p) => (
-        <RemoteParticipantGroup
-          key={p.socketId}
-          participant={p}
-          channelMeta={remoteChannelMeta.get(p.socketId)}
-          channelGains={remoteChannelGains}
-          onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
-          onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
-          peerLevels={nativeRemoteLevels[p.socketId] ?? []}
-        />
-      ))}
+        {participants.map((p) => (
+          <RemoteParticipantGroup
+            key={p.socketId}
+            participant={p}
+            channelMeta={remoteChannelMeta.get(p.socketId)}
+            channelGains={remoteChannelGains}
+            onGainChange={(channelIdx, gain) => handleRemoteGainChange(p.socketId, channelIdx, gain)}
+            onMuteToggle={(channelIdx) => handleRemoteMuteToggle(p.socketId, channelIdx)}
+            peerLevels={nativeRemoteLevels[p.socketId] ?? []}
+            armed={armed}
+            onToggleRecord={toggleArmed}
+          />
+        ))}
+      </div>
 
       <section className="participants-panel" aria-label="Participants">
         <p className="eyebrow" style={{ marginBottom: 8 }}>Participants</p>
         <ul>
           <li>
             <div>
+              {selfSocketId && (
+                <span
+                  className="participant-color-dot"
+                  style={{ '--participant-color': participantColor(selfSocketId) } as CSSProperties}
+                  aria-hidden="true"
+                />
+              )}
               <span className={roomState.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
                 {roomState.isHost ? '★ Host' : '· Guest'}
               </span>
@@ -1202,6 +1198,11 @@ function App() {
             return (
               <li key={p.socketId} className={p.hostMuted ? 'participant-host-muted' : ''}>
                 <div>
+                  <span
+                    className="participant-color-dot"
+                    style={{ '--participant-color': participantColor(p.socketId) } as CSSProperties}
+                    aria-hidden="true"
+                  />
                   <span className={p.isHost ? 'role-badge role-badge--host' : 'role-badge role-badge--guest'}>
                     {p.isHost ? '★ Host' : '· Guest'}
                   </span>
@@ -1255,6 +1256,17 @@ function App() {
       </section>
     </>
   )
+
+  // Built-in node UI, keyed by type. Shared by BOTH views (Panels + Canvas).
+  // Third-party nodes aren't here — they render via getNodeInstance().render().
+  const panelContents: Record<string, PanelContentFn> = {
+    mixer: () => mixerContent,
+    chat: () => <ChatPanel selfSocketId={selfSocketId} />,
+    metronome: () => metronomeContent,
+    settings: (panelId) => (
+      <SettingsModal onClose={() => useGraphStore.getState().closeNode(panelId)} />
+    ),
+  }
 
   return (
     <main className={[
@@ -1493,6 +1505,26 @@ function App() {
 
       {inRoom && <>
       {/* Video Grid */}
+      <div className="video-controls">
+        <button
+          type="button"
+          className={['ghost-action', 'mixer-media-btn', micEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleMicToggle()}
+          aria-pressed={micEnabled}
+          aria-label={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
+        >
+          {micEnabled ? '🎤 Mic On' : '🔇 Mic Off'}
+        </button>
+        <button
+          type="button"
+          className={['ghost-action', 'mixer-media-btn', cameraEnabled ? 'is-active' : ''].filter(Boolean).join(' ')}
+          onClick={() => void handleCameraToggle()}
+          aria-pressed={cameraEnabled}
+          aria-label={cameraEnabled ? 'Disable camera' : 'Enable camera'}
+        >
+          {cameraEnabled ? '📷 Cam On' : '📵 Cam Off'}
+        </button>
+      </div>
       {fullscreenTile ? (
         <section className="video-grid video-grid--theater" aria-label="Video grid">
           <VideoTile
@@ -1584,11 +1616,11 @@ function App() {
           type="button"
           className="primary-action"
           onClick={handlePlayStop}
-          disabled={isStarting || (inRoom && !roomState.isHost)}
+          disabled={inRoom && !roomState.isHost}
           title={inRoom && !roomState.isHost ? 'Only host can control transport' : undefined}
         >
           {isStarting
-            ? (metronomeState.isPreroll ? `${metronomeState.currentBeat + 1}…` : 'Loading…')
+            ? (metronomeState.isPreroll ? `${metronomeState.currentBeat + 1}… ✕` : 'Loading…')
             : isPlaying ? 'Stop' : 'Play'}
         </button>
 
@@ -1650,12 +1682,53 @@ function App() {
         <div className="toolbar-right">
           <button
             type="button"
-            className="ghost-action toolbar-add-btn"
-            aria-label="Add module"
-            title="Add module (coming soon)"
+            className="ghost-action"
+            onClick={() => openPanel('drum-machine')}
+            aria-label="Open Drum Machine"
+            title="Drum Machine"
           >
-            +
+            🥁 Drum
           </button>
+
+          <button
+            type="button"
+            className="ghost-action"
+            onClick={() => openPanel('timeline')}
+            aria-label="Open Timeline"
+            title="Timeline"
+          >
+            🎞 Timeline
+          </button>
+
+          <div className="add-menu-wrap" ref={addMenuRef}>
+            <button
+              type="button"
+              className={['ghost-action', 'toolbar-add-btn', addMenuOpen ? 'is-active' : ''].filter(Boolean).join(' ')}
+              aria-label="Add module"
+              title="Add module"
+              aria-haspopup="menu"
+              aria-expanded={addMenuOpen}
+              onClick={() => setAddMenuOpen((o) => !o)}
+            >
+              +
+            </button>
+            {addMenuOpen && (
+              <div className="add-menu" role="menu">
+                {nodeRegistry.list().map((m) => (
+                  <button
+                    key={m.type}
+                    type="button"
+                    className="add-menu-item"
+                    role="menuitem"
+                    onClick={() => { openPanel(m.type); setAddMenuOpen(false) }}
+                  >
+                    <span className="add-menu-icon" aria-hidden="true">{m.icon}</span>
+                    <span>{m.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           <button
             type="button"
@@ -1669,19 +1742,13 @@ function App() {
         </div>
       </section>
 
-      <PanelsView
-        panelContents={{
-          mixer: () => mixerContent,
-          'drum-machine': () => drumMachineContent,
-          chat: () => (
-            <ChatPanel selfSocketId={selfSocketId} />
-          ),
-          metronome: () => metronomeContent,
-          settings: (panelId) => (
-            <SettingsModal onClose={() => usePanelStore.getState().closePanel(panelId)} />
-          ),
-        }}
-      />
+      {viewMode === 'canvas' ? (
+        <Suspense fallback={<div className="cv-loading">Loading canvas…</div>}>
+          <CanvasView panelContents={panelContents} />
+        </Suspense>
+      ) : (
+        <PanelsView panelContents={panelContents} />
+      )}
       </>}
     </main>
   )
