@@ -107,6 +107,39 @@ class NativeAudioController {
     return dev?.inputChannels ?? 0
   }
 
+  /**
+   * Resolve the output device id + api kind to use for monitoring.
+   *
+   * Priority:
+   *   1. User-selected output device (selectedOutputId)
+   *   2. The input device itself, if it also has output channels (ASIO duplex)
+   *   3. Any device with output channels, best API first
+   *
+   * Returns null when no output device is found (input-only hardware).
+   */
+  private resolveOutputForMonitor(): { id: number; apiKind: string } | null {
+    // 1. Explicit user choice
+    if (this.selectedOutputId !== null) {
+      const dev = this.devices.find((d) => d.id === this.selectedOutputId)
+      return { id: this.selectedOutputId, apiKind: this.outputHostApiKind || (dev ? bestApiForDevice(dev) : '') }
+    }
+    // 2. Input device is duplex (ASIO)
+    const inputDev = this.devices.find((d) => d.id === this.selectedInputId)
+    if (inputDev && inputDev.outputChannels > 0) {
+      return { id: inputDev.id, apiKind: this.inputHostApiKind }
+    }
+    // 3. Best available output device
+    const outDev = this.devices
+      .filter((d) => d.outputChannels > 0)
+      .sort((a, b) => {
+        const rank = (d: NativeAudioDevice) =>
+          HOST_API_PRIORITY.findIndex((k) => d.hostApis.some((h) => h.kind === k))
+        return rank(a) - rank(b)
+      })[0]
+    if (outDev) return { id: outDev.id, apiKind: bestApiForDevice(outDev) }
+    return null
+  }
+
   private notify(): void {
     const snap = this.getSnapshot()
     for (const l of this.listeners) l(snap)
@@ -191,18 +224,27 @@ class NativeAudioController {
     if (!window.nativeAudio) return { ok: false, error: 'nativeAudio not available' }
     if (this.selectedInputId === null) return { ok: false, error: 'No input device selected' }
 
+    const monitoring = this.monitorGain > 0
+    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+
     const opts: NativeAudioStreamOpts = {
       inputDeviceId: this.selectedInputId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: this.monitorGain > 0,
+      monitor: monitoring,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
-    if (this.selectedOutputId !== null) opts.outputDeviceId = this.selectedOutputId
+    if (resolvedOut) {
+      opts.outputDeviceId = resolvedOut.id
+      if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
+      opts.outputChannels = 2  // stereo monitoring — both ears
+    } else if (this.selectedOutputId !== null) {
+      opts.outputDeviceId = this.selectedOutputId
+      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
+    }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
-    if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
 
     const result = await window.nativeAudio.openStream(opts)
     if (result.ok) {
@@ -266,18 +308,27 @@ class NativeAudioController {
     const inputDeviceId = this.selectedInputId
     if (inputDeviceId === null) return { ok: false, error: 'No input device selected' }
 
+    const monitoring = this.monitorGain > 0
+    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+
     const opts: NativeAudioStreamOpts = {
       inputDeviceId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: this.monitorGain > 0,
+      monitor: monitoring,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
-    if (this.selectedOutputId !== null) opts.outputDeviceId = this.selectedOutputId
+    if (resolvedOut) {
+      opts.outputDeviceId = resolvedOut.id
+      if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
+      opts.outputChannels = 2
+    } else if (this.selectedOutputId !== null) {
+      opts.outputDeviceId = this.selectedOutputId
+      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
+    }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
-    if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
 
     const result = await window.nativeAudio.reinit(opts)
     if (result.ok) {
