@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { PointerEvent as RPointerEvent } from 'react'
-import { usePanelStore } from './panelStore'
+import { useGraphStore } from '../graph'
 import './panels.css'
 
 interface FloatingPanelProps {
@@ -13,22 +13,23 @@ interface FloatingPanelProps {
 }
 
 export function FloatingPanel({ id, title, icon, children, keepMounted = false }: FloatingPanelProps) {
-  const panel = usePanelStore((s) => s.panels.find((p) => p.id === id))
+  const panel = useGraphStore((s) => s.nodes[id])
+  const isOpen = useGraphStore((s) => s.openNodes.includes(id))
   // Stable store references — no extra subscriptions
-  const { closePanel, focusPanel, movePanel, resizePanel, minimizePanel } = usePanelStore.getState()
+  const { closeNode, focusNode, moveNode, resizeNode, toggleMinimize } = useGraphStore.getState()
 
   // Local pos/size drive rendering; synced from store on open/reopen
-  const [pos,  setPos]  = useState(() => panel?.position ?? { x: 20, y: 60 })
+  const [pos,  setPos]  = useState(() => panel?.panelPos ?? { x: 20, y: 60 })
   const [size, setSize] = useState(() => panel?.size     ?? { w: 320, h: 480 })
 
   useEffect(() => {
     // Read from store directly to avoid stale-closure deps on position/size
-    const stored = usePanelStore.getState().panels.find((p) => p.id === id)
-    if (!stored?.isOpen) return
-    setPos(stored.position)
+    const stored = useGraphStore.getState().nodes[id]
+    if (!stored || !useGraphStore.getState().openNodes.includes(id)) return
+    setPos(stored.panelPos)
     setSize(stored.size)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, panel?.isOpen])
+  }, [id, isOpen])
 
   // Drag state stored in a ref — no re-renders during motion
   const drag   = useRef<{ ox: number; oy: number; mx: number; my: number } | null>(null)
@@ -36,7 +37,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
 
   if (!panel) return null
 
-  if (!panel.isOpen) {
+  if (!isOpen) {
     if (keepMounted) return <div style={{ display: 'none' }}>{children}</div>
     return null
   }
@@ -51,7 +52,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     if ((e.target as HTMLElement).closest('button')) return   // let dot-buttons work
     e.currentTarget.setPointerCapture(e.pointerId)           // keep events even off-element
     drag.current = { ox: pos.x, oy: pos.y, mx: e.clientX, my: e.clientY }
-    focusPanel(id)
+    focusNode(id)
   }
   function onTitleMove(e: RPointerEvent<HTMLDivElement>) {
     if (!drag.current) return
@@ -63,7 +64,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     const { ox, oy, mx, my } = drag.current
     const newPos = { x: ox + e.clientX - mx, y: oy + e.clientY - my }
     setPos(newPos)
-    movePanel(id, newPos)
+    moveNode(id, 'panel', newPos)
     drag.current = null
   }
 
@@ -91,7 +92,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
       h: Math.min(maxPanelH, Math.max(60, oh + e.clientY - oy)),
     }
     setSize(newSize)
-    resizePanel(id, newSize)
+    resizeNode(id, newSize)
     resize.current = null
   }
 
@@ -99,7 +100,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     <div
       className="fp-wrapper"
       style={{ left: pos.x, top: pos.y, width: size.w, height: displayH, zIndex: panel.zIndex }}
-      onPointerDown={() => focusPanel(id)}
+      onPointerDown={() => focusNode(id)}
     >
       <div className="fp-root">
         <div
@@ -112,13 +113,13 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
             <button
               type="button"
               className="fp-dot fp-dot--red"
-              onClick={(e) => { e.stopPropagation(); closePanel(id) }}
+              onClick={(e) => { e.stopPropagation(); closeNode(id) }}
               aria-label="Close panel"
             />
             <button
               type="button"
               className="fp-dot fp-dot--yellow"
-              onClick={(e) => { e.stopPropagation(); minimizePanel(id) }}
+              onClick={(e) => { e.stopPropagation(); toggleMinimize(id) }}
               aria-label="Minimize panel"
             />
             <span className="fp-dot fp-dot--green" aria-hidden="true" />

@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client'
-import { syncEventSchema, channelMetaSchema, type SyncEvent, type ChannelMetaWithSender } from '../protocol/syncProtocol'
+import { syncEventSchema, channelMetaSchema, type SyncEvent, type ChannelMetaWithSender, type GraphSyncNode, type GraphSyncEdge } from '../protocol/syncProtocol'
 
 type RoomParticipant = {
   socketId: string
@@ -14,16 +14,29 @@ type PatternSlotSnapshot = {
   stepCount: 8 | 16 | 32
 }
 
+/** Per-node Drum Machine state in the room snapshot (keyed by nodeId in `drums`). */
+type DrumNodeSnapshot = {
+  activePatternIndex: number
+  swing: number
+  chain: number[] | null
+  patternBank: PatternSlotSnapshot[]
+}
+
 type SyncStateSnapshot = {
   bpm: number
   isPlaying: boolean
   currentStep: number
+  // Legacy top-level fields mirror the primary drum ('drum-machine').
   activePatternIndex: number
   swing: number
   patternBank: PatternSlotSnapshot[]
+  chain: number[] | null
+  /** Per-node drum patterns (primary + duplicates), keyed by nodeId. */
+  drums?: Record<string, DrumNodeSnapshot>
   metronomeEnabled: boolean
   timeSignature: { beats: number; division: number }
-  chain: number[] | null
+  /** Node graph topology for late-joiner hydration (G2). */
+  graph?: { nodes: Record<string, GraphSyncNode>; edges: GraphSyncEdge[] }
 }
 
 type RoomState = {
@@ -478,4 +491,4 @@ class RoomSyncClient {
 }
 
 export const roomSyncClient = new RoomSyncClient()
-export type { RoomState, SyncStateSnapshot, RoomParticipant, PatternSlotSnapshot, ChatMessage, HostMutedEvent }
+export type { RoomState, SyncStateSnapshot, DrumNodeSnapshot, RoomParticipant, PatternSlotSnapshot, ChatMessage, HostMutedEvent }

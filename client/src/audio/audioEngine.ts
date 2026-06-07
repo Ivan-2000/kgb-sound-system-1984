@@ -67,6 +67,28 @@ class AudioEngine {
     return this.bpm
   }
 
+  /** Current transport position in seconds (for the timeline playhead). */
+  getTransportSeconds(): number {
+    return Tone.Transport.seconds
+  }
+
+  /** Move the transport playhead (timeline scrub). */
+  seekSeconds(sec: number): void {
+    Tone.Transport.seconds = Math.max(0, sec)
+  }
+
+  /** Set the transport loop region (timeline playback region markers). */
+  setLoopRegion(start: number, end: number): void {
+    if (end > start) {
+      Tone.Transport.setLoopPoints(start, end)
+      Tone.Transport.loop = true
+    }
+  }
+
+  clearLoopRegion(): void {
+    Tone.Transport.loop = false
+  }
+
   async play(options: TransportStartOptions = {}) {
     await this.unlock()
 

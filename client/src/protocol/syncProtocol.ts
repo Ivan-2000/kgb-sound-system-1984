@@ -18,9 +18,21 @@ export const syncEventTypeSchema = z.enum([
   'pattern_switch',
   'chain_set',
   'channel_meta',
+  'graph_node_add',
+  'graph_node_remove',
+  'graph_edge_connect',
+  'graph_edge_disconnect',
+  'graph_param_change',
+  'graph_node_move',
+  'graph_node_resize',
 ])
 
 export const drumTrackSchema = z.enum(['kick', 'snare', 'hat', 'crash'])
+
+// Per-node drum routing: which Drum Machine instance an event targets. OPTIONAL
+// for back-compat — a missing nodeId means the primary/singleton drum
+// ('drum-machine'). Added 2026-06-02 for drum duplication.
+const drumNodeIdSchema = z.string().trim().min(1).max(64).optional()
 
 export const syncEventBaseSchema = z.object({
   timestamp: z.number().int().nonnegative(),
@@ -32,6 +44,7 @@ export const syncEventBaseSchema = z.object({
 export const stepToggleEventSchema = syncEventBaseSchema.extend({
   type: z.literal('step_toggle'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     track: drumTrackSchema,
     step: z.number().int().min(0).max(31),
     value: z.boolean(),
@@ -76,6 +89,7 @@ export const cameraToggleEventSchema = syncEventBaseSchema.extend({
 export const stepCountChangeEventSchema = syncEventBaseSchema.extend({
   type: z.literal('step_count_change'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     stepCount: z.union([z.literal(8), z.literal(16), z.literal(32)]),
   }),
 })
@@ -83,6 +97,7 @@ export const stepCountChangeEventSchema = syncEventBaseSchema.extend({
 export const velocityChangeEventSchema = syncEventBaseSchema.extend({
   type: z.literal('velocity_change'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     track: drumTrackSchema,
     step: z.number().int().min(0).max(31),
     velocity: z.number().int().min(1).max(127),
@@ -107,6 +122,7 @@ export const metronomeToggleEventSchema = syncEventBaseSchema.extend({
 export const swingChangeEventSchema = syncEventBaseSchema.extend({
   type: z.literal('swing_change'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     swing: z.number().int().min(0).max(100),
   }),
 })
@@ -114,6 +130,7 @@ export const swingChangeEventSchema = syncEventBaseSchema.extend({
 export const patternSwitchEventSchema = syncEventBaseSchema.extend({
   type: z.literal('pattern_switch'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     patternIndex: z.number().int().min(0).max(7),
   }),
 })
@@ -121,7 +138,83 @@ export const patternSwitchEventSchema = syncEventBaseSchema.extend({
 export const chainSetEventSchema = syncEventBaseSchema.extend({
   type: z.literal('chain_set'),
   payload: z.object({
+    nodeId: drumNodeIdSchema,
     chain: z.array(z.number().int().min(0).max(7)).max(32).nullable(),
+  }),
+})
+
+// ── Node graph events (G2) ──────────────────────────────────────────────────
+// Shared topology + params + positions. Each client runs its own copy of the
+// graph; only these mutations are synced (not runtime signals). See TASKS_UI.md.
+
+export const paramValueSchema = z.union([z.number(), z.string(), z.boolean()])
+const vec2Schema = z.object({ x: z.number(), y: z.number() })
+const sizeSchema = z.object({ w: z.number(), h: z.number() })
+const portRefSchema = z.object({
+  nodeId: z.string().trim().min(1).max(64),
+  portId: z.string().trim().min(1).max(64),
+})
+
+export const graphNodeSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  type: z.string().trim().min(1).max(128),
+  params: z.record(z.string().max(64), paramValueSchema),
+  panelPos: vec2Schema,
+  canvasPos: vec2Schema,
+  size: sizeSchema,
+  zIndex: z.number(),
+  isMinimized: z.boolean(),
+})
+
+export const graphEdgeSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  from: portRefSchema,
+  to: portRefSchema,
+})
+
+export const graphNodeAddEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_node_add'),
+  payload: z.object({ node: graphNodeSchema }),
+})
+
+export const graphNodeRemoveEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_node_remove'),
+  payload: z.object({ nodeId: z.string().trim().min(1).max(64) }),
+})
+
+export const graphEdgeConnectEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_edge_connect'),
+  payload: z.object({ edge: graphEdgeSchema }),
+})
+
+export const graphEdgeDisconnectEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_edge_disconnect'),
+  payload: z.object({ edgeId: z.string().trim().min(1).max(64) }),
+})
+
+export const graphParamChangeEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_param_change'),
+  payload: z.object({
+    nodeId: z.string().trim().min(1).max(64),
+    paramId: z.string().trim().min(1).max(64),
+    value: paramValueSchema,
+  }),
+})
+
+export const graphNodeMoveEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_node_move'),
+  payload: z.object({
+    nodeId: z.string().trim().min(1).max(64),
+    view: z.enum(['panel', 'canvas']),
+    pos: vec2Schema,
+  }),
+})
+
+export const graphNodeResizeEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('graph_node_resize'),
+  payload: z.object({
+    nodeId: z.string().trim().min(1).max(64),
+    size: sizeSchema,
   }),
 })
 
@@ -139,6 +232,13 @@ export const syncEventSchema = z.discriminatedUnion('type', [
   swingChangeEventSchema,
   patternSwitchEventSchema,
   chainSetEventSchema,
+  graphNodeAddEventSchema,
+  graphNodeRemoveEventSchema,
+  graphEdgeConnectEventSchema,
+  graphEdgeDisconnectEventSchema,
+  graphParamChangeEventSchema,
+  graphNodeMoveEventSchema,
+  graphNodeResizeEventSchema,
 ])
 
 // channel_meta travels via sync:channel_meta — NOT through room:event/syncEventSchema.
@@ -165,3 +265,12 @@ export type MetronomeToggleEvent = z.infer<typeof metronomeToggleEventSchema>
 export type SwingChangeEvent = z.infer<typeof swingChangeEventSchema>
 export type PatternSwitchEvent = z.infer<typeof patternSwitchEventSchema>
 export type ChainSetEvent = z.infer<typeof chainSetEventSchema>
+export type GraphSyncNode = z.infer<typeof graphNodeSchema>
+export type GraphSyncEdge = z.infer<typeof graphEdgeSchema>
+export type GraphNodeAddEvent = z.infer<typeof graphNodeAddEventSchema>
+export type GraphNodeRemoveEvent = z.infer<typeof graphNodeRemoveEventSchema>
+export type GraphEdgeConnectEvent = z.infer<typeof graphEdgeConnectEventSchema>
+export type GraphEdgeDisconnectEvent = z.infer<typeof graphEdgeDisconnectEventSchema>
+export type GraphParamChangeEvent = z.infer<typeof graphParamChangeEventSchema>
+export type GraphNodeMoveEvent = z.infer<typeof graphNodeMoveEventSchema>
+export type GraphNodeResizeEvent = z.infer<typeof graphNodeResizeEventSchema>
