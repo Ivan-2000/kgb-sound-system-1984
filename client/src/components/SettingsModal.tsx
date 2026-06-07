@@ -81,9 +81,10 @@ export function SettingsModal({ onClose }: Props) {
   useEffect(() => {
     // Subscribe first — then load so the notification is guaranteed to arrive.
     const unsub = nativeAudioController.subscribeState(setNativeSnapshot)
-    // Load only if devices haven't been enumerated yet (avoids re-enumeration
-    // while a stream is active, which can crash ASIO drivers → black screen).
-    if (window.nativeAudio !== undefined && nativeAudioController.getSnapshot().devices.length === 0) {
+    // Always request a device list when Settings opens.
+    // loadDevices() has an internal guard that skips re-enumeration while a
+    // stream is active (avoids crashing ASIO drivers on Pa_GetDeviceCount).
+    if (window.nativeAudio !== undefined) {
       void nativeAudioController.loadDevices()
     }
     return unsub
