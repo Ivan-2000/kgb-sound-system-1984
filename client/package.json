@@ -26,6 +26,9 @@
       "electron/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "electron/nativeAudio/portaudioAddon/build/**"
+    ],
     "win": {
       "target": "nsis"
     }
