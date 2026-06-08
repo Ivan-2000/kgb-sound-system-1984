@@ -1,6 +1,9 @@
+import { clipAudio } from '../audio/recorder'
+
 export type ExportCodec = 'wav' | 'mp3'
 
 export interface ExportOptions {
+  clipId?: string
   label: string
   durSec: number
   codec: ExportCodec
@@ -43,11 +46,13 @@ function download(blob: Blob, filename: string): void {
 /**
  * Export a clip to disk. Returns the codec actually written ('wav' even when
  * 'mp3' was requested, until the MP3 encoder ships) so the UI can inform the user.
+ * If the clip has real recorded audio (via T2 recorder), uses that; otherwise exports silence.
  */
 export function exportClipFile(opts: ExportOptions): ExportCodec {
   const sampleRate = opts.sampleRate ?? 44100
-  const blob = silentWav(opts.durSec, sampleRate)
   const safe = (opts.label || 'clip').replace(/[^\w.-]+/g, '_')
+  const real = opts.clipId ? clipAudio.get(opts.clipId) : undefined
+  const blob = real ?? silentWav(opts.durSec, sampleRate)
   // MP3 not encoded yet → write a .wav placeholder.
   download(blob, `${safe}.wav`)
   return 'wav'

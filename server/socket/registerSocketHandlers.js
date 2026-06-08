@@ -9,6 +9,7 @@ const {
   chatMessageSchema,
   hostTargetSchema,
   channelMetaSchema,
+  clipFileMetaSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -180,6 +181,27 @@ function registerSocketHandlers(io, roomManager) {
         senderId: socket.id,
       })
 
+      ack?.({ ok: true })
+    })
+
+    // Binary WAV relay (T4): sender emits { clipId, data: ArrayBuffer }, server
+    // relays to all room members except sender. Not stored server-side.
+    socket.on('clip:file', (rawPayload, ack) => {
+      if (!rawPayload || typeof rawPayload !== 'object') {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+      const meta = clipFileMetaSchema.safeParse({ clipId: rawPayload.clipId })
+      if (!meta.success || !Buffer.isBuffer(rawPayload.data)) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+      socket.to(roomId).emit('clip:file', { clipId: meta.data.clipId, senderId: socket.id, data: rawPayload.data })
       ack?.({ ok: true })
     })
 

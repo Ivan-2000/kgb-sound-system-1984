@@ -7,14 +7,35 @@ import type { TimelineStoreApi } from './timelineStore'
  * `create()` via `createTimelineStore`). App reaches the PRIMARY timeline —
  * deterministic id `'timeline'`, the one the Mixer's Record button targets —
  * through `getTimeline('timeline')`, and drives all instances with
- * `forEachTimeline`. Timeline isn't room-synced yet, so there's no sync glue
- * here (unlike `drumNodes.ts`): just the instance registry.
+ * `forEachTimeline`. Clip sync (T4) hydration: pending clip data is applied
+ * when the primary timeline registers (i.e., when the user first opens the panel).
  */
 
 const timelines = new Map<string, TimelineStoreApi>()
 
+// Set by App.tsx via setPendingTimelineClips when joining a room with clip state.
+// Applied on registerTimeline for the primary timeline, then cleared.
+type PendingClipEntry = {
+  id: string; trackKey: string; trackName: string; trackKind: 'audio' | 'midi'
+  trackColor?: string; startSec: number; durSec: number; label: string
+  kind: 'audio' | 'midi'; proxy?: boolean
+}
+let pendingTimelineClips: Record<string, PendingClipEntry> | null = null
+
+export function setPendingTimelineClips(clips: Record<string, PendingClipEntry> | null): void {
+  pendingTimelineClips = clips
+}
+
 export function registerTimeline(nodeId: string, store: TimelineStoreApi): void {
   timelines.set(nodeId, store)
+  if (nodeId === 'timeline' && pendingTimelineClips) {
+    const tl = store.getState()
+    for (const clip of Object.values(pendingTimelineClips)) {
+      const trackId = tl.ensureTrack(clip.trackKey, { name: clip.trackName, kind: clip.trackKind, color: clip.trackColor })
+      tl.addClipWithId({ id: clip.id, trackId, startSec: clip.startSec, durSec: clip.durSec, label: clip.label, kind: clip.kind, proxy: clip.proxy })
+    }
+    pendingTimelineClips = null
+  }
 }
 
 export function unregisterTimeline(nodeId: string): void {

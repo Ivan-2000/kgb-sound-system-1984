@@ -69,6 +69,9 @@ function createInitialSyncState() {
     drums: { [DEFAULT_DRUM_ID]: createDrumState() },
     // Node graph (G2): shared topology. Hydrated to late joiners via snapshot.
     graph: { nodes: {}, edges: [] },
+    // Timeline clips (T4): per-timeline clip state for late joiners.
+    // { [timelineNodeId]: { [clipId]: { id, trackKey, trackName, trackKind, trackColor, startSec, durSec, label, kind, proxy } } }
+    timelineClips: {},
   }
 }
 
@@ -241,6 +244,12 @@ class RoomManager {
         ),
         edges: s.graph.edges.map((e) => ({ id: e.id, from: { ...e.from }, to: { ...e.to } })),
       },
+      timelineClips: Object.fromEntries(
+        Object.entries(s.timelineClips).map(([tid, clips]) => [
+          tid,
+          Object.fromEntries(Object.entries(clips).map(([id, c]) => [id, { ...c }])),
+        ]),
+      ),
     }
   }
 
@@ -357,6 +366,27 @@ class RoomManager {
     if (event.type === 'graph_node_resize') {
       const node = g.nodes[event.payload.nodeId]
       if (node) node.size = event.payload.size
+      return
+    }
+
+    // ── Timeline clip sync (T4) ──────────────────────────────────────────────
+    if (event.type === 'clip_add') {
+      const { timelineNodeId, trackKey, trackName, trackKind, trackColor, clip } = event.payload
+      if (!s.timelineClips[timelineNodeId]) s.timelineClips[timelineNodeId] = {}
+      s.timelineClips[timelineNodeId][clip.id] = { ...clip, trackKey, trackName, trackKind, trackColor }
+      return
+    }
+
+    if (event.type === 'clip_update') {
+      const { timelineNodeId, clipId, patch } = event.payload
+      const c = s.timelineClips[timelineNodeId]?.[clipId]
+      if (c) Object.assign(c, patch)
+      return
+    }
+
+    if (event.type === 'clip_remove') {
+      const { timelineNodeId, clipId } = event.payload
+      if (s.timelineClips[timelineNodeId]) delete s.timelineClips[timelineNodeId][clipId]
     }
   }
 }

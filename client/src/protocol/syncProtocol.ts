@@ -25,6 +25,9 @@ export const syncEventTypeSchema = z.enum([
   'graph_param_change',
   'graph_node_move',
   'graph_node_resize',
+  'clip_add',
+  'clip_update',
+  'clip_remove',
 ])
 
 export const drumTrackSchema = z.enum(['kick', 'snare', 'hat', 'crash'])
@@ -218,6 +221,51 @@ export const graphNodeResizeEventSchema = syncEventBaseSchema.extend({
   }),
 })
 
+// ── Timeline clip sync (T4) ──────────────────────────────────────────────────
+
+const clipPayloadSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  startSec: z.number().min(0),
+  durSec: z.number().min(0),
+  label: z.string().max(128),
+  kind: z.enum(['audio', 'midi']),
+  proxy: z.boolean().optional(),
+})
+
+export const clipAddEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('clip_add'),
+  payload: z.object({
+    timelineNodeId: z.string().trim().min(1).max(64),
+    trackKey: z.string().trim().min(1).max(128),
+    trackName: z.string().max(128),
+    trackKind: z.enum(['audio', 'midi']),
+    trackColor: z.string().max(64).optional(),
+    clip: clipPayloadSchema,
+  }),
+})
+
+export const clipUpdateEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('clip_update'),
+  payload: z.object({
+    timelineNodeId: z.string().trim().min(1).max(64),
+    clipId: z.string().trim().min(1).max(64),
+    patch: z.object({
+      startSec: z.number().min(0).optional(),
+      durSec: z.number().min(0).optional(),
+      label: z.string().max(128).optional(),
+      proxy: z.boolean().optional(),
+    }),
+  }),
+})
+
+export const clipRemoveEventSchema = syncEventBaseSchema.extend({
+  type: z.literal('clip_remove'),
+  payload: z.object({
+    timelineNodeId: z.string().trim().min(1).max(64),
+    clipId: z.string().trim().min(1).max(64),
+  }),
+})
+
 export const syncEventSchema = z.discriminatedUnion('type', [
   stepToggleEventSchema,
   transportPlayEventSchema,
@@ -239,6 +287,9 @@ export const syncEventSchema = z.discriminatedUnion('type', [
   graphParamChangeEventSchema,
   graphNodeMoveEventSchema,
   graphNodeResizeEventSchema,
+  clipAddEventSchema,
+  clipUpdateEventSchema,
+  clipRemoveEventSchema,
 ])
 
 // channel_meta travels via sync:channel_meta — NOT through room:event/syncEventSchema.
@@ -274,3 +325,6 @@ export type GraphEdgeDisconnectEvent = z.infer<typeof graphEdgeDisconnectEventSc
 export type GraphParamChangeEvent = z.infer<typeof graphParamChangeEventSchema>
 export type GraphNodeMoveEvent = z.infer<typeof graphNodeMoveEventSchema>
 export type GraphNodeResizeEvent = z.infer<typeof graphNodeResizeEventSchema>
+export type ClipAddEvent = z.infer<typeof clipAddEventSchema>
+export type ClipUpdateEvent = z.infer<typeof clipUpdateEventSchema>
+export type ClipRemoveEvent = z.infer<typeof clipRemoveEventSchema>

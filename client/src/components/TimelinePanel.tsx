@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent, type MouseEvent as RMouseEvent } from 'react'
 import { audioEngine } from '../audio/audioEngine'
+import { metronome } from '../audio/metronome'
 import { type TimelineClip, type TimelineStoreApi } from '../timeline/timelineStore'
 import { exportClipFile, type ExportCodec } from '../timeline/exportClip'
+import { clipAudio } from '../audio/recorder'
 
 const PX_PER_SEC = 40
 const LANE_H = 48
@@ -11,7 +13,7 @@ type Tool = 'select' | 'split' | 'gaps'
 type GroupItem = { id: string; startSec: number }
 type ClipDrag = { id: string; trackId: string; mode: 'move' | 'trim-l' | 'trim-r'; startX: number; startY: number; startSec: number; durSec: number; group: GroupItem[]; pushed: boolean }
 type Menu = { x: number; y: number; trackId: string | null; clipId: string | null; atSec: number }
-type ExportTarget = { clipId: string; label: string; durSec: number }
+type ExportTarget = { clipId: string; label: string; durSec: number; hasAudio?: boolean }
 type Marquee = { x: number; y: number; w: number; h: number }
 
 export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
@@ -35,6 +37,8 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
   const [codec, setCodec] = useState<ExportCodec>('wav')
   const [bitrate, setBitrate] = useState(16)
   const [tool, setTool] = useState<Tool>('select')
+  const [snapEnabled, setSnapEnabled] = useState(true)
+  const [snapUnit, setSnapUnit] = useState<'bar' | 'beat'>('bar')
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const clipDrag = useRef<ClipDrag | null>(null)
@@ -208,20 +212,25 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
     if (d.mode === 'move') {
       if (d.group.length > 1) {
         const minStart = Math.min(...d.group.map((g) => g.startSec))
-        const delta = Math.max(dSec, -minStart)
-        for (const g of d.group) st().updateClip(g.id, { startSec: g.startSec + delta })
+        const rawDelta = Math.max(dSec, -minStart)
+        // Snap the anchor clip's destination, then apply the same offset to the group.
+        const anchorDesired = snapSec(Math.max(0, d.startSec + rawDelta))
+        const delta = anchorDesired - d.startSec
+        for (const g of d.group) st().updateClip(g.id, { startSec: Math.max(0, g.startSec + delta) })
       } else {
-        const desired = Math.max(0, d.startSec + dSec)
+        const desired = snapSec(Math.max(0, d.startSec + dSec))
         st().updateClip(d.id, { startSec: resolveStart(d.trackId, d.id, d.durSec, desired) })
       }
       setDragDY(e.clientY - d.startY)
       const idx = trackIndexFromClientY(e.clientY)
       setDropTrackId(idx >= 0 && idx < tracks.length ? tracks[idx].id : null)
     } else if (d.mode === 'trim-r') {
-      st().updateClip(d.id, { durSec: Math.max(0.2, d.durSec + dSec) })
+      const snappedEnd = snapSec(d.startSec + d.durSec + dSec)
+      st().updateClip(d.id, { durSec: Math.max(0.2, snappedEnd - d.startSec) })
     } else {
-      const start = Math.max(0, d.startSec + dSec)
-      st().updateClip(d.id, { startSec: start, durSec: Math.max(0.2, d.durSec - (start - d.startSec)) })
+      const start = Math.max(0, snapSec(d.startSec + dSec))
+      const originalEnd = d.startSec + d.durSec
+      st().updateClip(d.id, { startSec: start, durSec: Math.max(0.2, originalEnd - start) })
     }
   }
   function onClipUp() {
@@ -261,18 +270,35 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
   const cmd = (fn: () => void) => () => { st().pushHistory(); fn(); setMenu(null) }
   function beginExport(clipId: string) {
     const c = st().clips.find((x) => x.id === clipId)
-    if (c) setExportTarget({ clipId, label: c.label, durSec: c.durSec })
+    if (c) setExportTarget({ clipId, label: c.label, durSec: c.durSec, hasAudio: clipAudio.has(clipId) })
     setMenu(null)
   }
   function changeCodec(next: ExportCodec) { setCodec(next); setBitrate(next === 'mp3' ? 320 : 16) }
   function doExport() {
-    if (exportTarget) exportClipFile({ label: exportTarget.label, durSec: exportTarget.durSec, codec, bitrate })
+    if (exportTarget) exportClipFile({ clipId: exportTarget.clipId, label: exportTarget.label, durSec: exportTarget.durSec, codec, bitrate })
     setExportTarget(null)
   }
   const menuDelete = (clipId: string) => st().selectedIds.includes(clipId) && st().selectedIds.length > 1 ? [...st().selectedIds].forEach((id) => st().removeClip(id)) : st().removeClip(clipId)
 
   const ticks = Array.from({ length: totalSec + 1 }, (_, s) => s)
   const toolCls = tool === 'select' ? '' : ` tl--tool-${tool}`
+
+  // BPM grid helpers
+  const bpm = audioEngine.getBpm()
+  const timeSig = metronome.getState().timeSignature
+  const beatSec = 60 / bpm
+  const barSec = beatSec * timeSig.beats
+  const snapSec = (sec: number): number => {
+    if (!snapEnabled) return sec
+    const unit = snapUnit === 'bar' ? barSec : beatSec
+    return Math.round(sec / unit) * unit
+  }
+  // Grid line arrays for rendering
+  const numBars = Math.ceil(totalSec / barSec) + 2
+  const barLines = snapEnabled ? Array.from({ length: numBars }, (_, i) => i) : []
+  const beatLines = snapEnabled && snapUnit === 'beat'
+    ? Array.from({ length: numBars * timeSig.beats }, (_, i) => i).filter((i) => i % timeSig.beats !== 0)
+    : []
 
   return (
     <div className={`tl${toolCls}`}>
@@ -292,6 +318,26 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
         <span className="tl-tb-sep" />
         <button type="button" className="tl-midi-btn" onClick={() => { st().pushHistory(); st().addMidiClip(playSec) }} title="Создать MIDI-дорожку">＋♪</button>
         {selectedIds.length > 1 && <span className="tl-selcount">{selectedIds.length}</span>}
+        <span className="tl-tb-sep" />
+        <button
+          type="button"
+          className={`tl-tb${snapEnabled ? ' tl-tb--on' : ''}`}
+          onClick={() => setSnapEnabled((v) => !v)}
+          title={snapEnabled ? 'Привязка к сетке — вкл. (нажать чтобы выкл.)' : 'Привязка к сетке — выкл. (нажать чтобы вкл.)'}
+        >
+          ⁞⁞
+        </button>
+        {snapEnabled && (
+          <select
+            className="tl-snap-sel"
+            value={snapUnit}
+            onChange={(e) => setSnapUnit(e.target.value as 'bar' | 'beat')}
+            title="Единица привязки"
+          >
+            <option value="bar">Такт</option>
+            <option value="beat">Доля</option>
+          </select>
+        )}
       </div>
 
       <div className="tl-body">
@@ -315,12 +361,27 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
         <div className="tl-scroll" ref={scrollRef}>
           <div className="tl-ruler" style={{ width: laneW }} onPointerDown={onRulerDown} onPointerMove={onRulerMove} onPointerUp={onRulerUp}>
             {ticks.map((s) => (<span key={s} className="tl-tick" style={{ left: s * PX_PER_SEC }}>{s}s</span>))}
+            {barLines.map((i) => (
+              <span key={`bar-${i}`} className="tl-bar-mark" style={{ left: i * barSec * PX_PER_SEC }}>
+                {i + 1}
+              </span>
+            ))}
+            {beatLines.map((i) => (
+              <span key={`beat-${i}`} className="tl-beat-mark" style={{ left: i * beatSec * PX_PER_SEC }} />
+            ))}
             <span className="tl-loop tl-loop--start" style={{ left: ls * PX_PER_SEC }} onPointerDown={(e) => onLoopDown(e, 'start')} onPointerMove={onRulerMove} onPointerUp={onRulerUp} title="Начало области" />
             <span className="tl-loop tl-loop--end" style={{ left: le * PX_PER_SEC }} onPointerDown={(e) => onLoopDown(e, 'end')} onPointerMove={onRulerMove} onPointerUp={onRulerUp} title="Конец области" />
             <span className="tl-playhead-tri" style={{ left: playSec * PX_PER_SEC }} />
           </div>
 
           <div className="tl-loop-band" style={{ left: ls * PX_PER_SEC, width: Math.max(0, (le - ls) * PX_PER_SEC), top: RULER_H }} />
+
+          {barLines.map((i) => (
+            <div key={`gbar-${i}`} className="tl-grid-bar" style={{ left: i * barSec * PX_PER_SEC, top: RULER_H }} />
+          ))}
+          {beatLines.map((i) => (
+            <div key={`gbeat-${i}`} className="tl-grid-beat" style={{ left: i * beatSec * PX_PER_SEC, top: RULER_H }} />
+          ))}
 
           {tracks.map((t) => (
             <div
@@ -403,7 +464,9 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
                 ))}
               </select>
             </label>
-            <p className="tl-export-note">Сейчас экспортируется тишина-плейсхолдер (.wav) длиной клипа. Реальное аудио и MP3-кодирование появятся с pipeline записи.</p>
+            {!exportTarget?.hasAudio && (
+              <p className="tl-export-note">Клип не содержит записанного аудио — экспортируется тишина-плейсхолдер. MP3-кодирование — с T3.</p>
+            )}
             <div className="tl-export-actions">
               <button type="button" className="ghost-action ghost-action--sm" onClick={() => setExportTarget(null)}>Отмена</button>
               <button type="button" className="ghost-action ghost-action--sm" onClick={doExport}>Экспорт</button>

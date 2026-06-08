@@ -1,64 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
+import {
+  apiLabel,
+  buildDeviceGroups, normalizeDeviceName,
+} from '../audio/deviceUtils'
 
 type RecordingFormat = 'wav' | 'mp3'
-
-const API_LABELS: Record<string, string> = {
-  ASIO:             'ASIO  ★★  (наименьшая задержка)',
-  WASAPI_EXCLUSIVE: 'WASAPI Exclusive  ★  (низкая задержка)',
-  WASAPI:           'WASAPI Shared',
-  DirectSound:      'DirectSound',
-  WDMKS:            'WDM-KS',
-  MME:              'MME  (legacy)',
-}
-const apiLabel = (kind: string) => API_LABELS[kind] ?? kind
-
-// Priority order — lower index = better driver
-const API_PRIORITY = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'WDMKS', 'MME']
-const apiRank = (kind: string) => { const i = API_PRIORITY.indexOf(kind); return i === -1 ? 99 : i }
-
-interface DeviceGroup {
-  name: string          // normalized physical device name (used as key + display)
-  channelCount: number
-  apis: Array<{ kind: string; deviceId: number }>
-}
-
-/**
- * Windows PortAudio names follow two patterns:
- *   ASIO      → "BEHRINGER USB WDM AUDIO 2.8.40"
- *   WASAPI/DS/MME → "Динамики (2- BEHRINGER USB WDM AUDIO 2.8.40)"
- *
- * Normalize by extracting the content of the last parentheses (and stripping
- * any leading "N- " channel prefix). This merges all API variants of the same
- * physical device into one group so the driver selector shows ALL available
- * APIs (including ASIO) for that device.
- */
-function normalizeDeviceName(name: string): string {
-  const m = name.match(/\((.+)\)\s*$/)
-  if (m) return m[1].replace(/^\d+-\s*/, '').trim()
-  return name.trim()
-}
-
-function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): DeviceGroup[] {
-  const map = new Map<string, DeviceGroup>()
-  for (const dev of devices) {
-    const ch = forInput ? dev.inputChannels : dev.outputChannels
-    if (ch <= 0) continue
-    const key = normalizeDeviceName(dev.name)
-    if (!map.has(key)) map.set(key, { name: key, channelCount: ch, apis: [] })
-    const g = map.get(key)!
-    g.channelCount = Math.max(g.channelCount, ch)
-    for (const api of dev.hostApis) {
-      if (!g.apis.some((a) => a.kind === api.kind)) {
-        g.apis.push({ kind: api.kind, deviceId: dev.id })
-      }
-    }
-  }
-  for (const g of map.values()) {
-    g.apis.sort((a, b) => apiRank(a.kind) - apiRank(b.kind))
-  }
-  return [...map.values()]
-}
 
 function loadRecordingFormat(): RecordingFormat {
   return localStorage.getItem('kgb_recording_format') === 'mp3' ? 'mp3' : 'wav'

@@ -19,11 +19,17 @@ import { MixerChannel } from './components/MixerChannel'
 import { LocalMixerStrip } from './components/LocalMixerStrip'
 import { RemoteChannelStrip } from './components/RemoteChannelStrip'
 import { MixerStrip } from './components/MixerStrip'
-import { getTimeline } from './timeline/timelineNodes'
+import { getTimeline, setPendingTimelineClips } from './timeline/timelineNodes'
+import {
+  sendClipAdd, sendClipUpdate, sendClipFile as sendClipFileSync,
+  applyClipAdd, applyClipUpdate, applyClipRemove, applyClipFile,
+} from './timeline/timelineSync'
 import { usePianoRollStore } from './pianoRoll/pianoRollStore'
 import { participantColor } from './utils/participantColor'
 import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
+import { DeviceSetupModal } from './components/DeviceSetupModal'
+import { recorder, clipAudio } from './audio/recorder'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
@@ -171,6 +177,8 @@ function App() {
   const [rtts, setRtts] = useState<ReadonlyMap<string, number>>(new Map())
   const [nativeRttMap, setNativeRttMap] = useState<Record<string, number>>({})
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
+  // Show device setup modal once per room session when stream is not yet active.
+  const [showDeviceSetup, setShowDeviceSetup] = useState(false)
   const [sendEnabled, setSendEnabled] = useState<ReadonlySet<number>>(new Set())
   const [remoteChannelMeta, setRemoteChannelMeta] = useState<ReadonlyMap<string, RemoteChannelMeta>>(() => new Map())
   const [remoteChannelGains, setRemoteChannelGains] = useState<ReadonlyMap<string, RemoteChannelGainState>>(() => new Map())
@@ -181,6 +189,9 @@ function App() {
   const [armed, setArmed] = useState<ReadonlySet<string>>(() => new Set())
   // Rapid-click guard: keys currently mid-arm (between click and microtask cleanup).
   const pendingArmRef = useRef(new Set<string>())
+  // Maps channel key (e.g. 'local:0') to the clipId of its proxy clip, so we
+  // can update the clip with the real duration when recording stops.
+  const armedClipIds = useRef(new Map<string, string>())
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -246,6 +257,10 @@ function App() {
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
     if (!nativeSnapshot.streamActive) {
+      // Stop any in-progress recordings when the stream closes.
+      recorder.stopAll()
+      setArmed(new Set())
+      armedClipIds.current.clear()
       setSendEnabled(new Set())
       nativeRtcManager.clearSendChannels()
       return
@@ -570,10 +585,18 @@ function App() {
               p.socketId === senderId ? { ...p, cameraEnabled: event.payload.enabled } : p,
             ),
           )
+          return
         }
+
+        if (event.type === 'clip_add') { applyClipAdd(event); return }
+        if (event.type === 'clip_update') { applyClipUpdate(event); return }
+        if (event.type === 'clip_remove') { applyClipRemove(event); return }
       }),
     [],
   )
+
+  // T4: receive binary WAV files from peers
+  useEffect(() => roomSyncClient.subscribeClipFile(applyClipFile), [])
 
 
   const nextLogicalTimestamp = () => {
@@ -926,6 +949,8 @@ function App() {
     if (!snapshot) return
     // Node graph: hydrate room topology from the join snapshot (G2/G3)
     hydrateGraph(snapshot)
+    // Timeline clips (T4): store for hydration when the timeline panel first opens
+    setPendingTimelineClips(snapshot.timelineClips?.['timeline'] ?? null)
 
     // Ensure the primary drum instance exists (it may not be in the hydrated
     // graph yet) so the room's pattern/swing/chain land in a live engine even
@@ -1014,6 +1039,17 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inRoom])
 
+  // Show device setup modal once per room session when nativeAudio is available
+  // and the stream is not yet active.
+  useEffect(() => {
+    if (inRoom && window.nativeAudio !== undefined && !nativeSnapshot.streamActive) {
+      setShowDeviceSetup(true)
+    }
+    if (!inRoom) {
+      setShowDeviceSetup(false)
+    }
+  }, [inRoom, nativeSnapshot.streamActive])
+
   // Client-side invite link for web deployments (not file:// Electron)
   const clientInviteLink =
     roomState.shortCode && window.location.protocol !== 'file:'
@@ -1082,8 +1118,8 @@ function App() {
   )
 
   // Arming a channel creates a Timeline track + a proxy clip at the playhead.
-  // Real native capture → audio data (and per-room file sync) lands later.
-  const armTimelineTrack = (key: string) => {
+  // Returns { clipId, name, color } for T4 sync.
+  const armTimelineTrack = (key: string): { clipId: string; name: string; color: string; startSec: number } | null => {
     let name = 'Track'
     let color = 'var(--gold)'
     if (key === 'master') { name = 'Master' }
@@ -1095,11 +1131,13 @@ function App() {
       color = participantColor(sid)
     }
     const store = getTimeline(TIMELINE_NODE_ID)
-    if (!store) return // primary timeline not mounted yet
+    if (!store) return null // primary timeline not mounted yet
     const tl = store.getState()
     tl.pushHistory() // one undo step for the whole arm gesture (track + clip)
     const trackId = tl.ensureTrack(key, { name, kind: 'audio', color })
-    tl.addClip({ trackId, startSec: audioEngine.getTransportSeconds(), durSec: 4, label: name, kind: 'audio', proxy: true })
+    const startSec = audioEngine.getTransportSeconds()
+    const clipId = tl.addClip({ trackId, startSec, durSec: 4, label: name, kind: 'audio', proxy: true })
+    return { clipId, name, color, startSec }
   }
 
   const toggleArmed = (key: string) => {
@@ -1119,8 +1157,43 @@ function App() {
     if (willArm) {
       if (pendingArmRef.current.has(key)) return
       pendingArmRef.current.add(key)
-      armTimelineTrack(key)
+      const armResult = armTimelineTrack(key)
+      const clipId = armResult?.clipId ?? null
+      // T2: start PCM accumulation for local input channels.
+      if (clipId && key.startsWith('local:') && window.nativeAudio !== undefined) {
+        const channelIdx = Number(key.slice(6))
+        armedClipIds.current.set(key, clipId)
+        recorder.start(channelIdx, clipId)
+      }
+      // T4: broadcast the new proxy clip to peers
+      if (clipId && armResult && roomState.roomId && !roomState.isLocalRoom) {
+        sendClipAdd({
+          trackKey: key,
+          trackName: armResult.name,
+          trackKind: 'audio',
+          trackColor: armResult.color,
+          clip: { id: clipId, startSec: armResult.startSec, durSec: 4, label: armResult.name, kind: 'audio', proxy: true },
+        })
+      }
       queueMicrotask(() => pendingArmRef.current.delete(key))
+    } else {
+      // T2: stop recording and update the proxy clip with real duration.
+      if (key.startsWith('local:') && window.nativeAudio !== undefined) {
+        const channelIdx = Number(key.slice(6))
+        const result = recorder.stop(channelIdx)
+        armedClipIds.current.delete(key)
+        if (result) {
+          const realDur = Math.max(0.2, result.durSec)
+          const store = getTimeline(TIMELINE_NODE_ID)
+          store?.getState().updateClip(result.clipId, { proxy: false, durSec: realDur })
+          // T4: notify peers of real clip duration + send WAV file
+          if (roomState.roomId && !roomState.isLocalRoom) {
+            sendClipUpdate(result.clipId, { proxy: false, durSec: realDur })
+            const blob = clipAudio.get(result.clipId)
+            if (blob) sendClipFileSync(result.clipId, blob)
+          }
+        }
+      }
     }
   }
 
@@ -1152,6 +1225,19 @@ function App() {
               onRecord={() => toggleArmed(`local:${i}`)}
             />
           ))}
+
+        {window.nativeAudio !== undefined && !nativeSnapshot.streamActive && (
+          <div className="mixer-no-input">
+            <span className="mixer-no-input__label">No audio input</span>
+            <button
+              type="button"
+              className="ghost-action ghost-action--sm"
+              onClick={() => setShowDeviceSetup(true)}
+            >
+              Set up audio
+            </button>
+          </div>
+        )}
 
         {participants.map((p) => (
           <RemoteParticipantGroup
@@ -1756,6 +1842,10 @@ function App() {
         <PanelsView panelContents={panelContents} />
       )}
       </>}
+
+      {showDeviceSetup && (
+        <DeviceSetupModal onClose={() => setShowDeviceSetup(false)} />
+      )}
     </main>
   )
 }

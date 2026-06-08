@@ -37,6 +37,12 @@ type SyncStateSnapshot = {
   timeSignature: { beats: number; division: number }
   /** Node graph topology for late-joiner hydration (G2). */
   graph?: { nodes: Record<string, GraphSyncNode>; edges: GraphSyncEdge[] }
+  /** Timeline clips for late-joiner hydration (T4). Key: timelineNodeId → clipId → clip. */
+  timelineClips?: Record<string, Record<string, {
+    id: string; trackKey: string; trackName: string; trackKind: 'audio' | 'midi'
+    trackColor?: string; startSec: number; durSec: number; label: string
+    kind: 'audio' | 'midi'; proxy?: boolean
+  }>>
 }
 
 type RoomState = {
@@ -85,6 +91,9 @@ type HostMutedEvent = { socketId: string; muted: boolean }
 type HostMutedListener = (event: HostMutedEvent) => void
 type KickedListener = () => void
 
+export type ClipFileEvent = { clipId: string; senderId: string; data: ArrayBuffer }
+type ClipFileListener = (event: ClipFileEvent) => void
+
 type AckResponse = {
   ok: boolean
   error?: string
@@ -130,6 +139,7 @@ class RoomSyncClient {
   private hostMutedListeners = new Set<HostMutedListener>()
   private kickedListeners = new Set<KickedListener>()
   private channelMetaListeners = new Set<ChannelMetaListener>()
+  private clipFileListeners = new Set<ClipFileListener>()
   private wasKicked = false
   private pingInterval: ReturnType<typeof setInterval> | null = null
 
@@ -249,6 +259,21 @@ class RoomSyncClient {
       }
       this.channelMetaListeners.forEach((l) => l(event))
     })
+
+    this.socket.on('clip:file', (rawPayload: unknown) => {
+      if (!rawPayload || typeof rawPayload !== 'object') return
+      const p = rawPayload as Record<string, unknown>
+      if (typeof p.clipId !== 'string' || typeof p.senderId !== 'string') return
+      let data: ArrayBuffer
+      if (p.data instanceof ArrayBuffer) {
+        data = p.data
+      } else if (p.data instanceof Uint8Array) {
+        data = p.data.buffer.slice(p.data.byteOffset, p.data.byteOffset + p.data.byteLength) as ArrayBuffer
+      } else {
+        return
+      }
+      this.clipFileListeners.forEach((l) => l({ clipId: p.clipId as string, senderId: p.senderId as string, data }))
+    })
   }
 
   onChannelMeta(listener: ChannelMetaListener): () => void {
@@ -259,6 +284,17 @@ class RoomSyncClient {
   async sendChannelMeta(channelCount: number, channelNames: string[]): Promise<void> {
     const response = await this.emitWithAck('sync:channel_meta', { channelCount, channelNames })
     if (!response.ok) throw new Error(response.error ?? 'CHANNEL_META_SEND_FAILED')
+  }
+
+  subscribeClipFile(listener: ClipFileListener): () => void {
+    this.clipFileListeners.add(listener)
+    return () => { this.clipFileListeners.delete(listener) }
+  }
+
+  async sendClipFile(clipId: string, blob: Blob): Promise<void> {
+    const data = await blob.arrayBuffer()
+    const response = await this.emitWithAck('clip:file', { clipId, data })
+    if (!response.ok) throw new Error(response.error ?? 'CLIP_FILE_REJECTED')
   }
 
   subscribeRoomState(listener: RoomStateListener) {

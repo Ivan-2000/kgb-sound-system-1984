@@ -60,7 +60,48 @@ const graphEdgeSchema = z.object({
   to: portRefSchema,
 })
 
+// ── Timeline clip sync (T4) ──────────────────────────────────────────────────
+const clipPayloadSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  startSec: z.number().min(0),
+  durSec: z.number().min(0),
+  label: z.string().max(128),
+  kind: z.enum(['audio', 'midi']),
+  proxy: z.boolean().optional(),
+})
+
 const clientEventSchema = z.discriminatedUnion('type', [
+  eventBaseSchema.extend({
+    type: z.literal('clip_add'),
+    payload: z.object({
+      timelineNodeId: z.string().trim().min(1).max(64),
+      trackKey: z.string().trim().min(1).max(128),
+      trackName: z.string().max(128),
+      trackKind: z.enum(['audio', 'midi']),
+      trackColor: z.string().max(64).optional(),
+      clip: clipPayloadSchema,
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('clip_update'),
+    payload: z.object({
+      timelineNodeId: z.string().trim().min(1).max(64),
+      clipId: z.string().trim().min(1).max(64),
+      patch: z.object({
+        startSec: z.number().min(0).optional(),
+        durSec: z.number().min(0).optional(),
+        label: z.string().max(128).optional(),
+        proxy: z.boolean().optional(),
+      }),
+    }),
+  }),
+  eventBaseSchema.extend({
+    type: z.literal('clip_remove'),
+    payload: z.object({
+      timelineNodeId: z.string().trim().min(1).max(64),
+      clipId: z.string().trim().min(1).max(64),
+    }),
+  }),
   eventBaseSchema.extend({
     type: z.literal('graph_node_add'),
     payload: z.object({ node: graphNodeSchema }),
@@ -217,6 +258,10 @@ const channelMetaSchema = z.object({
   channelNames: z.array(z.string().max(64)).max(32),
 })
 
+const clipFileMetaSchema = z.object({
+  clipId: z.string().trim().min(1).max(64),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
@@ -228,4 +273,5 @@ module.exports = {
   chatMessageSchema,
   hostTargetSchema,
   channelMetaSchema,
+  clipFileMetaSchema,
 }

@@ -50,6 +50,7 @@ interface TimelineState {
   addTrack: (track: Omit<TimelineTrack, 'id'>) => string
   removeTrack: (id: string) => void
   addClip: (clip: Omit<TimelineClip, 'id'>) => string
+  addClipWithId: (clip: TimelineClip) => void
   updateClip: (id: string, patch: Partial<Omit<TimelineClip, 'id' | 'trackId'>>) => void
   removeClip: (id: string) => void
   ensureTrack: (key: string, track: Omit<TimelineTrack, 'id'>) => string
@@ -136,6 +137,13 @@ export function createTimelineStore(): TimelineStoreApi {
     const id = nextId('clip')
     set((s) => ({ clips: [...s.clips, { ...clip, id }] }))
     return id
+  },
+
+  addClipWithId(clip) {
+    set((s) => {
+      if (s.clips.some((c) => c.id === clip.id)) return s
+      return { clips: [...s.clips, clip] }
+    })
   },
 
   updateClip(id, patch) {
