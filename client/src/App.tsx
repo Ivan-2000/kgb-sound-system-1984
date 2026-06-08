@@ -261,22 +261,20 @@ function App() {
     })
   }, [])
 
-  // Route Tone.js / Web Audio output to the effective output device.
-  // Uses the same priority as PortAudio: explicit selection → ASIO duplex → best available.
-  // Fires when stream opens or when the selected device changes.
+  // Route Tone.js / Web Audio output to the device the user explicitly selected
+  // in Settings. If no output device is selected, Tone.js keeps the system default.
   // NOTE: enumerateDevices() labels require a prior getUserMedia call to be non-empty;
   // that's satisfied by acquireLocalStream() (called on create/join room).
   useEffect(() => {
-    if (!nativeSnapshot.streamActive) return
-    const devId = nativeAudioController.getEffectiveOutputDeviceId()
-    if (devId === null) return
-    const dev = nativeSnapshot.devices.find((d) => d.id === devId)
+    const { selectedOutputId, devices } = nativeSnapshot
+    if (selectedOutputId === null) return
+    const dev = devices.find((d) => d.id === selectedOutputId)
     if (!dev) return
     findWebAudioOutputDeviceId(dev.name).then((sinkId) => {
       if (sinkId) void audioEngine.setOutputSinkId(sinkId)
       else console.warn('[output-routing] no Web Audio device matched PortAudio device:', dev.name)
     })
-  }, [nativeSnapshot.streamActive, nativeSnapshot.selectedOutputId])
+  }, [nativeSnapshot.selectedOutputId])
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
