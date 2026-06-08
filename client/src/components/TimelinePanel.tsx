@@ -339,6 +339,17 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
           disabled={!onPlayStop}
           title={isPlaying ? 'Стоп' : isStarting ? 'Отменить' : 'Воспроизвести'}
         >{isStarting ? '…' : isPlaying ? '⏹' : '▶'}</button>
+        {/* Global Record button — arms local:0 (first input channel).
+            Visible only when nativeAudio is available (Electron with PortAudio). */}
+        {window.nativeAudio !== undefined && onToggleArm && (
+          <button
+            type="button"
+            className={`tl-tb tl-tb--rec${armed?.has('local:0') ? ' tl-tb--rec-on' : ''}`}
+            onClick={() => void onToggleArm('local:0')}
+            aria-pressed={armed?.has('local:0')}
+            title={armed?.has('local:0') ? 'Остановить запись' : 'Начать запись (вход 1)'}
+          >⏺</button>
+        )}
         <span className="tl-tb-sep" />
         <button type="button" className={`tl-tb${tool === 'select' ? ' tl-tb--on' : ''}`} onClick={() => setTool('select')} title="Курсор">🖱</button>
         <button type="button" className={`tl-tb${tool === 'split' ? ' tl-tb--on' : ''}`} onClick={() => setTool('split')} title="Разрезать (инструмент)">✂</button>

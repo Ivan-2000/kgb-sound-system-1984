@@ -13,6 +13,7 @@ import { roomSyncClient, type RoomState, type RoomParticipant } from './networki
 import { peerManager } from './rtc/peerManager'
 import { nativeRtcManager } from './rtc/nativeRtcManager'
 import { nativeAudioController, type NativeAudioSnapshot } from './audio/nativeAudioController'
+import { findWebAudioOutputDeviceId } from './audio/deviceUtils'
 import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
@@ -251,6 +252,19 @@ function App() {
       nativeRtcManager.setActive(snap.streamActive)
     })
   }, [])
+
+  // Route Tone.js / Web Audio output to the user-selected output device.
+  // Fires whenever selectedOutputId or streamActive changes so that drum machine,
+  // metronome, and MIDI playback all come from the correct physical device.
+  useEffect(() => {
+    const { selectedOutputId, devices } = nativeSnapshot
+    if (selectedOutputId === null) return
+    const dev = devices.find((d) => d.id === selectedOutputId)
+    if (!dev) return
+    findWebAudioOutputDeviceId(dev.name).then((sinkId) => {
+      if (sinkId) void audioEngine.setOutputSinkId(sinkId)
+    })
+  }, [nativeSnapshot.selectedOutputId, nativeSnapshot.streamActive])
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
@@ -1140,7 +1154,9 @@ function App() {
     return { clipId, name, color, startSec }
   }
 
-  const toggleArmed = (key: string) => {
+  // toggleArmed is async: it may need to open the PortAudio stream before recording.
+  // Callers pass the result to void or await — both are fine (React onClick ignores promises).
+  const toggleArmed = async (key: string) => {
     const willArm = !armed.has(key)
     setArmed((prev) => {
       const next = new Set(prev)
@@ -1157,6 +1173,22 @@ function App() {
     if (willArm) {
       if (pendingArmRef.current.has(key)) return
       pendingArmRef.current.add(key)
+
+      // Auto-open the PortAudio stream if not yet active.
+      // Without an open stream no PCM frames arrive and recorder captures nothing.
+      if (key.startsWith('local:') && window.nativeAudio !== undefined) {
+        const snap = nativeAudioController.getSnapshot()
+        if (!snap.streamActive) {
+          const result = await nativeAudioController.openStream()
+          if (!result.ok) {
+            // Failed to open — revert the arm state so the UI stays consistent.
+            setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
+            pendingArmRef.current.delete(key)
+            return
+          }
+        }
+      }
+
       const armResult = armTimelineTrack(key)
       const clipId = armResult?.clipId ?? null
       // T2: start PCM accumulation for local input channels.

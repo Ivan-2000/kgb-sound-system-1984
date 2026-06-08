@@ -1152,6 +1152,9 @@ input[type='range'] {
 .tl-tb--on { background: var(--gold, #c8a84b); border-color: var(--gold); color: #000; }
 .tl-tb--play { min-width: 28px; }
 .tl-tb--play.tl-tb--on { background: #c0392b; border-color: #c0392b; color: #fff; }
+.tl-tb--rec { color: #f06060; border-color: #5a2020; min-width: 28px; }
+.tl-tb--rec.tl-tb--rec-on { background: #c0392b; border-color: #c0392b; color: #fff; animation: rec-blink 1s ease-in-out infinite; }
+@keyframes rec-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 .tl--tool-split .tl-clip, .tl--tool-split .tl-clip-trim { cursor: crosshair; }
 .tl--tool-gaps .tl-clip, .tl--tool-gaps .tl-clip-trim, .tl--tool-gaps .tl-lane { cursor: cell; }
 .tl-selcount {

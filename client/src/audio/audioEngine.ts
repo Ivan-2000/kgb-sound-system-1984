@@ -28,6 +28,8 @@ class AudioEngine {
   private initialized = false
   private playing = false
   private unlockPromise: Promise<void> | null = null
+  /** Desired Web Audio sinkId — applied on unlock() or immediately if already initialized. */
+  private pendingSinkId: string | null = null
 
   constructor() {
     Tone.Transport.bpm.value = DEFAULT_BPM
@@ -46,12 +48,38 @@ class AudioEngine {
       return
     }
 
-    this.unlockPromise ??= Tone.start().then(() => {
+    this.unlockPromise ??= Tone.start().then(async () => {
       Tone.Transport.bpm.value = this.bpm
       this.initialized = true
+      if (this.pendingSinkId !== null) {
+        await this.applySinkId(this.pendingSinkId)
+      }
     })
 
     await this.unlockPromise
+  }
+
+  /** Route all Tone.js / Web Audio output to the given Web Audio device ID.
+   *  Pass '' (empty string) to revert to the system default output.
+   *  If the AudioContext is not yet initialized the id is stored and applied on first unlock(). */
+  async setOutputSinkId(sinkId: string): Promise<void> {
+    this.pendingSinkId = sinkId
+    if (this.initialized) {
+      await this.applySinkId(sinkId)
+    }
+  }
+
+  private async applySinkId(sinkId: string): Promise<void> {
+    try {
+      const rawCtx = Tone.getContext().rawContext as AudioContext & {
+        setSinkId?: (id: string | { type: string }) => Promise<void>
+      }
+      if (typeof rawCtx.setSinkId === 'function') {
+        await rawCtx.setSinkId(sinkId)
+      }
+    } catch (err) {
+      console.warn('[audioEngine] setSinkId failed:', err)
+    }
   }
 
   setBpm(nextBpm: number) {

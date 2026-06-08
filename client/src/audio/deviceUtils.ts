@@ -37,6 +37,38 @@ export function normalizeDeviceName(name: string): string {
   return name.trim()
 }
 
+/**
+ * Find the Web Audio API `audiooutput` device ID that best matches a PortAudio device name.
+ *
+ * PortAudio and Web Audio use completely different identifier systems; we match
+ * them by normalised name substring.  Returns `null` when no match is found or
+ * when the browser has not yet granted microphone/camera permission (labels are
+ * empty strings until a getUserMedia call succeeds).
+ */
+export async function findWebAudioOutputDeviceId(portAudioDeviceName: string): Promise<string | null> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const outputs = devices.filter(
+      (d) => d.kind === 'audiooutput' && d.deviceId !== '' && d.deviceId !== 'default' && d.deviceId !== 'communications',
+    )
+    const needle = normalizeDeviceName(portAudioDeviceName).toLowerCase()
+    // Prefer an exact normalised-name match, then a substring match.
+    for (const d of outputs) {
+      if (!d.label) continue
+      const haystack = normalizeDeviceName(d.label).toLowerCase()
+      if (haystack === needle) return d.deviceId
+    }
+    for (const d of outputs) {
+      if (!d.label) continue
+      const haystack = normalizeDeviceName(d.label).toLowerCase()
+      if (haystack.includes(needle) || needle.includes(haystack)) return d.deviceId
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export function buildDeviceGroups(devices: NativeAudioDevice[], forInput: boolean): DeviceGroup[] {
   const map = new Map<string, DeviceGroup>()
   for (const dev of devices) {
