@@ -4,6 +4,8 @@ import { metronome } from '../audio/metronome'
 import { type TimelineClip, type TimelineStoreApi } from '../timeline/timelineStore'
 import { exportClipFile, type ExportCodec } from '../timeline/exportClip'
 import { clipAudio } from '../audio/recorder'
+import { PianoRollPanel } from '../pianoRoll/PianoRollPanel'
+import type { PianoNote } from '../pianoRoll/pianoRollStore'
 
 const PX_PER_SEC = 40
 const LANE_H = 48
@@ -39,6 +41,7 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
   const [tool, setTool] = useState<Tool>('select')
   const [snapEnabled, setSnapEnabled] = useState(true)
   const [snapUnit, setSnapUnit] = useState<'bar' | 'beat'>('bar')
+  const [openEditorClipId, setOpenEditorClipId] = useState<string | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const clipDrag = useRef<ClipDrag | null>(null)
@@ -405,7 +408,8 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
                     onPointerMove={onClipMove}
                     onPointerUp={onClipUp}
                     onContextMenu={(e) => openClipMenu(e, c)}
-                    title={`${c.label}${c.proxy ? ' (syncing…)' : ''}`}
+                    onDoubleClick={(e) => { if (c.kind === 'midi' && tool === 'select') { e.stopPropagation(); setOpenEditorClipId(c.id) } }}
+                    title={`${c.label}${c.proxy ? ' (syncing…)' : ''}${c.kind === 'midi' ? ' · двойной клик = редактировать' : ''}`}
                   >
                     <span className="tl-clip-trim tl-clip-trim--l" onPointerDown={(e) => onClipDown(e, c, 'trim-l')} onPointerMove={onClipMove} onPointerUp={onClipUp} />
                     <span className="tl-clip-label">{c.label}</span>
@@ -429,6 +433,7 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
         <ul className="tl-menu" style={{ left: menu.x, top: menu.y }} onPointerDown={(e) => e.stopPropagation()}>
           {menu.clipId && (
             <>
+              {(() => { const mc = st().clips.find((c) => c.id === menu.clipId); return mc?.kind === 'midi' ? <li onClick={run(() => setOpenEditorClipId(menu.clipId!))}>✏ Редактировать ноты…</li> : null })()}
               <li onClick={cmd(() => st().splitClip(menu.clipId!, menu.atSec))}>✂ Разрезать</li>
               <li onClick={run(() => st().copyClip(menu.clipId!))}>⧉ Копировать</li>
               <li onClick={cmd(() => duplicateSelected())}>⎘ Дублировать</li>
@@ -444,6 +449,30 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
           <li onClick={cmd(() => st().addMidiClip(menu.atSec))}>＋ Создать MIDI</li>
         </ul>
       )}
+
+      {openEditorClipId && (() => {
+        const edClip = st().clips.find((c) => c.id === openEditorClipId)
+        if (!edClip) { setOpenEditorClipId(null); return null }
+        const handleChange = (notes: PianoNote[], bars: number) => {
+          st().setClipNotes(openEditorClipId, notes, bars)
+        }
+        return (
+          <div className="tl-pr-backdrop" onPointerDown={() => setOpenEditorClipId(null)}>
+            <div className="tl-pr-modal" onPointerDown={(e) => e.stopPropagation()}>
+              <div className="tl-pr-header">
+                <span className="tl-pr-title">Piano Roll — {edClip.label}</span>
+                <button type="button" className="tl-pr-close" onClick={() => setOpenEditorClipId(null)} title="Закрыть">✕</button>
+              </div>
+              <PianoRollPanel
+                initialNotes={edClip.notes ?? []}
+                initialBars={edClip.clipBars ?? 1}
+                clipStartSec={edClip.startSec}
+                onChange={handleChange}
+              />
+            </div>
+          </div>
+        )
+      })()}
 
       {exportTarget && (
         <div className="tl-export-backdrop" onPointerDown={() => setExportTarget(null)}>

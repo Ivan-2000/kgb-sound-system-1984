@@ -26,6 +26,8 @@ export interface DrumMachinePanelProps {
   onStepCountChange: (n: StepCount) => void
   onSwingChange: (swing: number) => void
   onChainSet: (chain: number[] | null) => void
+  /** Transfer current pattern to the primary Timeline as a MIDI clip. */
+  onTransferToTimeline?: () => void
 }
 
 export function DrumMachinePanel({
@@ -38,6 +40,7 @@ export function DrumMachinePanel({
   onStepCountChange,
   onSwingChange,
   onChainSet,
+  onTransferToTimeline,
 }: DrumMachinePanelProps) {
   return (
     <section className="sequencer-section" aria-label="Drum machine">
@@ -98,6 +101,17 @@ export function DrumMachinePanel({
             />
             <span className="swing-value">{state.swing}%</span>
           </label>
+
+          {onTransferToTimeline && (
+            <button
+              type="button"
+              className="ghost-action ghost-action--sm"
+              onClick={onTransferToTimeline}
+              title="Перенести текущий паттерн на таймлайн как MIDI-клип"
+            >
+              → Timeline
+            </button>
+          )}
         </div>
       </div>
 

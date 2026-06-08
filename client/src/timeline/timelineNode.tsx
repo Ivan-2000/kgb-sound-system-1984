@@ -1,8 +1,10 @@
+import * as Tone from 'tone'
 import { defineNode } from '../graph/defineNode'
 import type { NodeDefinition } from '../graph/types'
 import { createTimelineStore } from './timelineStore'
 import { registerTimeline, unregisterTimeline } from './timelineNodes'
 import { TimelinePanel } from '../components/TimelinePanel'
+import { scheduleMidiClips, clearMidiClipSchedule } from './midiPlayer'
 
 /**
  * Timeline — node #2. Owns a per-instance store ({@link createTimelineStore},
@@ -36,9 +38,18 @@ export const timelineNode: NodeDefinition = defineNode({
   create: (ctx) => {
     const store = createTimelineStore()
     registerTimeline(ctx.nodeId, store)
+
+    // Schedule MIDI clip playback each time the transport starts.
+    const onStart = () => scheduleMidiClips(store)
+    Tone.getTransport().on('start', onStart)
+
     return {
       render: () => <TimelinePanel store={store} />,
-      dispose: () => { unregisterTimeline(ctx.nodeId) },
+      dispose: () => {
+        Tone.getTransport().off('start', onStart)
+        clearMidiClipSchedule()
+        unregisterTimeline(ctx.nodeId)
+      },
     }
   },
 })

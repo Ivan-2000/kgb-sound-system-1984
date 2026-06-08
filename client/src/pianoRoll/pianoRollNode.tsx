@@ -1,20 +1,14 @@
 import { defineNode } from '../graph/defineNode'
 import type { NodeDefinition } from '../graph/types'
-import { usePianoRollStore } from './pianoRollStore'
-import { PianoTransport } from './pianoTransport'
 import { PianoRollPanel } from './PianoRollPanel'
 
 /**
- * Piano Roll — node #5. A standalone MIDI source: it owns the note grid
- * (`pianoRollStore`) and, while the transport runs, emits a {@link NoteEvent}
- * on `notesOut` at each 16th step where a note begins. Cable `notesOut` into any
- * `midi`-in (Drum Kit, Sampler, …) to make it sound — it carries no voice.
+ * Piano Roll — formerly node #5.
  *
- * Playback runs on the node's OWN clock ({@link PianoTransport}) with its own
- * play/stop — independent of the project transport (global Play). Tempo follows
- * the shared BPM. One transport per node, so duplicated Piano Rolls play their
- * own patterns. (Prototype note: notes fire on the clock step, not sample-
- * accurately re-timed downstream — see TASKS_UI.md.)
+ * NOT registered in builtins (PR4, pivot 2026-06-06). Piano Roll is now a
+ * per-clip editor opened from the Timeline (PR3), not a standalone node.
+ * This file stays in the repo so the module continues to compile and can be
+ * re-enabled if needed.
  */
 export const pianoRollNode: NodeDefinition = defineNode({
   manifest: {
@@ -31,14 +25,16 @@ export const pianoRollNode: NodeDefinition = defineNode({
     params: [],
     defaults: { panelPos: { x: 360, y: 120 }, canvasPos: { x: 1080, y: 40 }, size: { w: 600, h: 440 } },
   },
-  create: (ctx) => {
-    const transport = new PianoTransport(
-      (n) => ctx.emit('notesOut', n),
-      () => { const { notes, bars } = usePianoRollStore.getState(); return { notes, bars } },
-    )
+  create: () => {
     return {
-      render: () => <PianoRollPanel ctx={ctx} transport={transport} />,
-      dispose: () => transport.dispose(),
+      render: () => (
+        <PianoRollPanel
+          initialNotes={[]}
+          initialBars={1}
+          onChange={() => { /* standalone node — no clip target */ }}
+        />
+      ),
+      dispose: () => { /* nothing */ },
     }
   },
 })

@@ -1,4 +1,5 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
+import type { PianoNote } from '../pianoRoll/pianoRollStore'
 
 /**
  * Timeline model.
@@ -35,9 +36,13 @@ export interface TimelineClip {
   kind: TrackKind
   /** True while the recorded file is not yet available (placeholder block). */
   proxy?: boolean
+  /** MIDI notes stored in this clip (kind === 'midi'). PR1. */
+  notes?: PianoNote[]
+  /** Piano Roll bar count for this clip's editor view. */
+  clipBars?: number
 }
 
-type ClipboardClip = { durSec: number; label: string; kind: TrackKind }
+type ClipboardClip = { durSec: number; label: string; kind: TrackKind; notes?: PianoNote[]; clipBars?: number }
 
 interface TimelineState {
   tracks: TimelineTrack[]
@@ -52,6 +57,7 @@ interface TimelineState {
   addClip: (clip: Omit<TimelineClip, 'id'>) => string
   addClipWithId: (clip: TimelineClip) => void
   updateClip: (id: string, patch: Partial<Omit<TimelineClip, 'id' | 'trackId'>>) => void
+  setClipNotes: (id: string, notes: PianoNote[], bars?: number) => void
   removeClip: (id: string) => void
   ensureTrack: (key: string, track: Omit<TimelineTrack, 'id'>) => string
   clear: () => void
@@ -73,7 +79,7 @@ interface TimelineState {
   duplicateClip: (id: string) => string | null
   removeGaps: (trackId: string) => void
   moveClipToTrack: (id: string, trackId: string) => void
-  addMidiClip: (atSec?: number) => void
+  addMidiClip: (atSec?: number, notes?: PianoNote[], clipBars?: number) => void
 
   setLoop: (start: number, end: number) => void
   clearLoop: () => void
@@ -97,7 +103,7 @@ type Snapshot = { tracks: TimelineTrack[]; clips: TimelineClip[]; selectedIds: s
 const HISTORY_MAX = 60
 const snap = (s: { tracks: TimelineTrack[]; clips: TimelineClip[]; selectedIds: string[] }): Snapshot => ({
   tracks: s.tracks.map((t) => ({ ...t })),
-  clips: s.clips.map((c) => ({ ...c })),
+  clips: s.clips.map((c) => ({ ...c, notes: c.notes ? c.notes.map((n) => ({ ...n })) : undefined })),
   selectedIds: [...s.selectedIds],
 })
 
@@ -148,6 +154,16 @@ export function createTimelineStore(): TimelineStoreApi {
 
   updateClip(id, patch) {
     set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) }))
+  },
+
+  setClipNotes(id, notes, bars) {
+    set((s) => ({
+      clips: s.clips.map((c) =>
+        c.id === id
+          ? { ...c, notes, ...(bars !== undefined ? { clipBars: bars } : {}) }
+          : c,
+      ),
+    }))
   },
 
   removeClip(id) {
@@ -203,23 +219,25 @@ export function createTimelineStore(): TimelineStoreApi {
     const max = clip.startSec + clip.durSec - 0.05
     if (atSec <= min || atSec >= max) return
     const rightId = nextId('clip')
+    // MIDI clips: both halves carry a copy of all notes (user trims in editor).
+    const notesCopy = clip.notes ? clip.notes.map((n) => ({ ...n })) : undefined
     set((s) => ({
       clips: [
         ...s.clips.map((c) => (c.id === id ? { ...c, durSec: atSec - c.startSec } : c)),
-        { ...clip, id: rightId, startSec: atSec, durSec: clip.startSec + clip.durSec - atSec },
+        { ...clip, id: rightId, startSec: atSec, durSec: clip.startSec + clip.durSec - atSec, notes: notesCopy },
       ],
     }))
   },
 
   copyClip(id) {
     const clip = get().clips.find((c) => c.id === id)
-    if (clip) set({ clipboard: { durSec: clip.durSec, label: clip.label, kind: clip.kind } })
+    if (clip) set({ clipboard: { durSec: clip.durSec, label: clip.label, kind: clip.kind, notes: clip.notes, clipBars: clip.clipBars } })
   },
 
   pasteClip(trackId, atSec) {
     const cb = get().clipboard
     if (!cb) return null
-    return get().addClip({ trackId, startSec: Math.max(0, atSec), durSec: cb.durSec, label: cb.label, kind: cb.kind })
+    return get().addClip({ trackId, startSec: Math.max(0, atSec), durSec: cb.durSec, label: cb.label, kind: cb.kind, notes: cb.notes ? cb.notes.map((n) => ({ ...n })) : undefined, clipBars: cb.clipBars })
   },
 
   duplicateClip(id) {
@@ -231,6 +249,8 @@ export function createTimelineStore(): TimelineStoreApi {
       durSec: clip.durSec,
       label: clip.label,
       kind: clip.kind,
+      notes: clip.notes ? clip.notes.map((n) => ({ ...n })) : undefined,
+      clipBars: clip.clipBars,
     })
   },
 
@@ -263,9 +283,9 @@ export function createTimelineStore(): TimelineStoreApi {
     set((s) => ({ tracks: s.tracks.map((t) => (t.id === id ? { ...t, solo: !t.solo } : t)) }))
   },
 
-  addMidiClip(atSec = 0) {
+  addMidiClip(atSec = 0, notes?: PianoNote[], clipBars?: number) {
     const trackId = get().addTrack({ name: 'MIDI', kind: 'midi', color: 'var(--crystal, #e8f4f8)' })
-    get().addClip({ trackId, startSec: Math.max(0, atSec), durSec: 4, label: 'MIDI', kind: 'midi' })
+    get().addClip({ trackId, startSec: Math.max(0, atSec), durSec: 4, label: 'MIDI', kind: 'midi', notes: notes ?? [], clipBars: clipBars ?? 1 })
   },
 
   setLoop(start, end) {

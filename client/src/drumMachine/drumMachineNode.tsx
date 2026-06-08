@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { defineNode } from '../graph/defineNode'
 import type { NodeDefinition } from '../graph/types'
-import { DrumMachine, type DrumMachineState } from './drumMachine'
+import { DrumMachine, DRUM_TRACKS, type DrumMachineState, type DrumTrack } from './drumMachine'
 import {
   registerDrum,
   unregisterDrum,
@@ -9,6 +9,35 @@ import {
   subscribeDrumEditable,
 } from './drumNodes'
 import { DrumMachinePanel } from '../components/DrumMachinePanel'
+import { audioEngine } from '../audio/audioEngine'
+import { getTimeline } from '../timeline/timelineNodes'
+import { STEPS_PER_BAR } from '../pianoRoll/pianoRollStore'
+import type { PianoNote } from '../pianoRoll/pianoRollStore'
+
+const DRUM_PITCH: Record<DrumTrack, number> = { kick: 36, snare: 38, hat: 42, crash: 49 }
+
+function buildDrumNotes(dm: DrumMachine): { notes: PianoNote[]; bars: number; durSec: number } {
+  const state = dm.getState()
+  const bpm = audioEngine.getBpm()
+  const notes: PianoNote[] = []
+  let idCounter = 0
+  for (const track of DRUM_TRACKS) {
+    for (let step = 0; step < state.stepCount; step++) {
+      if (state.pattern[track][step]) {
+        notes.push({
+          id: `drum-${(++idCounter).toString(36)}`,
+          pitch: DRUM_PITCH[track],
+          startStep: step,
+          lengthSteps: 1,
+          velocity: state.velocity[track][step] ?? 100,
+        })
+      }
+    }
+  }
+  const bars = Math.max(1, Math.ceil(state.stepCount / STEPS_PER_BAR))
+  const durSec = state.stepCount * (60 / (bpm * 4))
+  return { notes, bars, durSec }
+}
 
 /**
  * Drum Machine — node #4. Unlike the early built-ins, this node is NOT `thin`:
@@ -39,6 +68,18 @@ function DrumNodeView({ nodeId, dm }: { nodeId: string; dm: DrumMachine }) {
 
   const disabled = !editable
 
+  const handleTransferToTimeline = () => {
+    const tl = getTimeline('timeline')
+    if (!tl) {
+      alert('Откройте Timeline (кнопка 🎞 в тулбаре) перед переносом паттерна.')
+      return
+    }
+    const { notes, bars, durSec } = buildDrumNotes(dm)
+    const st = tl.getState()
+    const trackId = st.addTrack({ name: 'Drum', kind: 'midi', color: 'var(--gold)' })
+    st.addClip({ trackId, startSec: 0, durSec, label: 'Drum Pattern', kind: 'midi', notes, clipBars: bars })
+  }
+
   return (
     <DrumMachinePanel
       state={state}
@@ -68,6 +109,7 @@ function DrumNodeView({ nodeId, dm }: { nodeId: string; dm: DrumMachine }) {
         dm.setChain(chain)
         emitDrumSync(nodeId, { type: 'chain_set', chain })
       }}
+      onTransferToTimeline={handleTransferToTimeline}
     />
   )
 }

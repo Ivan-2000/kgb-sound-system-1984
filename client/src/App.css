@@ -1349,6 +1349,39 @@ input[type='range'] {
 .tl-export-row select { background: #0d0d0d; color: #fff; border: 1px solid var(--line-soft, #303030); border-radius: 4px; padding: 4px 6px; }
 .tl-export-note { margin: 8px 0 14px; font-size: 11px; color: var(--ink-dim, #888); line-height: 1.4; }
 .tl-export-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Piano Roll modal (PR3) */
+.tl-pr-backdrop {
+  position: fixed; inset: 0; z-index: 1200;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.65);
+}
+.tl-pr-modal {
+  display: flex; flex-direction: column;
+  min-width: 680px; max-width: 92vw;
+  max-height: 82vh;
+  background: #111;
+  border: 1px solid rgba(200, 168, 75, 0.5);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8);
+  overflow: hidden;
+}
+.tl-pr-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(200, 168, 75, 0.08);
+  border-bottom: 1px solid rgba(200, 168, 75, 0.25);
+  flex-shrink: 0;
+}
+.tl-pr-title { font-size: 13px; color: var(--gold, #c8a84b); font-weight: 600; }
+.tl-pr-close {
+  background: none; border: none; cursor: pointer;
+  color: var(--ink-dim, #888); font-size: 14px; padding: 2px 6px;
+  border-radius: 4px; line-height: 1;
+}
+.tl-pr-close:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.tl-pr-modal .pr { flex: 1; overflow: auto; }
+
 .tl-clip--proxy {
   background: repeating-linear-gradient(45deg, #1a1a1a, #1a1a1a 5px, #222 5px, #222 10px);
   border-style: dashed;
