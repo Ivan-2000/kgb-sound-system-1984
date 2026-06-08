@@ -1182,10 +1182,18 @@ function App() {
         if (result) {
           const realDur = Math.max(0.2, result.durSec)
           const store = getTimeline(TIMELINE_NODE_ID)
-          store?.getState().updateClip(result.clipId, { proxy: false, durSec: realDur })
-          // T4: notify peers of real clip duration + send WAV file
+          // T5: shift clip startSec back by input device latency so the
+          // recorded audio aligns with when sound actually occurred.
+          const inputLatencySec = (nativeAudioController.getSnapshot().inputLatencyMs ?? 0) / 1000
+          const currentClip = store?.getState().clips.find((c) => c.id === result.clipId)
+          const startSec = currentClip
+            ? Math.max(0, currentClip.startSec - inputLatencySec)
+            : undefined
+          const patch = { proxy: false, durSec: realDur, ...(startSec !== undefined && { startSec }) }
+          store?.getState().updateClip(result.clipId, patch)
+          // T4: notify peers of real duration, position, and WAV file
           if (roomState.roomId && !roomState.isLocalRoom) {
-            sendClipUpdate(result.clipId, { proxy: false, durSec: realDur })
+            sendClipUpdate(result.clipId, patch)
             const blob = clipAudio.get(result.clipId)
             if (blob) sendClipFileSync(result.clipId, blob)
           }

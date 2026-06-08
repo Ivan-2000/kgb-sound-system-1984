@@ -226,7 +226,7 @@
 - [x] Пользователь нажал Send на «Input 1» — остальные участники услышали этот канал и увидели его в своём миксере *(закрыто M2/M3 + Send-toggle)*
 - [ ] Сигнал с гитары через ASIO или WASAPI попадает на канал миксера
 - [ ] Участник записывает инструмент с VST-обработкой *(требует V8)*
-- [ ] Аудио попадает на таймлайн без временного сдвига *(Phase 3 T5)*
+- [x] Аудио попадает на таймлайн без временного сдвига *(Phase 3 T5)*
 - [ ] MP3 кодируется в фоне без зависания UI *(Phase 3 T3)*
 
 ---
@@ -256,7 +256,7 @@
 - [x] **T2 — Реальная запись на armed-дорожку** — нативный захват (PortAudio input → buffer) → конверт в WAV → клип на armed-аудиодорожке; пока идёт запись — прокси-клип; по стопу — реальная длительность, proxy:false, blob в clipAudio для экспорта *(recorder.ts; 2026-06-08)*
 - [ ] **T3 — MP3-кодирование в фоне** — ffmpeg-wasm worker, не блокирует UI
 - [x] **T4 — Синк клипов между участниками** — `clip_add/clip_update/clip_remove` через `syncProtocol`; бинарный WAV через отдельный `clip:file` сокет-event; прокси→реальный при получении файла; hydration для опоздавших участников через `timelineNodes.setPendingTimelineClips` *(2026-06-08)*
-- [ ] **T5 — Latency compensation** — сдвиг записанной дорожки на величину измеренной round-trip задержки (Phase 1 A6)
+- [x] **T5 — Latency compensation** — сдвиг `startSec` клипа назад на `inputLatencyMs / 1000` при disarm; значение берётся из `nativeAudioController.getSnapshot().inputLatencyMs` (заполняется A6 при `openStream`); patch включает `startSec` и транслируется пирам через T4 `clip_update` *(2026-06-08)*
 
 **Piano Roll как редактор миди-клипа:** *(заменяет самостоятельную ноду; см. `TASKS_UI.md` → Ядро нод → Piano Roll)*
 - [ ] **PR1 — Per-clip note store** — рефактор: ноты живут в `MidiClip`, а не в глобальном `pianoRollStore`. У каждого миди-клипа свой массив `NoteEvent[]`.

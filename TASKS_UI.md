@@ -496,7 +496,7 @@ G1 (ядро графа) ✅
 10. [x] **T2** — реальная запись на armed-дорожку (PortAudio → WAV → клип). *(recorder.ts + App.tsx; 2026-06-08)*
 11. [x] **T4** — синк клипов между участниками (`clip_*` события + бинарный WAV-файл через `clip:file`). *(syncProtocol + roomManager + roomSyncClient + timelineSync.ts + timelineNodes hydration; 2026-06-08)*
 12. **T3** — MP3-кодирование через ffmpeg-wasm в фоновом воркере.
-13. **T5** — latency compensation на записанной дорожке.
+13. [x] **T5** — latency compensation: `startSec` сдвигается на `inputLatencyMs / 1000` при disarm. *(App.tsx toggleArmed; 2026-06-08)*
 
 ### Спринт 4 — Phase 3 без VST: Piano Roll как редактор клипа + перенос Drum→MIDI *(2–3 недели, можно параллельно со Спринтом 3 после Спринта 1)*
 
