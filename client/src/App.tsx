@@ -189,9 +189,6 @@ function App() {
   const [armed, setArmed] = useState<ReadonlySet<string>>(() => new Set())
   // Rapid-click guard: keys currently mid-arm (between click and microtask cleanup).
   const pendingArmRef = useRef(new Set<string>())
-  // Maps channel key (e.g. 'local:0') to the clipId of its proxy clip, so we
-  // can update the clip with the real duration when recording stops.
-  const armedClipIds = useRef(new Map<string, string>())
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -260,7 +257,6 @@ function App() {
       // Stop any in-progress recordings when the stream closes.
       recorder.stopAll()
       setArmed(new Set())
-      armedClipIds.current.clear()
       setSendEnabled(new Set())
       nativeRtcManager.clearSendChannels()
       return
@@ -1024,6 +1020,9 @@ function App() {
       // Graph reset disposes node instances (incl. per-node Timeline stores).
       useGraphStore.getState().reset()
       usePianoRollStore.getState().clear()
+      // Discard any pending clip hydration from the previous room so it doesn't
+      // leak into a subsequent local session.
+      setPendingTimelineClips(null)
     }
   }, [inRoom])
 
@@ -1162,7 +1161,6 @@ function App() {
       // T2: start PCM accumulation for local input channels.
       if (clipId && key.startsWith('local:') && window.nativeAudio !== undefined) {
         const channelIdx = Number(key.slice(6))
-        armedClipIds.current.set(key, clipId)
         recorder.start(channelIdx, clipId)
       }
       // T4: broadcast the new proxy clip to peers
@@ -1181,7 +1179,6 @@ function App() {
       if (key.startsWith('local:') && window.nativeAudio !== undefined) {
         const channelIdx = Number(key.slice(6))
         const result = recorder.stop(channelIdx)
-        armedClipIds.current.delete(key)
         if (result) {
           const realDur = Math.max(0.2, result.durSec)
           const store = getTimeline(TIMELINE_NODE_ID)

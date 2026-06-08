@@ -83,36 +83,3 @@ export function applyClipFile(event: ClipFileEvent): void {
   if (clip?.proxy) store.getState().updateClip(event.clipId, { proxy: false })
 }
 
-// ── Late-joiner hydration ─────────────────────────────────────────────────────
-
-interface RemoteClipState {
-  id: string
-  trackKey: string
-  trackName: string
-  trackKind: 'audio' | 'midi'
-  trackColor?: string
-  startSec: number
-  durSec: number
-  label: string
-  kind: 'audio' | 'midi'
-  proxy?: boolean
-}
-
-export function hydrateTimelineClips(
-  timelineClips: Record<string, Record<string, RemoteClipState>> | undefined,
-): void {
-  if (!timelineClips) return
-  const perTimeline = timelineClips[SYNC_TIMELINE_ID]
-  if (!perTimeline) return
-  const store = getTimeline(SYNC_TIMELINE_ID)
-  if (!store) return
-  const tl = store.getState()
-  for (const clip of Object.values(perTimeline)) {
-    const trackId = tl.ensureTrack(clip.trackKey, {
-      name: clip.trackName,
-      kind: clip.trackKind,
-      color: clip.trackColor,
-    })
-    tl.addClipWithId({ id: clip.id, trackId, startSec: clip.startSec, durSec: clip.durSec, label: clip.label, kind: clip.kind, proxy: clip.proxy })
-  }
-}
