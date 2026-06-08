@@ -140,6 +140,13 @@ class NativeAudioController {
     return null
   }
 
+  /** The output device id that will be (or is) used for audio output.
+   *  Priority: explicit selectedOutputId → ASIO duplex input → best available.
+   *  Returns null when no output devices are loaded yet. */
+  getEffectiveOutputDeviceId(): number | null {
+    return this.resolveOutputForMonitor()?.id ?? null
+  }
+
   private notify(): void {
     const snap = this.getSnapshot()
     for (const l of this.listeners) l(snap)

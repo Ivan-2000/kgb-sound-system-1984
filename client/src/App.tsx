@@ -245,6 +245,14 @@ function App() {
     })
   }, [])
 
+  // Auto-load audio devices on mount so selectedInputId is set when the user
+  // presses Record before opening Settings / DeviceSetupModal.
+  useEffect(() => {
+    if (window.nativeAudio) {
+      void nativeAudioController.loadDevices()
+    }
+  }, [])
+
   // 5e: Keep nativeRtcManager in sync with nativeAudioController stream state
   useEffect(() => {
     return nativeAudioController.subscribeState((snap) => {
@@ -253,18 +261,22 @@ function App() {
     })
   }, [])
 
-  // Route Tone.js / Web Audio output to the user-selected output device.
-  // Fires whenever selectedOutputId or streamActive changes so that drum machine,
-  // metronome, and MIDI playback all come from the correct physical device.
+  // Route Tone.js / Web Audio output to the effective output device.
+  // Uses the same priority as PortAudio: explicit selection → ASIO duplex → best available.
+  // Fires when stream opens or when the selected device changes.
+  // NOTE: enumerateDevices() labels require a prior getUserMedia call to be non-empty;
+  // that's satisfied by acquireLocalStream() (called on create/join room).
   useEffect(() => {
-    const { selectedOutputId, devices } = nativeSnapshot
-    if (selectedOutputId === null) return
-    const dev = devices.find((d) => d.id === selectedOutputId)
+    if (!nativeSnapshot.streamActive) return
+    const devId = nativeAudioController.getEffectiveOutputDeviceId()
+    if (devId === null) return
+    const dev = nativeSnapshot.devices.find((d) => d.id === devId)
     if (!dev) return
     findWebAudioOutputDeviceId(dev.name).then((sinkId) => {
       if (sinkId) void audioEngine.setOutputSinkId(sinkId)
+      else console.warn('[output-routing] no Web Audio device matched PortAudio device:', dev.name)
     })
-  }, [nativeSnapshot.selectedOutputId, nativeSnapshot.streamActive])
+  }, [nativeSnapshot.streamActive, nativeSnapshot.selectedOutputId])
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
@@ -1179,11 +1191,16 @@ function App() {
       if (key.startsWith('local:') && window.nativeAudio !== undefined) {
         const snap = nativeAudioController.getSnapshot()
         if (!snap.streamActive) {
+          // Ensure devices are enumerated so selectedInputId is set.
+          if (snap.devices.length === 0) {
+            await nativeAudioController.loadDevices()
+          }
           const result = await nativeAudioController.openStream()
           if (!result.ok) {
-            // Failed to open — revert the arm state so the UI stays consistent.
+            // Failed to open stream — revert arm state and show device setup.
             setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
             pendingArmRef.current.delete(key)
+            setShowDeviceSetup(true)
             return
           }
         }
