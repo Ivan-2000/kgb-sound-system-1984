@@ -274,7 +274,8 @@ function App() {
       if (sinkId) void audioEngine.setOutputSinkId(sinkId)
       else console.warn('[output-routing] no Web Audio device matched PortAudio device:', dev.name)
     })
-  }, [nativeSnapshot.selectedOutputId])
+  // Re-run when the stream opens too — user may have selected device before clicking Open Stream.
+  }, [nativeSnapshot.selectedOutputId, nativeSnapshot.streamActive])
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
