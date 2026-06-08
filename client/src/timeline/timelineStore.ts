@@ -25,6 +25,9 @@ export interface TimelineTrack {
   color?: string
   muted?: boolean
   solo?: boolean
+  /** Mixer arm key (e.g. 'local:0') — set only for locally-created audio tracks.
+   *  Used by the Timeline's per-track Record button to arm/disarm the right channel. */
+  armKey?: string
 }
 
 export interface TimelineClip {
@@ -178,7 +181,8 @@ export function createTimelineStore(): TimelineStoreApi {
   ensureTrack(key, track) {
     const existing = keyToTrack.get(key)
     if (existing && get().tracks.some((t) => t.id === existing)) return existing
-    const id = get().addTrack(track)
+    // Store the arm key on the track so the Timeline's R button can arm the right channel.
+    const id = get().addTrack({ ...track, armKey: key })
     keyToTrack.set(key, id)
     return id
   },

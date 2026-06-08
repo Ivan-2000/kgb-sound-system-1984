@@ -18,7 +18,21 @@ type Menu = { x: number; y: number; trackId: string | null; clipId: string | nul
 type ExportTarget = { clipId: string; label: string; durSec: number; hasAudio?: boolean }
 type Marquee = { x: number; y: number; w: number; h: number }
 
-export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
+interface TimelinePanelProps {
+  store: TimelineStoreApi
+  /** Current transport play state — passed from App.tsx for toolbar play button. */
+  isPlaying?: boolean
+  /** True while preroll / transport start is in progress. */
+  isStarting?: boolean
+  /** Called when the timeline's play/stop button is clicked. */
+  onPlayStop?: () => void
+  /** Set of currently armed channel keys (e.g. 'local:0'). */
+  armed?: ReadonlySet<string>
+  /** Called when the per-track record button is clicked. */
+  onToggleArm?: (armKey: string) => void
+}
+
+export function TimelinePanel({ store, isPlaying = false, isStarting = false, onPlayStop, armed, onToggleArm }: TimelinePanelProps) {
   const tracks = store((s) => s.tracks)
   const clips = store((s) => s.clips)
   const selectedIds = store((s) => s.selectedIds)
@@ -303,9 +317,29 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
     ? Array.from({ length: numBars * timeSig.beats }, (_, i) => i).filter((i) => i % timeSig.beats !== 0)
     : []
 
+  const handleReturnToStart = () => {
+    audioEngine.seekSeconds(0)
+    setPlaySec(0)
+  }
+
   return (
     <div className={`tl${toolCls}`}>
       <div className="tl-toolbar">
+        {/* ── Transport ── */}
+        <button
+          type="button"
+          className="tl-tb"
+          onClick={handleReturnToStart}
+          title="В начало (Home)"
+        >⏮</button>
+        <button
+          type="button"
+          className={`tl-tb tl-tb--play${isPlaying ? ' tl-tb--on' : ''}`}
+          onClick={onPlayStop}
+          disabled={!onPlayStop}
+          title={isPlaying ? 'Стоп' : isStarting ? 'Отменить' : 'Воспроизвести'}
+        >{isStarting ? '…' : isPlaying ? '⏹' : '▶'}</button>
+        <span className="tl-tb-sep" />
         <button type="button" className={`tl-tb${tool === 'select' ? ' tl-tb--on' : ''}`} onClick={() => setTool('select')} title="Курсор">🖱</button>
         <button type="button" className={`tl-tb${tool === 'split' ? ' tl-tb--on' : ''}`} onClick={() => setTool('split')} title="Разрезать (инструмент)">✂</button>
         <button type="button" className={`tl-tb${tool === 'gaps' ? ' tl-tb--on' : ''}`} onClick={() => setTool('gaps')} title="Убрать пробел (инструмент)">↤</button>
@@ -355,6 +389,15 @@ export function TimelinePanel({ store }: { store: TimelineStoreApi }) {
               <div className="tl-th-btns">
                 <button type="button" className={`tl-tbtn${t.muted ? ' tl-tbtn--mute' : ''}`} onClick={() => st().toggleTrackMute(t.id)} aria-pressed={t.muted} title="Mute">M</button>
                 <button type="button" className={`tl-tbtn${t.solo ? ' tl-tbtn--solo' : ''}`} onClick={() => st().toggleTrackSolo(t.id)} aria-pressed={t.solo} title="Solo">S</button>
+                {t.armKey && onToggleArm && (
+                  <button
+                    type="button"
+                    className={`tl-tbtn tl-tbtn--rec${armed?.has(t.armKey) ? ' tl-tbtn--rec-on' : ''}`}
+                    onClick={() => onToggleArm(t.armKey!)}
+                    aria-pressed={armed?.has(t.armKey)}
+                    title={armed?.has(t.armKey) ? 'Дизармировать' : 'Армировать для записи'}
+                  >R</button>
+                )}
                 <span className="tl-th-kind">{t.kind}</span>
               </div>
             </div>

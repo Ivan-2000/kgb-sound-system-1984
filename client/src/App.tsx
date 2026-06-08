@@ -20,6 +20,7 @@ import { LocalMixerStrip } from './components/LocalMixerStrip'
 import { RemoteChannelStrip } from './components/RemoteChannelStrip'
 import { MixerStrip } from './components/MixerStrip'
 import { getTimeline, setPendingTimelineClips } from './timeline/timelineNodes'
+import { TimelinePanel } from './components/TimelinePanel'
 import {
   sendClipAdd, sendClipUpdate, sendClipFile as sendClipFileSync,
   applyClipAdd, applyClipUpdate, applyClipRemove, applyClipFile,
@@ -1357,6 +1358,21 @@ function App() {
     settings: (panelId) => (
       <SettingsModal onClose={() => useGraphStore.getState().closeNode(panelId)} />
     ),
+    // Timeline gets transport props so its toolbar has Play/Stop and per-track R buttons.
+    timeline: () => {
+      const tlStore = getTimeline(TIMELINE_NODE_ID)
+      if (!tlStore) return null
+      return (
+        <TimelinePanel
+          store={tlStore}
+          isPlaying={isPlaying}
+          isStarting={isStarting}
+          onPlayStop={handlePlayStop}
+          armed={armed}
+          onToggleArm={toggleArmed}
+        />
+      )
+    },
   }
 
   return (
