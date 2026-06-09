@@ -1,4 +1,5 @@
 import * as Tone from 'tone'
+import { nativeToneContext } from './toneNativeContext'
 
 export const MIN_BPM = 60
 export const MAX_BPM = 240
@@ -73,54 +74,17 @@ class AudioEngine {
   private async setupPortAudioBridge(): Promise<void> {
     if (!window.nativeAudio || this.workletNode) return
     try {
-      // ── Step 1: extract the native AudioContext ────────────────────────────
-      //
-      // Tone.js wraps the native AudioContext in its own Context class.
-      // In minified Rolldown bundles internal property names may be renamed,
-      // so we try several strategies and accept the first real AudioContext.
-      //
-      // Strategy A — Tone.getContext().createGain() always delegates to the
-      //   native AudioContext's createGain(), so the returned GainNode's
-      //   .context is always the native AudioContext (Web Audio spec §2.5).
-      //
-      // Strategy B/C — well-known private property names used by Tone.js v15.
-      //
-      // Strategy D — linear scan of all own keys on the Context wrapper.
-      //
-      let rawCtx: AudioContext | undefined
-
-      // A: create a temp native gain; its .context is guaranteed native.
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const g: GainNode | undefined = (Tone.getContext() as any).createGain?.()
-        if (g?.context instanceof AudioContext) rawCtx = g.context as AudioContext
-      } catch { /* ignore */ }
-
-      // B: rawContext (Tone.js v15 public getter)
-      if (!rawCtx) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const c = (Tone.getContext() as any).rawContext
-        if (c instanceof AudioContext) rawCtx = c
+      // ── Step 1: the native AudioContext ───────────────────────────────────
+      // toneNativeContext.ts (imported first in main.tsx) hands Tone a NATIVE
+      // AudioContext, so Tone's whole graph is built on native nodes and we can
+      // use audioWorklet + setSinkId directly. (Tone's default context is a
+      // standardized-audio-context wrapper where neither is reachable.)
+      const rawCtx = nativeToneContext
+      if (Tone.getContext().rawContext !== rawCtx) {
+        console.warn('[audioEngine] Tone is not on the native context — bridge may tap silence.')
       }
-
-      // C: _context (Tone.js v15 private backing field)
-      if (!rawCtx) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const c = (Tone.getContext() as any)._context
-        if (c instanceof AudioContext) rawCtx = c
-      }
-
-      // D: scan all own keys for an AudioContext-shaped value
-      if (!rawCtx) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const toneCtx = Tone.getContext() as any
-        for (const key of Object.keys(toneCtx)) {
-          if (toneCtx[key] instanceof AudioContext) { rawCtx = toneCtx[key]; break }
-        }
-      }
-
-      if (!rawCtx?.audioWorklet) {
-        console.error('[audioEngine] AudioWorklet unavailable — bridge disabled.', { rawCtx })
+      if (!rawCtx.audioWorklet) {
+        console.error('[audioEngine] AudioWorklet unavailable — bridge disabled.')
         return
       }
 

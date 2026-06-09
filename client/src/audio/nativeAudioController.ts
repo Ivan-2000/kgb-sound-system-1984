@@ -1,3 +1,5 @@
+import { normalizeDeviceName } from './deviceUtils'
+
 // A2 — auto-select priority: best driver wins, user can override via Settings.
 const HOST_API_PRIORITY: readonly string[] = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'MME']
 
@@ -21,6 +23,8 @@ export interface NativeAudioSnapshot {
   /** Maximum input channels the selected device supports (0 when no device selected). */
   maxInputChannels: number
   activeInputChannels: number
+  /** Output channels of the active stream (0 = capture-only, softmix/peers inaudible). */
+  activeOutputChannels: number
   inputChannelNames: string[]
   monitorGain: number
   inputLatencyMs: number | null
@@ -41,6 +45,7 @@ class NativeAudioController {
   private bufferSize: 64 | 128 | 256 | 512 = 256
   private inputChannels = 2
   private activeInputChannels = 0
+  private activeOutputChannels = 0
   private inputChannelNames: string[] = []
   private monitorGain = 0
   private channelLevels: number[] = []
@@ -54,6 +59,7 @@ class NativeAudioController {
     window.nativeAudio?.onEngineCrashed(() => {
       this.streamActive = false
       this.activeInputChannels = 0
+      this.activeOutputChannels = 0
       this.inputChannelNames = []
       this.unsubscribePcm()
       this.inputLatencyMs = null
@@ -118,9 +124,13 @@ class NativeAudioController {
    * Priority:
    *   1. User-selected output device (selectedOutputId)
    *   2. The input device itself, if it also has output channels (ASIO duplex)
-   *   3. Any device with output channels, best API first
+   *   3. An output device on the SAME host API as the input — Pa_OpenStream
+   *      rejects cross-API duplex ("Illegal combination of I/O devices"), so
+   *      auto-selection must never mix APIs. Prefer the same physical
+   *      interface (matching normalized name), then list order.
    *
-   * Returns null when no output device is found (input-only hardware).
+   * Returns null when no same-API output exists — capture-only is better
+   * than a guaranteed-failing open.
    */
   private resolveOutput(): { id: number; apiKind: string } | null {
     // 1. Explicit user choice
@@ -133,16 +143,18 @@ class NativeAudioController {
     if (inputDev && inputDev.outputChannels > 0) {
       return { id: inputDev.id, apiKind: this.inputHostApiKind }
     }
-    // 3. Best available output device
-    const outDev = this.devices
-      .filter((d) => d.outputChannels > 0)
-      .sort((a, b) => {
-        const rank = (d: NativeAudioDevice) =>
-          HOST_API_PRIORITY.findIndex((k) => d.hostApis.some((h) => h.kind === k))
-        return rank(a) - rank(b)
-      })[0]
-    if (outDev) return { id: outDev.id, apiKind: bestApiForDevice(outDev) }
-    return null
+    // 3. Same-API output, same physical device first
+    const apiKind = this.inputHostApiKind || (inputDev ? bestApiForDevice(inputDev) : '')
+    if (!apiKind) return null
+    const candidates = this.devices.filter(
+      (d) => d.outputChannels > 0 && d.hostApis.some((h) => h.kind === apiKind),
+    )
+    if (candidates.length === 0) return null
+    const inputName = inputDev ? normalizeDeviceName(inputDev.name) : ''
+    const samePhysical = inputName !== ''
+      ? candidates.find((d) => normalizeDeviceName(d.name) === inputName)
+      : undefined
+    return { id: (samePhysical ?? candidates[0]).id, apiKind }
   }
 
   private notify(): void {
@@ -163,6 +175,7 @@ class NativeAudioController {
       inputChannels: this.inputChannels,
       maxInputChannels: this.maxInputChannelsForCurrent(),
       activeInputChannels: this.activeInputChannels,
+      activeOutputChannels: this.activeOutputChannels,
       inputChannelNames: this.inputChannelNames,
       monitorGain: this.monitorGain,
       inputLatencyMs: this.inputLatencyMs,
@@ -286,10 +299,22 @@ class NativeAudioController {
     }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
 
-    const result = await window.nativeAudio.openStream(opts)
+    let result = await window.nativeAudio.openStream(opts)
+    if (!result.ok && resolvedOut && this.selectedOutputId === null) {
+      // The auto-picked output made the duplex combination invalid (driver
+      // refused the pair). Retry capture-only so recording still works; Tone.js
+      // stays on the system-default sink (gated on activeOutputChannels).
+      console.warn('[nativeAudio] duplex open failed, retrying capture-only:', result.error)
+      delete opts.outputDeviceId
+      delete opts.outputHostApiKind
+      delete opts.outputChannels
+      opts.monitor = false
+      result = await window.nativeAudio.openStream(opts)
+    }
     if (result.ok) {
       this.streamActive = true
       this.activeInputChannels = result.inputChannels ?? this.inputChannels
+      this.activeOutputChannels = result.outputChannels ?? 0
       this.inputChannelNames = this.buildChannelNames(this.activeInputChannels)
       this.subscribePcm()
       this.error = null
@@ -309,6 +334,7 @@ class NativeAudioController {
     await window.nativeAudio.closeStream()
     this.streamActive = false
     this.activeInputChannels = 0
+    this.activeOutputChannels = 0
     this.inputChannelNames = []
     this.unsubscribePcm()
     this.inputLatencyMs = null
@@ -325,6 +351,7 @@ class NativeAudioController {
     const prevBufferSize = this.bufferSize
     const prevInputChannels = this.inputChannels
     const prevActiveInputChannels = this.activeInputChannels
+    const prevActiveOutputChannels = this.activeOutputChannels
     const prevInputChannelNames = this.inputChannelNames
     const prevSelectedInputId = this.selectedInputId
     const prevSelectedOutputId = this.selectedOutputId
@@ -367,10 +394,20 @@ class NativeAudioController {
     }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
 
-    const result = await window.nativeAudio.reinit(opts)
+    let result = await window.nativeAudio.reinit(opts)
+    if (!result.ok && resolvedOut && this.selectedOutputId === null) {
+      // Same capture-only fallback as openStream.
+      console.warn('[nativeAudio] duplex reinit failed, retrying capture-only:', result.error)
+      delete opts.outputDeviceId
+      delete opts.outputHostApiKind
+      delete opts.outputChannels
+      opts.monitor = false
+      result = await window.nativeAudio.reinit(opts)
+    }
     if (result.ok) {
       this.streamActive = true
       this.activeInputChannels = result.inputChannels ?? this.inputChannels
+      this.activeOutputChannels = result.outputChannels ?? 0
       this.inputChannelNames = this.buildChannelNames(this.activeInputChannels)
       this.subscribePcm()
       this.error = null
@@ -382,6 +419,7 @@ class NativeAudioController {
       this.bufferSize = prevBufferSize
       this.inputChannels = prevInputChannels
       this.activeInputChannels = prevActiveInputChannels
+      this.activeOutputChannels = prevActiveOutputChannels
       this.inputChannelNames = prevInputChannelNames
       this.selectedInputId = prevSelectedInputId
       this.selectedOutputId = prevSelectedOutputId

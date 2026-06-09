@@ -257,9 +257,10 @@ function App() {
     return nativeAudioController.subscribeState((snap) => {
       setNativeSnapshot(snap)
       nativeRtcManager.setActive(snap.streamActive)
-      // Route Tone.js output: stream active → PortAudio softmix (Web Audio
-      // silenced), inactive → system default so the app is still audible.
-      audioEngine.setPortAudioActive(snap.streamActive)
+      // Route Tone.js output: stream with an OUTPUT side → PortAudio softmix
+      // (Web Audio silenced); otherwise (no stream, or capture-only fallback)
+      // → system default so the app is still audible.
+      audioEngine.setPortAudioActive(snap.streamActive && snap.activeOutputChannels > 0)
     })
   }, [])
 
