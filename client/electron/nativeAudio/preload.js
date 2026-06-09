@@ -167,4 +167,22 @@ contextBridge.exposeInMainWorld('nativeAudio', {
    */
   setRemoteChannelGain: (peerId, channelId, gain) =>
     ipcRenderer.invoke('audio:set-remote-channel-gain', { peerId, channelId, gain }),
+
+  /** Web Audio → PortAudio bridge (softmix).
+   *  Called by the AudioWorklet message handler with a mono Float32Array buffer
+   *  (stereo-summed master bus PCM) captured from Tone.js output.
+   *  Sends samples to the utility process which writes them into the PortAudio
+   *  output ring buffer so they play through the user's selected output device.
+   *  @param {ArrayBuffer} samples  Mono float32 PCM, transferred (zero-copy).
+   *  @returns {boolean}  true if sent, false if port not yet open.
+   */
+  pushSoftmix: (samples) => {
+    if (audioPort) {
+      try {
+        audioPort.postMessage({ kind: 'softmix-in', payload: samples }, [samples])
+        return true
+      } catch { /* port closed — stream was reset */ }
+    }
+    return false
+  },
 })

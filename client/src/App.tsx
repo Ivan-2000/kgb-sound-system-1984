@@ -13,7 +13,6 @@ import { roomSyncClient, type RoomState, type RoomParticipant } from './networki
 import { peerManager } from './rtc/peerManager'
 import { nativeRtcManager } from './rtc/nativeRtcManager'
 import { nativeAudioController, type NativeAudioSnapshot } from './audio/nativeAudioController'
-import { findWebAudioOutputDeviceId } from './audio/deviceUtils'
 import { mixerEngine } from './mixer/mixerEngine'
 import { VideoTile } from './components/VideoTile'
 import { MixerChannel } from './components/MixerChannel'
@@ -258,24 +257,16 @@ function App() {
     return nativeAudioController.subscribeState((snap) => {
       setNativeSnapshot(snap)
       nativeRtcManager.setActive(snap.streamActive)
+      // Route Tone.js output: stream active → PortAudio softmix (Web Audio
+      // silenced), inactive → system default so the app is still audible.
+      audioEngine.setPortAudioActive(snap.streamActive)
     })
   }, [])
 
-  // Route Tone.js / Web Audio output to the device the user explicitly selected
-  // in Settings. If no output device is selected, Tone.js keeps the system default.
-  // NOTE: enumerateDevices() labels require a prior getUserMedia call to be non-empty;
-  // that's satisfied by acquireLocalStream() (called on create/join room).
-  useEffect(() => {
-    const { selectedOutputId, devices } = nativeSnapshot
-    if (selectedOutputId === null) return
-    const dev = devices.find((d) => d.id === selectedOutputId)
-    if (!dev) return
-    findWebAudioOutputDeviceId(dev.name).then((sinkId) => {
-      if (sinkId) void audioEngine.setOutputSinkId(sinkId)
-      else console.warn('[output-routing] no Web Audio device matched PortAudio device:', dev.name)
-    })
-  // Re-run when the stream opens too — user may have selected device before clicking Open Stream.
-  }, [nativeSnapshot.selectedOutputId, nativeSnapshot.streamActive])
+  // Audio output routing: while a PortAudio stream is active, Tone.js output goes
+  // through the softmix bridge to the user-selected device and the Web Audio sink
+  // is silenced (setSinkId none); without a stream the sink is the system default.
+  // Switching happens in audioEngine.setPortAudioActive (driven by subscribeState above).
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
@@ -1155,8 +1146,14 @@ function App() {
       name = p ? p.username : 'Peer'
       color = participantColor(sid)
     }
-    const store = getTimeline(TIMELINE_NODE_ID)
-    if (!store) return null // primary timeline not mounted yet
+    // Record writes to the primary Timeline node — create and show it on demand
+    // so pressing Record on the mixer works even before the panel was opened.
+    let store = getTimeline(TIMELINE_NODE_ID)
+    if (!store) {
+      useGraphStore.getState().openNodeByType('timeline')
+      store = getTimeline(TIMELINE_NODE_ID)
+      if (!store) return null
+    }
     const tl = store.getState()
     tl.pushHistory() // one undo step for the whole arm gesture (track + clip)
     const trackId = tl.ensureTrack(key, { name, kind: 'audio', color })
@@ -1185,23 +1182,16 @@ function App() {
       if (pendingArmRef.current.has(key)) return
       pendingArmRef.current.add(key)
 
-      // Auto-open the PortAudio stream if not yet active.
-      // Without an open stream no PCM frames arrive and recorder captures nothing.
+      // Record does NOT open the PortAudio stream itself — the stream is opened
+      // when the user picks a device (DeviceSetupModal / Settings). Without an
+      // open stream no PCM frames arrive, so prompt device setup and abort.
       if (key.startsWith('local:') && window.nativeAudio !== undefined) {
         const snap = nativeAudioController.getSnapshot()
         if (!snap.streamActive) {
-          // Ensure devices are enumerated so selectedInputId is set.
-          if (snap.devices.length === 0) {
-            await nativeAudioController.loadDevices()
-          }
-          const result = await nativeAudioController.openStream()
-          if (!result.ok) {
-            // Failed to open stream — revert arm state and show device setup.
-            setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
-            pendingArmRef.current.delete(key)
-            setShowDeviceSetup(true)
-            return
-          }
+          setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
+          pendingArmRef.current.delete(key)
+          setShowDeviceSetup(true)
+          return
         }
       }
 

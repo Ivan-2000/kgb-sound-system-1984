@@ -86,10 +86,20 @@ function doOpenStream(opts, port1) {
 
   // A4b: receive inbound Opus directly from renderer over the port — avoids
   // the main-process IPC hop on the hot audio path.
+  // Also handles softmix-in: mono PCM from the Web Audio → PortAudio bridge.
   audioDataPort.on('message', (portEvent) => {
     const pmsg = portEvent?.data
-    if (!pmsg || pmsg.kind !== 'opus-in') return
+    if (!pmsg) return
     const a = loadAddon()
+
+    // Softmix: Tone.js / Web Audio output captured by AudioWorklet.
+    if (pmsg.kind === 'softmix-in') {
+      if (!a.isStreamActive?.()) return
+      try { a.pushSoftmix(new Float32Array(pmsg.payload)) } catch { /* ignore */ }
+      return
+    }
+
+    if (pmsg.kind !== 'opus-in') return
     // Guard: do not allocate peer decoder state when no PA stream is running.
     // Without this check, packets arriving after closeStream() (but while the
     // port is still alive) would fill all 32 g_peerSlots with orphan decoders,

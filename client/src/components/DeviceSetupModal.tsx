@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
 import {
-  apiLabel, apiRank,
+  apiLabel,
   buildDeviceGroups, normalizeDeviceName,
-  type DeviceGroup,
 } from '../audio/deviceUtils'
 
 interface Props {

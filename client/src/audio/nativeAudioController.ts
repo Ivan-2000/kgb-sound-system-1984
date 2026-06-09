@@ -108,7 +108,12 @@ class NativeAudioController {
   }
 
   /**
-   * Resolve the output device id + api kind to use for monitoring.
+   * Resolve the output device id + api kind for the stream's output side.
+   *
+   * The output side is ALWAYS opened (not only for monitoring): it plays the
+   * native monitor signal, decoded remote-peer audio (A4b) and the Web Audio →
+   * PortAudio softmix bridge (Tone.js master). Without it the stream is
+   * capture-only and all of those are silently dropped.
    *
    * Priority:
    *   1. User-selected output device (selectedOutputId)
@@ -117,7 +122,7 @@ class NativeAudioController {
    *
    * Returns null when no output device is found (input-only hardware).
    */
-  private resolveOutputForMonitor(): { id: number; apiKind: string } | null {
+  private resolveOutput(): { id: number; apiKind: string } | null {
     // 1. Explicit user choice
     if (this.selectedOutputId !== null) {
       const dev = this.devices.find((d) => d.id === this.selectedOutputId)
@@ -261,25 +266,23 @@ class NativeAudioController {
     if (!window.nativeAudio) return { ok: false, error: 'nativeAudio not available' }
     if (this.selectedInputId === null) return { ok: false, error: 'No input device selected' }
 
-    const monitoring = this.monitorGain > 0
-    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+    // Output side is always opened — monitor, remote peers and the Web Audio
+    // softmix bridge all play through it (see resolveOutput).
+    const resolvedOut = this.resolveOutput()
 
     const opts: NativeAudioStreamOpts = {
       inputDeviceId: this.selectedInputId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: monitoring,
+      monitor: this.monitorGain > 0,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
     if (resolvedOut) {
       opts.outputDeviceId = resolvedOut.id
       if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
-      opts.outputChannels = 2  // stereo monitoring — both ears
-    } else if (this.selectedOutputId !== null) {
-      opts.outputDeviceId = this.selectedOutputId
-      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
+      opts.outputChannels = 2  // stereo — both ears
     }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
 
@@ -345,15 +348,15 @@ class NativeAudioController {
     const inputDeviceId = this.selectedInputId
     if (inputDeviceId === null) return { ok: false, error: 'No input device selected' }
 
-    const monitoring = this.monitorGain > 0
-    const resolvedOut = monitoring ? this.resolveOutputForMonitor() : null
+    // Same as openStream: output side is always opened.
+    const resolvedOut = this.resolveOutput()
 
     const opts: NativeAudioStreamOpts = {
       inputDeviceId,
       sampleRate: this.sampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
-      monitor: monitoring,
+      monitor: this.monitorGain > 0,
       monitorGain: this.monitorGain,
       opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
     }
@@ -361,9 +364,6 @@ class NativeAudioController {
       opts.outputDeviceId = resolvedOut.id
       if (resolvedOut.apiKind) opts.outputHostApiKind = resolvedOut.apiKind
       opts.outputChannels = 2
-    } else if (this.selectedOutputId !== null) {
-      opts.outputDeviceId = this.selectedOutputId
-      if (this.outputHostApiKind) opts.outputHostApiKind = this.outputHostApiKind
     }
     if (this.inputHostApiKind) opts.inputHostApiKind = this.inputHostApiKind
 

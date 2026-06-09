@@ -93,5 +93,7 @@ interface Window {
     onEngineCrashed(handler: (info: { code: number }) => void): () => void
     /** M4: Set per-channel output gain for a remote peer. gain ∈ [0, 4]; 0 = muted. */
     setRemoteChannelGain(peerId: string, channelId: string, gain: number): Promise<{ ok: boolean }>
+    /** Web Audio → PortAudio softmix bridge.  Transfers mono float32 PCM (zero-copy). */
+    pushSoftmix(samples: ArrayBuffer): boolean
   }
 }

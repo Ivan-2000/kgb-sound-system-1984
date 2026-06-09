@@ -167,6 +167,16 @@ static std::map<std::string, float> g_pendingGains;
 // Zero-initialised at module load (nullptr for all slots).
 static std::atomic<PeerDecState*> g_peerSlots[MAX_PEERS];
 
+// ─── Softmix ring ─────────────────────────────────────────────────────────────
+// Receives mono float32 PCM from the Web Audio → PortAudio bridge.
+// AudioWorklet captures Tone.js master output and forwards it here via IPC.
+// Ring capacity: 8192 samples ≈ 170 ms at 48 kHz (power-of-two for index masking).
+// Producer: utility JS thread (PushSoftmix).  Consumer: RT callback (PaCallback).
+static constexpr uint32_t SOFTMIX_RING_CAP = 8192u;
+static float              g_softmixBuf[SOFTMIX_RING_CAP] = {};
+static std::atomic<uint32_t> g_softmixRpos{0};
+static std::atomic<uint32_t> g_softmixWpos{0};
+
 // ─── hostApiKind helpers ──────────────────────────────────────────────────────
 static const char* hostApiKind(PaHostApiTypeId t) {
   switch (t) {
@@ -445,6 +455,26 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       peer->rmsLevel.store(0.9f * curLev + 0.1f * frameRms, std::memory_order_relaxed);
 
       peer->ring.rpos.store(r + take, std::memory_order_release);
+    }
+
+    // Softmix: Tone.js / Web Audio PCM routed through PortAudio output.
+    // AudioWorklet captures the Tone.js master bus (stereo→mono) and sends it
+    // here via IPC. Mixed additively so it blends with monitor and peer audio.
+    {
+      const uint32_t smr   = g_softmixRpos.load(std::memory_order_relaxed);
+      const uint32_t smw   = g_softmixWpos.load(std::memory_order_acquire);
+      const uint32_t avail = smw - smr; // unsigned wrap is intentional
+      const uint32_t take  = avail < static_cast<uint32_t>(frames)
+                               ? avail : static_cast<uint32_t>(frames);
+      for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
+        const float samp = (f < take)
+            ? g_softmixBuf[(smr + f) & (SOFTMIX_RING_CAP - 1u)]
+            : 0.0f;
+        for (int c = 0; c < outCh; c++)
+          out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] += samp;
+      }
+      if (take > 0)
+        g_softmixRpos.store(smr + take, std::memory_order_release);
     }
 
     // Hard-clip the final mix to [-1, 1] to prevent DAC distortion when
@@ -1130,6 +1160,33 @@ Napi::Value SetRemoteChannelGain(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// ─── PushSoftmix ──────────────────────────────────────────────────────────────
+// Called from the utility JS thread with a Float32Array of mono PCM samples
+// captured by the AudioWorklet from the Tone.js master bus. Writes samples into
+// the SPSC ring; excess samples are silently dropped when the ring is full
+// (PortAudio underrun is already pending in that case).
+Napi::Value PushSoftmix(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsTypedArray()) return env.Undefined();
+  Napi::Float32Array arr = info[0].As<Napi::Float32Array>();
+  const float*   src = arr.Data();
+  const uint32_t n   = static_cast<uint32_t>(arr.ElementLength());
+  if (n == 0) return env.Undefined();
+
+  const uint32_t w     = g_softmixWpos.load(std::memory_order_relaxed);
+  const uint32_t r     = g_softmixRpos.load(std::memory_order_acquire);
+  const uint32_t free_ = SOFTMIX_RING_CAP - (w - r);
+  const uint32_t write = n < free_ ? n : free_;  // drop newest when ring full
+
+  for (uint32_t i = 0; i < write; i++)
+    g_softmixBuf[(w + i) & (SOFTMIX_RING_CAP - 1u)] = src[i];
+
+  if (write > 0)
+    g_softmixWpos.store(w + write, std::memory_order_release);
+
+  return env.Undefined();
+}
+
 // ─── Module init ──────────────────────────────────────────────────────────────
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("paInit",           Napi::Function::New(env, PaInit));
@@ -1143,6 +1200,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("getStats",              Napi::Function::New(env, GetStats));
   exports.Set("pushInboundOpus",       Napi::Function::New(env, PushInboundOpus));
   exports.Set("setRemoteChannelGain",  Napi::Function::New(env, SetRemoteChannelGain));
+  exports.Set("pushSoftmix",           Napi::Function::New(env, PushSoftmix));
   return exports;
 }
 
