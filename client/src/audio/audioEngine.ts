@@ -37,7 +37,7 @@ class AudioEngine {
   private portAudioActive = false
 
   constructor() {
-    Tone.Transport.bpm.value = DEFAULT_BPM
+    Tone.getTransport().bpm.value = DEFAULT_BPM
   }
 
   getState(): AudioEngineState {
@@ -54,7 +54,7 @@ class AudioEngine {
     }
 
     this.unlockPromise ??= Tone.start().then(async () => {
-      Tone.Transport.bpm.value = this.bpm
+      Tone.getTransport().bpm.value = this.bpm
       this.initialized = true
       // Route all audio through PortAudio instead of Web Audio output device.
       await this.setupPortAudioBridge()
@@ -159,7 +159,7 @@ class AudioEngine {
     const bpm = clampBpm(nextBpm)
 
     this.bpm = bpm
-    Tone.Transport.bpm.rampTo(bpm, 0.03)
+    Tone.getTransport().bpm.rampTo(bpm, 0.03)
 
     return bpm
   }
@@ -170,24 +170,24 @@ class AudioEngine {
 
   /** Current transport position in seconds (for the timeline playhead). */
   getTransportSeconds(): number {
-    return Tone.Transport.seconds
+    return Tone.getTransport().seconds
   }
 
   /** Move the transport playhead (timeline scrub). */
   seekSeconds(sec: number): void {
-    Tone.Transport.seconds = Math.max(0, sec)
+    Tone.getTransport().seconds = Math.max(0, sec)
   }
 
   /** Set the transport loop region (timeline playback region markers). */
   setLoopRegion(start: number, end: number): void {
     if (end > start) {
-      Tone.Transport.setLoopPoints(start, end)
-      Tone.Transport.loop = true
+      Tone.getTransport().setLoopPoints(start, end)
+      Tone.getTransport().loop = true
     }
   }
 
   clearLoopRegion(): void {
-    Tone.Transport.loop = false
+    Tone.getTransport().loop = false
   }
 
   async play(options: TransportStartOptions = {}) {
@@ -197,12 +197,12 @@ class AudioEngine {
       return
     }
 
-    Tone.Transport.start(options.time, options.position)
+    Tone.getTransport().start(options.time, options.position)
     this.playing = true
   }
 
   stop() {
-    Tone.Transport.stop()
+    Tone.getTransport().stop()
     this.playing = false
   }
 

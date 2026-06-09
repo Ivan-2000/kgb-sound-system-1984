@@ -5,6 +5,7 @@ import { createTimelineStore } from './timelineStore'
 import { registerTimeline, unregisterTimeline } from './timelineNodes'
 import { TimelinePanel } from '../components/TimelinePanel'
 import { scheduleMidiClips, clearMidiClipSchedule } from './midiPlayer'
+import { scheduleAudioClips, clearAudioClipSchedule } from './audioClipPlayer'
 
 /**
  * Timeline — node #2. Owns a per-instance store ({@link createTimelineStore},
@@ -39,15 +40,22 @@ export const timelineNode: NodeDefinition = defineNode({
     const store = createTimelineStore()
     registerTimeline(ctx.nodeId, store)
 
-    // Schedule MIDI clip playback each time the transport starts.
-    const onStart = () => scheduleMidiClips(store)
+    // Schedule MIDI + recorded audio clip playback each time the transport starts.
+    const onStart = () => {
+      scheduleMidiClips(store)
+      scheduleAudioClips(store)
+    }
+    const onStop = () => clearAudioClipSchedule()
     Tone.getTransport().on('start', onStart)
+    Tone.getTransport().on('stop', onStop)
 
     return {
       render: () => <TimelinePanel store={store} />,
       dispose: () => {
         Tone.getTransport().off('start', onStart)
+        Tone.getTransport().off('stop', onStop)
         clearMidiClipSchedule()
+        clearAudioClipSchedule()
         unregisterTimeline(ctx.nodeId)
       },
     }

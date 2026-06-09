@@ -76,7 +76,7 @@ class Metronome {
     this.ensureSynths()
 
     const beatDuration = this.beatDurationNotation()
-    this.scheduleId = Tone.Transport.scheduleRepeat((time) => {
+    this.scheduleId = Tone.getTransport().scheduleRepeat((time) => {
       const beat = this.currentBeat
       if (this.enabled && this.soundEnabled) {
         this.playClick(beat === 0, time)
@@ -97,7 +97,7 @@ class Metronome {
     this.currentBeat = 0
     this.emitChange()
 
-    const bpm = Tone.Transport.bpm.value
+    const bpm = Tone.getTransport().bpm.value
     const secsPerBeat = (60 / bpm) * (4 / this.timeSignature.division)
     const totalBeats = bars * this.timeSignature.beats
     const now = Tone.now()
@@ -189,7 +189,7 @@ class Metronome {
 
   private clearSchedule() {
     if (this.scheduleId !== null) {
-      Tone.Transport.clear(this.scheduleId)
+      Tone.getTransport().clear(this.scheduleId)
       this.scheduleId = null
     }
   }

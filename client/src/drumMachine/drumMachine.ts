@@ -316,7 +316,7 @@ export class DrumMachine {
 
   dispose() {
     if (this.scheduleId !== null) {
-      Tone.Transport.clear(this.scheduleId)
+      Tone.getTransport().clear(this.scheduleId)
       this.scheduleId = null
     }
     this.players?.dispose()
@@ -335,18 +335,18 @@ export class DrumMachine {
 
   private reschedule() {
     if (this.scheduleId !== null) {
-      Tone.Transport.clear(this.scheduleId)
+      Tone.getTransport().clear(this.scheduleId)
       this.scheduleId = null
     }
-    if (Tone.Transport.state === 'started') this.installSchedule()
+    if (Tone.getTransport().state === 'started') this.installSchedule()
   }
 
   private installSchedule() {
-    // No loop ownership here: the drum used to set Tone.Transport.loop +
+    // No loop ownership here: the drum used to set Tone.getTransport().loop +
     // setLoopPoints, which made multiple instances fight over the global loop.
     // Each instance now just self-increments its step on every 16th; the loop
     // region (if any) belongs solely to the Timeline (audioEngine.setLoopRegion).
-    this.scheduleId = Tone.Transport.scheduleRepeat((time) => {
+    this.scheduleId = Tone.getTransport().scheduleRepeat((time) => {
       this.playStep(this.currentStep, time)
       const nextStep = (this.currentStep + 1) % this.activeSlot.stepCount
 
