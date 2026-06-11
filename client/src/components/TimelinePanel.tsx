@@ -30,9 +30,37 @@ interface TimelinePanelProps {
   armed?: ReadonlySet<string>
   /** Called when the per-track record button is clicked. */
   onToggleArm?: (armKey: string) => void
+  /** Room BPM — passed from App so the grid re-renders when BPM changes. */
+  bpm?: number
+  /** Room time signature — same reactivity reason as bpm. */
+  timeSignature?: { beats: number; division: number }
 }
 
-export function TimelinePanel({ store, isPlaying = false, isStarting = false, onPlayStop, armed, onToggleArm }: TimelinePanelProps) {
+/** Static/live waveform drawn over an audio clip from its peak bins. */
+function ClipWave({ peaks, w, h }: { peaks: number[]; w: number; h: number }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const cv = ref.current
+    if (!cv) return
+    const width = Math.max(1, Math.floor(w))
+    cv.width = width
+    cv.height = h
+    const ctx = cv.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, width, h)
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'
+    const n = peaks.length
+    if (n === 0) return
+    for (let x = 0; x < width; x++) {
+      const p = peaks[Math.min(n - 1, Math.floor((x / width) * n))] ?? 0
+      const bh = Math.max(1, p * (h - 6))
+      ctx.fillRect(x, (h - bh) / 2, 1, bh)
+    }
+  }, [peaks, w, h])
+  return <canvas ref={ref} className="tl-clip-wave" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} aria-hidden="true" />
+}
+
+export function TimelinePanel({ store, isPlaying = false, isStarting = false, onPlayStop, armed, onToggleArm, bpm: bpmProp, timeSignature: timeSigProp }: TimelinePanelProps) {
   const tracks = store((s) => s.tracks)
   const clips = store((s) => s.clips)
   const selectedIds = store((s) => s.selectedIds)
@@ -300,9 +328,10 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
   const ticks = Array.from({ length: totalSec + 1 }, (_, s) => s)
   const toolCls = tool === 'select' ? '' : ` tl--tool-${tool}`
 
-  // BPM grid helpers
-  const bpm = audioEngine.getBpm()
-  const timeSig = metronome.getState().timeSignature
+  // BPM grid helpers — props (reactive: re-render on room BPM / time-signature
+  // change) with engine fallback for standalone usage.
+  const bpm = bpmProp ?? audioEngine.getBpm()
+  const timeSig = timeSigProp ?? metronome.getState().timeSignature
   const beatSec = 60 / bpm
   const barSec = beatSec * timeSig.beats
   const snapSec = (sec: number): number => {
@@ -465,6 +494,9 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
                     onDoubleClick={(e) => { if (c.kind === 'midi' && tool === 'select') { e.stopPropagation(); setOpenEditorClipId(c.id) } }}
                     title={`${c.label}${c.proxy ? ' (syncing…)' : ''}${c.kind === 'midi' ? ' · двойной клик = редактировать' : ''}`}
                   >
+                    {c.kind === 'audio' && c.peaks && c.peaks.length > 0 && (
+                      <ClipWave peaks={c.peaks} w={c.durSec * PX_PER_SEC} h={LANE_H - 10} />
+                    )}
                     <span className="tl-clip-trim tl-clip-trim--l" onPointerDown={(e) => onClipDown(e, c, 'trim-l')} onPointerMove={onClipMove} onPointerUp={onClipUp} />
                     <span className="tl-clip-label">{c.label}</span>
                     <span className="tl-clip-trim tl-clip-trim--r" onPointerDown={(e) => onClipDown(e, c, 'trim-r')} onPointerMove={onClipMove} onPointerUp={onClipUp} />

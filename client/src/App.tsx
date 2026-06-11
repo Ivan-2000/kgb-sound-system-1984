@@ -268,10 +268,36 @@ function App() {
   // (toneNativeContext.ts) — program sound is audible ONLY through the softmix
   // bridge → PortAudio output device. No stream = intentional silence.
 
+  // Live waveform: while recording, mirror recorder peaks into the clip ~7×/sec
+  // so the timeline shows a running oscillogram (DAW-style).
+  const liveRecRef = useRef(new Map<string, { channelIdx: number; clipId: string }>())
+  const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const startLiveWaveform = (key: string, channelIdx: number, clipId: string) => {
+    liveRecRef.current.set(key, { channelIdx, clipId })
+    liveTimerRef.current ??= setInterval(() => {
+      const store = getTimeline(TIMELINE_NODE_ID)
+      if (!store) return
+      for (const rec of liveRecRef.current.values()) {
+        const live = recorder.getLive(rec.channelIdx)
+        if (!live || live.clipId !== rec.clipId) continue
+        store.getState().updateClip(rec.clipId, { durSec: Math.max(0.5, live.durSec), peaks: live.peaks })
+      }
+    }, 150)
+  }
+  const stopLiveWaveform = (key?: string) => {
+    if (key !== undefined) liveRecRef.current.delete(key)
+    else liveRecRef.current.clear()
+    if (liveRecRef.current.size === 0 && liveTimerRef.current !== null) {
+      clearInterval(liveTimerRef.current)
+      liveTimerRef.current = null
+    }
+  }
+
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
     if (!nativeSnapshot.streamActive) {
       // Stop any in-progress recordings when the stream closes.
+      stopLiveWaveform()
       recorder.stopAll()
       setArmed(new Set())
       setSendEnabled(new Set())
@@ -708,6 +734,28 @@ function App() {
       setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
     } finally {
       setIsStarting(false)
+    }
+  }
+
+  // Timeline-local play: rolls the transport from the current playhead and
+  // plays ONLY what's on the timeline (clips schedule on transport 'start')
+  // plus the metronome click if enabled — no preroll, no drum sequencer.
+  // Stop is shared with the toolbar (stops everything).
+  const handleTimelinePlayStop = async () => {
+    if (roomState.roomId && !roomState.isHost) return
+    if (isStarting || isPlaying) {
+      await handlePlayStop() // acts as Cancel / Stop
+      return
+    }
+    try {
+      await audioEngine.play() // no { position: 0 } — start from the playhead
+      metronome.start()
+      setIsPlaying(true)
+      await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
+    } catch (err) {
+      audioEngine.stop()
+      metronome.stop()
+      setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
     }
   }
 
@@ -1195,12 +1243,27 @@ function App() {
         }
       }
 
+      // DAW-style record: show the timeline and roll the FULL project transport
+      // (preroll → click + drums + timeline clips), then start capturing. If the
+      // user cancels mid-preroll, revert the arm.
+      useGraphStore.getState().openNodeByType('timeline')
+      if (key.startsWith('local:') && window.nativeAudio !== undefined
+          && !audioEngine.getState().isPlaying && !isStarting) {
+        await handlePlayStop()
+        if (!audioEngine.getState().isPlaying) {
+          setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
+          pendingArmRef.current.delete(key)
+          return
+        }
+      }
+
       const armResult = armTimelineTrack(key)
       const clipId = armResult?.clipId ?? null
       // T2: start PCM accumulation for local input channels.
       if (clipId && key.startsWith('local:') && window.nativeAudio !== undefined) {
         const channelIdx = Number(key.slice(6))
         recorder.start(channelIdx, clipId)
+        startLiveWaveform(key, channelIdx, clipId)
       }
       // T4: broadcast the new proxy clip to peers
       if (clipId && armResult && roomState.roomId && !roomState.isLocalRoom) {
@@ -1216,6 +1279,7 @@ function App() {
     } else {
       // T2: stop recording and update the proxy clip with real duration.
       if (key.startsWith('local:') && window.nativeAudio !== undefined) {
+        stopLiveWaveform(key)
         const channelIdx = Number(key.slice(6))
         const result = recorder.stop(channelIdx)
         if (result) {
@@ -1229,7 +1293,8 @@ function App() {
             ? Math.max(0, currentClip.startSec - inputLatencySec)
             : undefined
           const patch = { proxy: false, durSec: realDur, ...(startSec !== undefined && { startSec }) }
-          store?.getState().updateClip(result.clipId, patch)
+          // peaks stay local-only (not in the sync patch — peers get the WAV file).
+          store?.getState().updateClip(result.clipId, { ...patch, peaks: result.peaks })
           // T4: notify peers of real duration, position, and WAV file
           if (roomState.roomId && !roomState.isLocalRoom) {
             sendClipUpdate(result.clipId, patch)
@@ -1405,9 +1470,11 @@ function App() {
           store={tlStore}
           isPlaying={isPlaying}
           isStarting={isStarting}
-          onPlayStop={handlePlayStop}
+          onPlayStop={handleTimelinePlayStop}
           armed={armed}
           onToggleArm={toggleArmed}
+          bpm={bpm}
+          timeSignature={metronomeState.timeSignature}
         />
       )
     },
@@ -1809,6 +1876,18 @@ function App() {
             aria-label={metronomeState.enabled ? 'Disable metronome' : 'Enable metronome'}
           >
             Click
+          </button>
+          <button
+            type="button"
+            className={['ghost-action', 'ghost-action--sm', syncOnly ? '' : 'is-active'].filter(Boolean).join(' ')}
+            onClick={handleSyncOnlyToggle}
+            aria-pressed={!syncOnly}
+            title={syncOnly
+              ? 'Звук метронома выключен (sync only) — нажмите чтобы включить'
+              : 'Звук метронома включён — играет в общий микс (и в преролле)'}
+            aria-label={syncOnly ? 'Включить звук метронома' : 'Выключить звук метронома'}
+          >
+            {syncOnly ? '🔇' : '🔊'}
           </button>
           <button
             type="button"

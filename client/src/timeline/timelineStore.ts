@@ -43,6 +43,9 @@ export interface TimelineClip {
   notes?: PianoNote[]
   /** Piano Roll bar count for this clip's editor view. */
   clipBars?: number
+  /** Waveform |peak| bins (0..1, ~50/sec) — drawn over audio clips; grows live
+   *  while the clip is being recorded. Local-only, not synced to peers. */
+  peaks?: number[]
 }
 
 type ClipboardClip = { durSec: number; label: string; kind: TrackKind; notes?: PianoNote[]; clipBars?: number }

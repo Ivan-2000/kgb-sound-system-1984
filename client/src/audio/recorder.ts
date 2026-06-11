@@ -9,10 +9,22 @@
 
 import { nativeAudioController } from './nativeAudioController'
 
+/** Waveform resolution: peak bins per second of recorded audio. */
+const PEAKS_PER_SEC = 50
+
 interface ActiveRec {
   chunks: Float32Array[]
   channelCount: number
   clipId: string
+  /** Which interleaved channel this recording extracts (the armed input). */
+  channelIdx: number
+  /** Downsampled |peak| per bin (0..1) — drives the live clip waveform. */
+  peaks: number[]
+  /** Current bin accumulator: max |sample| and frames consumed so far. */
+  binPeak: number
+  binFrames: number
+  /** Total frames captured (real duration = framesSeen / sampleRate). */
+  framesSeen: number
 }
 
 /** Exported blob per clip (kept in memory for the session). */
@@ -25,15 +37,19 @@ class Recorder {
   /** Begin accumulating PCM for the given input channel index. */
   start(channelIdx: number, clipId: string): void {
     if (this.active.has(channelIdx)) this.stop(channelIdx) // replace any existing
-    this.active.set(channelIdx, { chunks: [], channelCount: 0, clipId })
+    this.active.set(channelIdx, {
+      chunks: [], channelCount: 0, clipId, channelIdx,
+      peaks: [], binPeak: 0, binFrames: 0, framesSeen: 0,
+    })
     this.ensureSubscribed()
   }
 
   /**
    * Stop recording the given channel.
-   * Returns the WAV blob and actual duration in seconds, or null if no data was captured.
+   * Returns the WAV blob, actual duration and waveform peaks, or null if no
+   * data was captured.
    */
-  stop(channelIdx: number): { blob: Blob; durSec: number; clipId: string } | null {
+  stop(channelIdx: number): { blob: Blob; durSec: number; clipId: string; peaks: number[] } | null {
     const rec = this.active.get(channelIdx)
     if (!rec) return null
     this.active.delete(channelIdx)
@@ -45,11 +61,26 @@ class Recorder {
     if (mono.length === 0) return null
     const blob = encodeWav(mono, sampleRate)
     clipAudio.set(rec.clipId, blob)
-    return { blob, durSec: mono.length / sampleRate, clipId: rec.clipId }
+    return { blob, durSec: mono.length / sampleRate, clipId: rec.clipId, peaks: rec.peaks.slice() }
   }
 
   isRecording(channelIdx: number): boolean {
     return this.active.has(channelIdx)
+  }
+
+  /**
+   * Live snapshot for the running-waveform UI: elapsed seconds + a COPY of the
+   * peak bins accumulated so far. Cheap (peaks grow at PEAKS_PER_SEC).
+   */
+  getLive(channelIdx: number): { clipId: string; durSec: number; peaks: number[] } | null {
+    const rec = this.active.get(channelIdx)
+    if (!rec) return null
+    const { sampleRate } = nativeAudioController.getSnapshot()
+    return {
+      clipId: rec.clipId,
+      durSec: rec.framesSeen / (sampleRate || 48000),
+      peaks: rec.peaks.slice(),
+    }
   }
 
   /** Stop all active recordings — call on cleanup / stream close. */
@@ -63,9 +94,24 @@ class Recorder {
       const { frames, channels, payload } = msg
       if (frames === 0 || channels === 0) return
       const samples = new Float32Array(payload)
+      const { sampleRate } = nativeAudioController.getSnapshot()
+      const binSize = Math.max(1, Math.round((sampleRate || 48000) / PEAKS_PER_SEC))
       for (const rec of this.active.values()) {
         rec.channelCount = channels
         rec.chunks.push(new Float32Array(samples)) // copy — payload may be detached next frame
+        // Incremental peak bins over THIS recording's channel.
+        const ch = Math.min(rec.channelIdx, channels - 1)
+        for (let f = 0; f < frames; f++) {
+          const s = samples[f * channels + ch]
+          const v = s < 0 ? -s : s
+          if (v > rec.binPeak) rec.binPeak = v
+          if (++rec.binFrames >= binSize) {
+            rec.peaks.push(rec.binPeak)
+            rec.binPeak = 0
+            rec.binFrames = 0
+          }
+        }
+        rec.framesSeen += frames
       }
     })
   }
