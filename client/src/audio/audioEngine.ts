@@ -35,6 +35,10 @@ class AudioEngine {
   private rawCtx: (AudioContext & { setSinkId?: (id: string | { type: string }) => Promise<void> }) | null = null
   /** True while a PortAudio stream with an output side is active. */
   private portAudioActive = false
+  /** Diagnostics: worklet messages forwarded to pushSoftmix since bridge start. */
+  private smFrames = 0
+  /** Diagnostics: rolling peak |sample| seen in forwarded PCM (reset on read). */
+  private smPeak = 0
 
   constructor() {
     Tone.getTransport().bpm.value = DEFAULT_BPM
@@ -104,7 +108,15 @@ class AudioEngine {
       // so pushing would only leave stale audio that bursts out on stream open.
       worklet.port.onmessage = (e: MessageEvent<{ samples: ArrayBuffer }>) => {
         const buf = e.data?.samples
-        if (buf && this.portAudioActive) window.nativeAudio!.pushSoftmix(buf)
+        if (!buf || !this.portAudioActive) return
+        // Diagnostics BEFORE transfer — pushSoftmix detaches the buffer.
+        const a = new Float32Array(buf)
+        for (let i = 0; i < a.length; i++) {
+          const v = a[i] < 0 ? -a[i] : a[i]
+          if (v > this.smPeak) this.smPeak = v
+        }
+        this.smFrames++
+        window.nativeAudio!.pushSoftmix(buf)
       }
 
       // ── Step 4: tap Tone.js master output ────────────────────────────────
@@ -152,6 +164,24 @@ class AudioEngine {
       }
     } catch (err) {
       console.warn('[audioEngine] setSinkId failed — audio may play on the wrong device:', err)
+    }
+  }
+
+  /**
+   * Bridge health snapshot for the Settings diagnostics row. `peak` is the max
+   * |sample| forwarded since the previous call (read-and-reset), so the UI can
+   * poll it as a simple level meter. All values are cheap counters — safe to
+   * poll a few times per second.
+   */
+  getBridgeStats(): { bridgeUp: boolean; routingToPortAudio: boolean; framesSent: number; peak: number; contextState: string } {
+    const peak = this.smPeak
+    this.smPeak = 0
+    return {
+      bridgeUp: this.workletNode !== null,
+      routingToPortAudio: this.portAudioActive,
+      framesSent: this.smFrames,
+      peak,
+      contextState: this.rawCtx?.state ?? nativeToneContext.state,
     }
   }
 

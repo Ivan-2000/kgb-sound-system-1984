@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController, type NativeAudioSnapshot } from '../audio/nativeAudioController'
+import { audioEngine } from '../audio/audioEngine'
 import {
   apiLabel,
   buildDeviceGroups, normalizeDeviceName,
@@ -19,7 +20,14 @@ export function SettingsModal({ onClose }: Props) {
   const [recordingFormat, setRecordingFormat] = useState<RecordingFormat>(loadRecordingFormat)
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
   const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
+  const [bridgeStats, setBridgeStats] = useState(() => audioEngine.getBridgeStats())
   const overlayRef = useRef<HTMLDivElement>(null)
+
+  // Poll bridge diagnostics while the modal is open — cheap counters only.
+  useEffect(() => {
+    const id = setInterval(() => setBridgeStats(audioEngine.getBridgeStats()), 500)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('kgb_recording_format', recordingFormat)
@@ -275,6 +283,24 @@ export function SettingsModal({ onClose }: Props) {
                     </span>
                   </div>
                 )}
+
+                {/* Program-sound bridge diagnostics: shows whether Tone.js audio is
+                    reaching PortAudio. "уровень" lights up only while something
+                    is actually playing (metronome, drums, clips). */}
+                <div className="settings-field">
+                  <span className="settings-label">Звук программы</span>
+                  <span className="settings-stub">
+                    {!bridgeStats.bridgeUp
+                      ? 'мост не запущен (нажмите Play один раз)'
+                      : !bridgeStats.routingToPortAudio
+                        ? 'через системный выход (нет output-стороны стрима)'
+                        : `→ PortAudio · контекст: ${bridgeStats.contextState} · уровень: ${
+                            bridgeStats.peak > 0.001
+                              ? `${Math.round(20 * Math.log10(bridgeStats.peak))} dB`
+                              : 'тишина'
+                          }`}
+                  </span>
+                </div>
 
                 <div className="settings-field" style={{ gap: '0.5rem', display: 'flex', alignItems: 'center' }}>
                   <button
