@@ -67,6 +67,10 @@ interface NativeAudioStats {
   cpuLoad: number
   /** M5: per-channel RMS levels keyed by peerId. Index = channelIdx. */
   remoteChannelLevels?: Record<string, number[]>
+  /** Softmix messages received by the utility process since launch. */
+  softmixReceived?: number
+  /** Max |sample| in received softmix PCM since the previous getStats (read-and-reset). */
+  softmixPeak?: number
 }
 
 interface Window {
@@ -95,5 +99,7 @@ interface Window {
     setRemoteChannelGain(peerId: string, channelId: string, gain: number): Promise<{ ok: boolean }>
     /** Web Audio → PortAudio softmix bridge.  Transfers mono float32 PCM (zero-copy). */
     pushSoftmix(samples: ArrayBuffer): boolean
+    /** Diagnostics: softmix buffers posted from the renderer vs failed (no port). */
+    getSoftmixDiag(): { sent: number; failed: number }
   }
 }

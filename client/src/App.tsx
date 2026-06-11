@@ -257,17 +257,16 @@ function App() {
     return nativeAudioController.subscribeState((snap) => {
       setNativeSnapshot(snap)
       nativeRtcManager.setActive(snap.streamActive)
-      // Route Tone.js output: stream with an OUTPUT side → PortAudio softmix
-      // (Web Audio silenced); otherwise (no stream, or capture-only fallback)
-      // → system default so the app is still audible.
+      // Gate the softmix feed: only push Tone.js PCM to PortAudio while the
+      // stream has an output side (otherwise the ring isn't drained). The Web
+      // Audio sink is permanently silenced in Electron (toneNativeContext.ts).
       audioEngine.setPortAudioActive(snap.streamActive && snap.activeOutputChannels > 0)
     })
   }, [])
 
-  // Audio output routing: while a PortAudio stream is active, Tone.js output goes
-  // through the softmix bridge to the user-selected device and the Web Audio sink
-  // is silenced (setSinkId none); without a stream the sink is the system default.
-  // Switching happens in audioEngine.setPortAudioActive (driven by subscribeState above).
+  // Audio output routing: in Electron the Web Audio sink is permanently 'none'
+  // (toneNativeContext.ts) — program sound is audible ONLY through the softmix
+  // bridge → PortAudio output device. No stream = intentional silence.
 
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {

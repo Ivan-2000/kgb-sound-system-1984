@@ -6,6 +6,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 let audioPort = null
+let softmixSent = 0
+let softmixFailed = 0
 const pcmHandlers = new Set()
 const opusHandlers = new Set()      // A4: kind:'opus-out' packets from encoder
 const latencyHandlers = new Set()
@@ -179,10 +181,21 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   pushSoftmix: (samples) => {
     if (audioPort) {
       try {
-        audioPort.postMessage({ kind: 'softmix-in', payload: samples }, [samples])
+        // NO transfer list — the renderer↔utility MessagePort bridge silently
+        // drops messages with ArrayBuffer transferables (same Electron
+        // limitation as utility→renderer, see utilityHost onPcm comment).
+        // Structured-clone copy of 512 bytes per quantum is negligible.
+        audioPort.postMessage({ kind: 'softmix-in', payload: samples })
+        softmixSent++
         return true
-      } catch { /* port closed — stream was reset */ }
+      } catch { softmixFailed++ }
+    } else {
+      softmixFailed++
     }
     return false
   },
+
+  /** Diagnostics: how many softmix buffers actually left the renderer
+   *  (posted into the audio MessagePort) vs failed (port missing/closed). */
+  getSoftmixDiag: () => ({ sent: softmixSent, failed: softmixFailed }),
 })

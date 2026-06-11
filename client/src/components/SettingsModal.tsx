@@ -21,11 +21,25 @@ export function SettingsModal({ onClose }: Props) {
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeAudioSnapshot>(() => nativeAudioController.getSnapshot())
   const [useCustomOutput, setUseCustomOutput] = useState(() => nativeAudioController.getSnapshot().selectedOutputId !== null)
   const [bridgeStats, setBridgeStats] = useState(() => audioEngine.getBridgeStats())
+  const [chainStats, setChainStats] = useState<{ sent: number; failed: number; received: number; ringPeak: number } | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
 
   // Poll bridge diagnostics while the modal is open — cheap counters only.
   useEffect(() => {
-    const id = setInterval(() => setBridgeStats(audioEngine.getBridgeStats()), 500)
+    const id = setInterval(() => {
+      setBridgeStats(audioEngine.getBridgeStats())
+      if (window.nativeAudio) {
+        const diag = window.nativeAudio.getSoftmixDiag?.() ?? { sent: 0, failed: 0 }
+        void window.nativeAudio.getStats().then((s) => {
+          setChainStats({
+            sent: diag.sent,
+            failed: diag.failed,
+            received: s.softmixReceived ?? 0,
+            ringPeak: s.softmixPeak ?? 0,
+          })
+        }).catch(() => { /* engine down — keep last value */ })
+      }
+    }, 500)
     return () => clearInterval(id)
   }, [])
 
@@ -293,7 +307,7 @@ export function SettingsModal({ onClose }: Props) {
                     {!bridgeStats.bridgeUp
                       ? 'мост не запущен (нажмите Play один раз)'
                       : !bridgeStats.routingToPortAudio
-                        ? 'через системный выход (нет output-стороны стрима)'
+                        ? 'заглушён — нет output-стороны стрима (откройте устройство)'
                         : `→ PortAudio · контекст: ${bridgeStats.contextState} · уровень: ${
                             bridgeStats.peak > 0.001
                               ? `${Math.round(20 * Math.log10(bridgeStats.peak))} dB`
@@ -301,6 +315,22 @@ export function SettingsModal({ onClose }: Props) {
                           }`}
                   </span>
                 </div>
+
+                {/* Per-link delivery counters: renderer → MessagePort → utility →
+                    PortAudio ring. If "отпр." grows but "получено" doesn't, the
+                    break is between renderer and the utility process. */}
+                {chainStats !== null && (
+                  <div className="settings-field">
+                    <span className="settings-label">Доставка PCM</span>
+                    <span className="settings-stub">
+                      отпр. {chainStats.sent}{chainStats.failed > 0 ? ` (сбоев ${chainStats.failed})` : ''}
+                      &nbsp;·&nbsp; получено {chainStats.received}
+                      &nbsp;·&nbsp; в кольце: {chainStats.ringPeak > 0.001
+                        ? `${Math.round(20 * Math.log10(chainStats.ringPeak))} dB`
+                        : 'тишина'}
+                    </span>
+                  </div>
+                )}
 
                 <div className="settings-field" style={{ gap: '0.5rem', display: 'flex', alignItems: 'center' }}>
                   <button

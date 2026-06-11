@@ -20,3 +20,18 @@ import * as Tone from 'tone'
 // 48000) — the softmix bridge does no resampling, so the rates must agree.
 export const nativeToneContext = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 })
 Tone.setContext(nativeToneContext)
+
+// In Electron, Web Audio must NEVER address a hardware device — all audible
+// output goes through PortAudio (softmix bridge). Silence the sink at
+// creation, not on stream open: switching it lazily left a window where
+// program sound leaked to the system-default device. With no PortAudio
+// stream the program is intentionally silent (DAW with no device configured).
+// In a plain browser (no preload) the default sink stays — dev:web still rings.
+if (window.nativeAudio !== undefined) {
+  const sink = nativeToneContext as AudioContext & {
+    setSinkId?: (id: string | { type: string }) => Promise<void>
+  }
+  sink.setSinkId?.({ type: 'none' })
+    .then(() => console.log('[toneNativeContext] Web Audio sink silenced at startup'))
+    .catch((err: unknown) => console.warn('[toneNativeContext] setSinkId(none) failed:', err))
+}

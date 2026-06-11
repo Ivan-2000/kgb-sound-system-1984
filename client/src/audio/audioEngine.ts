@@ -31,13 +31,11 @@ class AudioEngine {
   private unlockPromise: Promise<void> | null = null
   /** AudioWorklet node that taps Tone.js output and forwards PCM to PortAudio. */
   private workletNode: AudioWorkletNode | null = null
-  /** Native AudioContext extracted from the Tone.js wrapper (set by the bridge). */
-  private rawCtx: (AudioContext & { setSinkId?: (id: string | { type: string }) => Promise<void> }) | null = null
   /** True while a PortAudio stream with an output side is active. */
   private portAudioActive = false
   /** Diagnostics: worklet messages forwarded to pushSoftmix since bridge start. */
   private smFrames = 0
-  /** Diagnostics: rolling peak |sample| seen in forwarded PCM (reset on read). */
+  /** Diagnostics: decaying peak |sample| in forwarded PCM (NOT reset on read). */
   private smPeak = 0
 
   constructor() {
@@ -68,9 +66,10 @@ class AudioEngine {
   }
 
   /**
-   * Connect an AudioWorklet tap to the Tone.js master bus and silence the
-   * native Web Audio output (setSinkId none).  The worklet forwards PCM to
-   * window.nativeAudio.pushSoftmix() → PortAudio ring → physical speakers.
+   * Connect an AudioWorklet tap to the Tone.js master bus. The worklet forwards
+   * PCM to window.nativeAudio.pushSoftmix() → PortAudio ring → physical
+   * speakers. (The Web Audio sink itself is silenced at context creation in
+   * toneNativeContext.ts — Electron never plays through system devices.)
    *
    * No-op if window.nativeAudio is unavailable (non-Electron environments keep
    * the default Web Audio output path).
@@ -109,12 +108,15 @@ class AudioEngine {
       worklet.port.onmessage = (e: MessageEvent<{ samples: ArrayBuffer }>) => {
         const buf = e.data?.samples
         if (!buf || !this.portAudioActive) return
-        // Diagnostics BEFORE transfer — pushSoftmix detaches the buffer.
+        // Diagnostics scan (buffer is structured-clone copied, not detached).
+        // Decaying peak — same scheme as utilityHost (~−33 dB/s at 375 msg/s).
         const a = new Float32Array(buf)
+        let msgPeak = 0
         for (let i = 0; i < a.length; i++) {
           const v = a[i] < 0 ? -a[i] : a[i]
-          if (v > this.smPeak) this.smPeak = v
+          if (v > msgPeak) msgPeak = v
         }
+        this.smPeak = Math.max(msgPeak, this.smPeak * 0.99)
         this.smFrames++
         window.nativeAudio!.pushSoftmix(buf)
       }
@@ -126,12 +128,9 @@ class AudioEngine {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(Tone.getDestination() as any).connect(worklet)
 
-      // ── Step 5: route Web Audio sink to match the PortAudio stream state ──
-      // Stream active → sink 'none' (PortAudio owns the hardware, softmix plays
-      // through the user-selected output device). Stream inactive → default sink
-      // so Tone.js is still audible before a device is opened.
-      this.rawCtx = rawCtx as typeof this.rawCtx
-      await this.applySink()
+      // Sink note: the Web Audio sink is permanently 'none' in Electron —
+      // silenced at context creation in toneNativeContext.ts. All audible
+      // program sound exits ONLY via this worklet → PortAudio.
 
       console.log('[audioEngine] PortAudio output bridge active')
     } catch (err) {
@@ -141,47 +140,28 @@ class AudioEngine {
 
   /**
    * Called when the PortAudio stream opens/closes (App subscribes to
-   * nativeAudioController state). Active → silence Web Audio output and feed
-   * the softmix bridge; inactive → restore the system-default sink so Tone.js
-   * remains audible without a stream.
+   * nativeAudioController state). Only gates the worklet → pushSoftmix feed:
+   * with no stream the ring isn't drained, so pushing would leave stale audio
+   * that bursts out on the next stream open. The Web Audio sink itself is
+   * permanently 'none' in Electron (toneNativeContext.ts).
    */
   setPortAudioActive(active: boolean): void {
-    if (this.portAudioActive === active) return
     this.portAudioActive = active
-    void this.applySink()
-  }
-
-  private async applySink(): Promise<void> {
-    const ctx = this.rawCtx
-    if (!ctx || typeof ctx.setSinkId !== 'function') return
-    try {
-      if (this.portAudioActive) {
-        await ctx.setSinkId({ type: 'none' })
-        console.log('[audioEngine] Web Audio output silenced (routing via PortAudio)')
-      } else {
-        await ctx.setSinkId('') // '' = system default device
-        console.log('[audioEngine] Web Audio output → system default (no PortAudio stream)')
-      }
-    } catch (err) {
-      console.warn('[audioEngine] setSinkId failed — audio may play on the wrong device:', err)
-    }
   }
 
   /**
-   * Bridge health snapshot for the Settings diagnostics row. `peak` is the max
-   * |sample| forwarded since the previous call (read-and-reset), so the UI can
-   * poll it as a simple level meter. All values are cheap counters — safe to
-   * poll a few times per second.
+   * Bridge health snapshot for the Settings diagnostics row. `peak` is a
+   * decaying max |sample| (NOT reset on read — safe for any number of
+   * concurrent readers). All values are cheap counters.
    */
   getBridgeStats(): { bridgeUp: boolean; routingToPortAudio: boolean; framesSent: number; peak: number; contextState: string } {
     const peak = this.smPeak
-    this.smPeak = 0
     return {
       bridgeUp: this.workletNode !== null,
       routingToPortAudio: this.portAudioActive,
       framesSent: this.smFrames,
       peak,
-      contextState: this.rawCtx?.state ?? nativeToneContext.state,
+      contextState: nativeToneContext.state,
     }
   }
 

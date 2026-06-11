@@ -41,6 +41,13 @@ function loadAddon() {
 
 // === Stream / data plane state ===
 let audioDataPort = null      // MessagePortMain owned utility-side, port2 is in renderer
+// Diagnostics: softmix-in messages that reached this process + DECAYING peak
+// of their samples. Lets the UI pinpoint whether renderer→utility delivery is
+// alive without rebuilding the addon. The peak decays per message instead of
+// resetting on read — getStats is polled at 30 fps by the VU-meter loop, so a
+// read-and-reset value would almost always report silence.
+let softmixReceived = 0
+let softmixPeak = 0
 let pcmStreamId = 0
 let firstChunkSent = false    // attach Pa_GetStreamInfo() latency to the FIRST PCM frame only
 let paInitialized = false
@@ -95,7 +102,20 @@ function doOpenStream(opts, port1) {
     // Softmix: Tone.js / Web Audio output captured by AudioWorklet.
     if (pmsg.kind === 'softmix-in') {
       if (!a.isStreamActive?.()) return
-      try { a.pushSoftmix(new Float32Array(pmsg.payload)) } catch { /* ignore */ }
+      try {
+        const samples = new Float32Array(pmsg.payload)
+        softmixReceived++
+        let msgPeak = 0
+        for (let i = 0; i < samples.length; i++) {
+          const v = samples[i] < 0 ? -samples[i] : samples[i]
+          if (v > msgPeak) msgPeak = v
+        }
+        // ~375 msgs/s × 0.99 ≈ −33 dB/s decay: readable at any polling rate.
+        softmixPeak = Math.max(msgPeak, softmixPeak * 0.99)
+        a.pushSoftmix(samples)
+      } catch (e) {
+        if (softmixReceived <= 1) console.error('[utility] pushSoftmix error:', e)
+      }
       return
     }
 
@@ -290,9 +310,14 @@ process.parentPort.on('message', (event) => {
       }
 
       // A4.5: stats snapshot — xrunCount, dropCount, bufferFillPct, cpuLoad.
+      // Extended with utility-side softmix delivery counters (no addon rebuild):
+      // softmixReceived (messages since launch), softmixPeak (decaying max
+      // |sample|; NOT reset on read — getStats is polled at 30 fps by VU meters).
       case 'getStats': {
-        try { reply(id, loadAddon().getStats()) }
-        catch { reply(id, { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 }) }
+        let stats
+        try { stats = loadAddon().getStats() }
+        catch { stats = { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 } }
+        reply(id, { ...stats, softmixReceived, softmixPeak })
         return
       }
 
