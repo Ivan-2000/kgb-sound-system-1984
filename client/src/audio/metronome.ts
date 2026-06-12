@@ -77,11 +77,16 @@ class Metronome {
 
     const beatDuration = this.beatDurationNotation()
     this.scheduleId = Tone.getTransport().scheduleRepeat((time) => {
-      const beat = this.currentBeat
+      // Position-locked: derive the beat from the transport position at `time`
+      // (not a self-incrementing counter) — keeps the click phase-locked to the
+      // drums and timeline regardless of where playback starts.
+      const beatSec = Tone.Time(beatDuration).toSeconds()
+      const posSec = Tone.getTransport().getSecondsAtTime(time)
+      const beat = Math.max(0, Math.round(posSec / beatSec)) % this.timeSignature.beats
       if (this.enabled && this.soundEnabled) {
         this.playClick(beat === 0, time)
       }
-      this.currentBeat = (beat + 1) % this.timeSignature.beats
+      this.currentBeat = beat
       this.emitChange()
     }, beatDuration)
   }

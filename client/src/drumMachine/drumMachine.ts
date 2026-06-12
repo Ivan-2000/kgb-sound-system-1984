@@ -83,6 +83,9 @@ const slotHasContent = (slot: PatternSlot): boolean =>
 
 export class DrumMachine {
   private currentStep = 0
+  /** Anchor for position-locked stepping: transport position 0 maps to this
+   *  step (0 for local play; a late joiner anchors at the room's current step). */
+  private stepOffset = 0
   private loaded = false
   private running = false
   private swing = 0
@@ -156,10 +159,15 @@ export class DrumMachine {
     await this.loadSamples()
     this.ensureScheduled()
     const rawStep = options.step ?? 0
-    this.currentStep =
+    const startStep =
       Number.isInteger(rawStep) && rawStep >= 0 && rawStep < this.activeSlot.stepCount
         ? rawStep
         : 0
+    // Position-locked: the step is DERIVED from the transport position in the
+    // schedule callback (metronome → drums → timeline stay phase-locked, and
+    // record == replay). stepOffset anchors transport position 0 to startStep.
+    this.stepOffset = startStep
+    this.currentStep = startStep
     this.running = true
     this.emitChange()
   }
@@ -344,18 +352,35 @@ export class DrumMachine {
   private installSchedule() {
     // No loop ownership here: the drum used to set Tone.getTransport().loop +
     // setLoopPoints, which made multiple instances fight over the global loop.
-    // Each instance now just self-increments its step on every 16th; the loop
-    // region (if any) belongs solely to the Timeline (audioEngine.setLoopRegion).
+    // The loop region (if any) belongs solely to the Timeline.
+    //
+    // Position-locked stepping: the step is DERIVED from the transport position
+    // at the scheduled `time` (not self-incremented), so the sequencer is a pure
+    // function of the transport — metronome, drums and timeline clips stay in
+    // phase, and replay reproduces exactly what was recorded.
     this.scheduleId = Tone.getTransport().scheduleRepeat((time) => {
-      this.playStep(this.currentStep, time)
-      const nextStep = (this.currentStep + 1) % this.activeSlot.stepCount
+      // Gate on running: the schedule outlives stop() (cleared only on
+      // reschedule/dispose), and the transport may roll without the drums
+      // (timeline-local play).
+      if (!this.running) return
 
-      if (nextStep === 0 && this.chain !== null && this.chain.length > 0) {
-        this.chainPosition = (this.chainPosition + 1) % this.chain.length
-        this.activePatternIndex = this.chain[this.chainPosition]
+      const sixteenthSec = Tone.Time('16n').toSeconds()
+      const posSec = Tone.getTransport().getSecondsAtTime(time)
+      const globalIdx = Math.max(0, Math.round(posSec / sixteenthSec)) + this.stepOffset
+      const sc = this.activeSlot.stepCount
+
+      // Chain: pattern cycle is derived too (deterministic at any position).
+      if (this.chain !== null && this.chain.length > 0) {
+        const pos = Math.floor(globalIdx / sc) % this.chain.length
+        if (pos !== this.chainPosition) {
+          this.chainPosition = pos
+          this.activePatternIndex = this.chain[pos]
+        }
       }
 
-      this.currentStep = nextStep
+      const step = globalIdx % this.activeSlot.stepCount
+      this.playStep(step, time)
+      this.currentStep = step
       this.emitChange()
     }, '16n')
   }

@@ -293,6 +293,36 @@ function App() {
     }
   }
 
+  // Finalise one recording: stop the recorder, write real duration + waveform
+  // into the clip, apply latency compensation, sync the result to peers.
+  // Called from disarm AND from transport Stop (stop ends recording, DAW-style).
+  const finishRecording = (key: string) => {
+    if (!key.startsWith('local:') || window.nativeAudio === undefined) return
+    stopLiveWaveform(key)
+    const channelIdx = Number(key.slice(6))
+    const result = recorder.stop(channelIdx)
+    if (!result) return
+    const realDur = Math.max(0.2, result.durSec)
+    const store = getTimeline(TIMELINE_NODE_ID)
+    // T5: full round-trip compensation. The musician plays along with a mix
+    // they hear OUTPUT-latency late, and their signal lands INPUT-latency
+    // late — shift the clip back by both so replay lines up with the drums.
+    const snap = nativeAudioController.getSnapshot()
+    const latencySec = ((snap.inputLatencyMs ?? 0) + (snap.outputLatencyMs ?? 0)) / 1000
+    const currentClip = store?.getState().clips.find((c) => c.id === result.clipId)
+    const startSec = currentClip
+      ? Math.max(0, currentClip.startSec - latencySec)
+      : undefined
+    const patch = { proxy: false, durSec: realDur, ...(startSec !== undefined && { startSec }) }
+    // peaks stay local-only (not in the sync patch — peers get the WAV file).
+    store?.getState().updateClip(result.clipId, { ...patch, peaks: result.peaks })
+    if (roomState.roomId && !roomState.isLocalRoom) {
+      sendClipUpdate(result.clipId, patch)
+      const blob = clipAudio.get(result.clipId)
+      if (blob) sendClipFileSync(result.clipId, blob)
+    }
+  }
+
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
     if (!nativeSnapshot.streamActive) {
@@ -691,6 +721,12 @@ function App() {
     }
 
     if (isPlaying) {
+      // Stop also ends any active recording (DAW behaviour): finalise armed
+      // channels' clips before halting the transport.
+      if (armed.size > 0) {
+        for (const k of armed) finishRecording(k)
+        setArmed(new Set())
+      }
       const step = getDrum(DRUM_NODE_ID)?.getState().currentStep ?? 0
       audioEngine.stop()
       forEachDrum((d) => d.stop())
@@ -1210,34 +1246,35 @@ function App() {
     return { clipId, name, color, startSec }
   }
 
-  // toggleArmed is async: it may need to open the PortAudio stream before recording.
-  // Callers pass the result to void or await — both are fine (React onClick ignores promises).
+  // toggleArmed is async: arming may roll the transport (preroll) before the
+  // recording starts. Callers pass the result to void or await — both are fine.
   const toggleArmed = async (key: string) => {
     const willArm = !armed.has(key)
-    setArmed((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-    // Side effect kept OUT of the state updater (updaters must be pure; StrictMode
-    // double-invokes them, which would create duplicate clips).
-    // pendingArmRef guards against rapid double-clicks: the second click arrives
-    // before the first state update commits, so both see willArm=true from the
-    // same stale armed state. The ref is cleared via microtask after synchronous
-    // event processing completes, allowing normal disarm→re-arm to still work.
-    if (willArm) {
-      if (pendingArmRef.current.has(key)) return
-      pendingArmRef.current.add(key)
 
+    if (!willArm) {
+      // Disarm: stop recording, finalise the clip (shared with transport Stop).
+      finishRecording(key)
+      setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
+      return
+    }
+
+    // Arm in flight (preroll can take seconds) — ignore further clicks until it
+    // settles. The ref MUST be cleared on every exit path, hence try/finally:
+    // a stuck key here silently disables Record forever.
+    if (pendingArmRef.current.has(key)) return
+    pendingArmRef.current.add(key)
+    setArmed((prev) => new Set(prev).add(key))
+    const revertArm = () => {
+      setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
+    }
+
+    try {
       // Record does NOT open the PortAudio stream itself — the stream is opened
       // when the user picks a device (DeviceSetupModal / Settings). Without an
       // open stream no PCM frames arrive, so prompt device setup and abort.
       if (key.startsWith('local:') && window.nativeAudio !== undefined) {
-        const snap = nativeAudioController.getSnapshot()
-        if (!snap.streamActive) {
-          setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
-          pendingArmRef.current.delete(key)
+        if (!nativeAudioController.getSnapshot().streamActive) {
+          revertArm()
           setShowDeviceSetup(true)
           return
         }
@@ -1251,8 +1288,7 @@ function App() {
           && !audioEngine.getState().isPlaying && !isStarting) {
         await handlePlayStop()
         if (!audioEngine.getState().isPlaying) {
-          setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
-          pendingArmRef.current.delete(key)
+          revertArm()
           return
         }
       }
@@ -1275,34 +1311,11 @@ function App() {
           clip: { id: clipId, startSec: armResult.startSec, durSec: 4, label: armResult.name, kind: 'audio', proxy: true },
         })
       }
-      queueMicrotask(() => pendingArmRef.current.delete(key))
-    } else {
-      // T2: stop recording and update the proxy clip with real duration.
-      if (key.startsWith('local:') && window.nativeAudio !== undefined) {
-        stopLiveWaveform(key)
-        const channelIdx = Number(key.slice(6))
-        const result = recorder.stop(channelIdx)
-        if (result) {
-          const realDur = Math.max(0.2, result.durSec)
-          const store = getTimeline(TIMELINE_NODE_ID)
-          // T5: shift clip startSec back by input device latency so the
-          // recorded audio aligns with when sound actually occurred.
-          const inputLatencySec = (nativeAudioController.getSnapshot().inputLatencyMs ?? 0) / 1000
-          const currentClip = store?.getState().clips.find((c) => c.id === result.clipId)
-          const startSec = currentClip
-            ? Math.max(0, currentClip.startSec - inputLatencySec)
-            : undefined
-          const patch = { proxy: false, durSec: realDur, ...(startSec !== undefined && { startSec }) }
-          // peaks stay local-only (not in the sync patch — peers get the WAV file).
-          store?.getState().updateClip(result.clipId, { ...patch, peaks: result.peaks })
-          // T4: notify peers of real duration, position, and WAV file
-          if (roomState.roomId && !roomState.isLocalRoom) {
-            sendClipUpdate(result.clipId, patch)
-            const blob = clipAudio.get(result.clipId)
-            if (blob) sendClipFileSync(result.clipId, blob)
-          }
-        }
-      }
+    } catch (err) {
+      revertArm()
+      console.error('[arm] failed:', err)
+    } finally {
+      pendingArmRef.current.delete(key)
     }
   }
 
