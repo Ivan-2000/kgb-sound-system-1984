@@ -107,7 +107,17 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [])
-  useEffect(() => { audioEngine.setLoopRegion(ls, le) }, [ls, le])
+  // Loop the transport ONLY when the user actually placed a loop region.
+  // Default (loopStart/loopEnd null) must NOT loop — otherwise playback silently
+  // wraps at the default 8 s marker and a longer take gets cut off. The ls/le
+  // fallbacks below are for rendering the markers, not for driving the transport.
+  useEffect(() => {
+    if (loopStart !== null && loopEnd !== null && loopEnd > loopStart) {
+      audioEngine.setLoopRegion(loopStart, loopEnd)
+    } else {
+      audioEngine.clearLoopRegion()
+    }
+  }, [loopStart, loopEnd])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
