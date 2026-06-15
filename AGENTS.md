@@ -2,10 +2,10 @@
 
 AI-agent working guide. **Read this first, then the authoritative docs below.**
 
-> **This file was rewritten 2026-06-01 to match the current strategy.** An older
-> version described an MVP "Zoom + Groovebox" with ASIO/VST/MIDI/recording
-> explicitly *out of scope* and a fixed UI layout. That is obsolete and was
-> contradicting the real project. Ignore any cached memory of it.
+> The node-graph / React-Flow canvas UI was **removed 2026-06-14** (see
+> `REFACTOR_PLAN.md`). The product is now **panels-first**. Ignore any cached
+> memory describing a "node graph", "cables", "Canvas view", or "ControlBus" —
+> that code no longer exists.
 
 ---
 
@@ -14,78 +14,56 @@ AI-agent working guide. **Read this first, then the authoritative docs below.**
 | Doc | Owns |
 |---|---|
 | `CLAUDE.md` | Hard rules (TypeScript, build facts, coding constraints, model policy) |
-| `TASKS.md` | Audio/network/recording phases — native engine (Stream A), mixer, recording, MIDI |
-| `TASKS_UI.md` | **The node-graph UI — the foundation (stream G).** Node contract, panels/canvas, node specs |
-| `client/src/graph/types.ts` | The node contract third-party nodes implement |
+| `TASKS.md` | Phase status, acceptance criteria, what's done / next (single source of truth) |
+| `docs/kgb_sound_system_85_application_architecture_v_2.md` | System architecture & signal path |
+| `docs/ADR_native_audio.md` | Native-audio decision record (PortAudio/IPC/process model) |
+| `AUDIT.md` | Code-audit findings (bugs to fix — "Wave 2") |
+| `REFACTOR_PLAN.md` | Log of the graph-removal refactor |
 
 If anything below conflicts with these, the docs win — and fix this file.
 
 ---
 
-## Core strategy — the node graph IS the UI foundation
+## Core strategy — panels-first
 
-**Every element/instrument is a NODE** — mixer, metronome, drum machine, timeline,
-piano roll, math/utility nodes, and more. Nodes:
+Each module is a **self-contained floating panel**: mixer, drum machine, timeline,
+metronome, video, chat, settings. There are **no links between modules** except the
+**shared project transport** (one BPM / clock / time-signature per room).
 
-- have typed **inputs/outputs** that differ per node (`audio` / `control` /
-  `trigger` / `value` / `midi`);
-- **exchange data** over connections;
-- can be authored by **third parties** — a developer who knows the contract writes
-  a node as a JS/TS module, drops it in, and the program understands and accepts it.
+- Window state (which panels are open, position, size, z, minimize) lives in
+  `client/src/panels/panelStore.ts` — **local only**, never synced.
+- Drum machine and timeline are **singletons** (`drumMachine/drumSingleton.ts`,
+  `timeline/timelineSingleton.ts`), imported directly. `drumNodes.ts` keeps only
+  the room-sync glue (`emitDrumSync` / `connectDrumRoom` / editable observable).
+- Room sync covers **engine/room state only** — transport/BPM/time-signature (host-gated),
+  drum pattern (LWW), timeline clips, chat, channel metadata. Not window layout.
 
-This node graph is the data model. There are **two views over the same graph**:
-
-- **Panels** — nodes shown as floating panels, no visible cables, in a preset
-  layout. For less-advanced users.
-- **Canvas** — the same nodes on a React-Flow board with cables, zoom, minimap.
-  For advanced users.
-
-Switching the view never changes the graph. The graph is shared per room
-(topology + params + positions sync); the chosen view and physical audio-device
-binding are personal. See `TASKS_UI.md` for the full design and `node-spec.md` /
-`ui-graph-first` in memory for decisions.
-
-**Signal model (hybrid):** `control`/`trigger`/`value`/`midi` flow locally through
-a `ControlBus` in the renderer; `audio` ports are routing *declarations* — real
-audio is mixed natively in the PortAudio engine, never through the JS graph.
+**Audio model:** instrument input → PortAudio → Opus → WebRTC DataChannel → peers.
+Tone.js/Web Audio drives the metronome/drums/timeline and is bridged into PortAudio
+output ("softmix"). See the architecture doc for the full path.
 
 ---
 
-## Current state (2026-06-01)
+## State
 
-- **Native audio engine** (PortAudio: ASIO / WASAPI / DirectSound / MME, CoreAudio,
-  ALSA) is **built through A6** — capture, Opus encode/decode, WebRTC DataChannel
-  transport, jitter buffer, round-trip latency. ASIO/VST/MIDI/recording/timeline are
-  **in scope** (roadmap), not excluded.
-- **Graph core G1–G3 done**: `client/src/graph/` (contract, ControlBus, NodeRegistry,
-  graphStore with a single synced mutation funnel). PanelsView + FloatingPanel render
-  from `graphStore`; `panelStore` was removed. Mixer/metronome/drum are built-in nodes.
-- **Mixer node** = horizontal rack of vertical strips; each strip = vertical volume
-  fader + peak meter + M/S/→ buttons + small pan knob + round record button; tinted by
-  the participant's deterministic color. Master = same strip (volume + pan + record),
-  no slots. Per-channel record → timeline track (lands with the Timeline node).
-- Next per build order: Timeline skeleton → Piano Roll + drum midi-in → math/util nodes.
+For phase status and what's done/next, see **`TASKS.md`** (do not duplicate it here).
+For known bugs and their severity, see **`AUDIT.md`**.
 
 ---
 
-## Still-valid technical guardrails
+## Technical guardrails
 
-- **TypeScript only, no `any`** in client code. Server is CommonJS.
-- **Zod-validate every socket event** on the server (`safeParse`) before touching room state.
-- **Audio timing is independent from React renders** — no `setState` inside Tone.js
-  callbacks or audio loops; use refs for values read in audio callbacks. Schedule with
-  Tone.js / Web Audio primitives, not `setTimeout`/render loops.
-- **Keep subsystems isolated** — audio, drum machine, networking, RTC, video, mixer,
-  protocol, graph, UI. No Socket.IO/WebRTC/sync logic directly inside React components.
-- **Sync the graph, not the signals** — host gates transport/BPM; collaborative edits
-  use Last-Write-Wins; received remote events are never blindly rebroadcast.
-- **Asset paths relative** (`./samples/...`); `base: './'` in vite.config.ts; Electron
-  renderer has no Node access (contextIsolation/sandbox on).
+The hard rules (TypeScript/no-`any`, Zod on every socket event, audio timing off the
+React render path, relative asset paths, `base: './'`, host-gated room events) live in
+**`CLAUDE.md`** — that's the single source, not duplicated here. Two panels-era reminders
+on top of it: keep subsystems isolated (no Socket.IO/WebRTC/sync logic inside React
+components), and sync room state, not signals (collaborative edits use Last-Write-Wins;
+remote events are never blindly rebroadcast).
 
 ---
 
 ## Workflow
 
-Before a task: read `CLAUDE.md`, `TASKS.md`, `TASKS_UI.md`; find the relevant phase/stream.
-After a task: update the relevant TASKS doc (mark done, add discovered subtasks, keep
-acceptance criteria current). The TASKS docs are the live tracker, not static.
+Before a task: read `CLAUDE.md`, `TASKS.md`; find the relevant phase/stream.
+After a task: update `TASKS.md` (mark done, add discovered subtasks, keep acceptance
+criteria current). TASKS.md is the live tracker, not static.

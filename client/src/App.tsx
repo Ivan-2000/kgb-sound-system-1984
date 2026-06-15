@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState, lazy, Suspense, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { audioEngine } from './audio/audioEngine'
 import { metronome, COMMON_TIME_SIGNATURES, type MetronomeState, type TimeSignature } from './audio/metronome'
 import {
-  getDrum,
-  forEachDrum,
   connectDrumRoom,
   disconnectDrumRoom,
   setDrumEditable,
   type DrumSyncCmd,
 } from './drumMachine/drumNodes'
+import { drumMachine } from './drumMachine/drumSingleton'
 import { roomSyncClient, type RoomState, type RoomParticipant } from './networking/roomSyncClient'
 import { peerManager } from './rtc/peerManager'
 import { nativeRtcManager } from './rtc/nativeRtcManager'
@@ -19,7 +18,7 @@ import { MixerChannel } from './components/MixerChannel'
 import { LocalMixerStrip } from './components/LocalMixerStrip'
 import { RemoteChannelStrip } from './components/RemoteChannelStrip'
 import { MixerStrip } from './components/MixerStrip'
-import { getTimeline, setPendingTimelineClips } from './timeline/timelineNodes'
+import { timelineStore } from './timeline/timelineSingleton'
 import { TimelinePanel } from './components/TimelinePanel'
 import {
   sendClipAdd, sendClipUpdate, sendClipFile as sendClipFileSync,
@@ -36,16 +35,10 @@ import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
 import { PanelsView } from './panels/PanelsView'
 import type { PanelContentFn } from './panels/PanelsView'
-import { useGraphStore, nodeRegistry, registerBuiltinNodes, setClientTag, connectGraphSync, disconnectGraphSync, hydrateGraph } from './graph'
+import { usePanelStore, PANEL_IDS, PANEL_META } from './panels/panelStore'
+import { DrumMachineContainer } from './drumMachine/DrumMachineContainer'
 
-// Canvas view (G4) is lazy-loaded so React Flow stays out of the startup bundle.
-const CanvasView = lazy(() => import('./canvas/CanvasView'))
-
-// The drum machine is a singleton node → its node id equals its type. App reaches
-// the per-node engine through the drumNodes registry (getDrum / forEachDrum).
-const DRUM_NODE_ID = 'drum-machine'
-// Primary Timeline node id (singleton); the Mixer's Record button targets it.
-const TIMELINE_NODE_ID = 'timeline'
+// Drum machine and timeline are singletons (imported directly).
 
 type LocalParticipant = RoomParticipant & { micEnabled: boolean; cameraEnabled: boolean; hostMuted: boolean }
 type RemoteChannelMeta = { channelCount: number; channelNames: string[] }
@@ -275,7 +268,7 @@ function App() {
   const startLiveWaveform = (key: string, channelIdx: number, clipId: string) => {
     liveRecRef.current.set(key, { channelIdx, clipId })
     liveTimerRef.current ??= setInterval(() => {
-      const store = getTimeline(TIMELINE_NODE_ID)
+      const store = timelineStore
       if (!store) return
       for (const rec of liveRecRef.current.values()) {
         const live = recorder.getLive(rec.channelIdx)
@@ -303,7 +296,7 @@ function App() {
     const result = recorder.stop(channelIdx)
     if (!result) return
     const realDur = Math.max(0.2, result.durSec)
-    const store = getTimeline(TIMELINE_NODE_ID)
+    const store = timelineStore
     // T5: full round-trip compensation. The musician plays along with a mix
     // they hear OUTPUT-latency late, and their signal lands INPUT-latency
     // late — shift the clip back by both so replay lines up with the drums.
@@ -560,12 +553,11 @@ function App() {
     () =>
       roomSyncClient.subscribeSyncEvents(async (event) => {
         if (event.type === 'step_toggle') {
-          const id = event.payload.nodeId ?? DRUM_NODE_ID
-          const lwwKey = `${id}:${event.payload.track}-${event.payload.step}`
+          const lwwKey = `${event.payload.track}-${event.payload.step}`
           const previousTimestamp = stepLwwRef.current.get(lwwKey) ?? 0
           if (event.timestamp >= previousTimestamp) {
             stepLwwRef.current.set(lwwKey, event.timestamp)
-            getDrum(id)?.toggleStep(event.payload.track, event.payload.step, event.payload.value)
+            drumMachine.toggleStep(event.payload.track, event.payload.step, event.payload.value)
           }
           return
         }
@@ -579,9 +571,7 @@ function App() {
         if (event.type === 'transport_play') {
           // App owns the project transport; each drum just arms its sequencer.
           await audioEngine.play({ position: 0 })
-          const starts: Promise<void>[] = []
-          forEachDrum((d) => starts.push(d.start({ step: event.payload.step })))
-          await Promise.all(starts)
+          await drumMachine.start({ step: event.payload.step })
           metronome.start()
           setIsPlaying(true)
           return
@@ -589,7 +579,7 @@ function App() {
 
         if (event.type === 'transport_stop') {
           audioEngine.stop()
-          forEachDrum((d) => d.stop())
+          drumMachine.stop()
           metronome.stop()
           setIsPlaying(false)
           return
@@ -606,26 +596,25 @@ function App() {
         }
 
         if (event.type === 'step_count_change') {
-          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setStepCount(event.payload.stepCount)
+          drumMachine.setStepCount(event.payload.stepCount)
           return
         }
 
         if (event.type === 'swing_change') {
-          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setSwing(event.payload.swing)
+          drumMachine.setSwing(event.payload.swing)
           return
         }
 
         if (event.type === 'pattern_switch') {
-          const id = event.payload.nodeId ?? DRUM_NODE_ID
-          getDrum(id)?.switchPattern(event.payload.patternIndex)
-          // Clear only this drum's LWW so stale timestamps from its previous pattern don't bleed
-          clearDrumLww(id)
+          drumMachine.switchPattern(event.payload.patternIndex)
+          // Clear drum LWW so stale timestamps from the previous pattern don't bleed
+          clearDrumLww()
           return
         }
 
         if (event.type === 'velocity_change') {
           try {
-            getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setVelocity(event.payload.track, event.payload.step, event.payload.velocity)
+            drumMachine.setVelocity(event.payload.track, event.payload.step, event.payload.velocity)
           } catch {
             // step out of range for current pattern length — stale event, ignore
           }
@@ -643,7 +632,7 @@ function App() {
         }
 
         if (event.type === 'chain_set') {
-          getDrum(event.payload.nodeId ?? DRUM_NODE_ID)?.setChain(event.payload.chain)
+          drumMachine.setChain(event.payload.chain)
           return
         }
 
@@ -673,12 +662,10 @@ function App() {
     return logicalClockRef.current
   }
 
-  // step_toggle LWW is keyed `${nodeId}:${track}-${step}`. On a pattern switch we
-  // drop only the switching drum's entries so stale timestamps don't bleed.
-  const clearDrumLww = (nodeId: string) => {
-    for (const key of [...stepLwwRef.current.keys()]) {
-      if (key.startsWith(`${nodeId}:`)) stepLwwRef.current.delete(key)
-    }
+  // step_toggle LWW is keyed `${track}-${step}`. On a pattern switch we drop all
+  // entries so stale timestamps from the previous pattern don't bleed.
+  const clearDrumLww = () => {
+    stepLwwRef.current.clear()
   }
 
   const emitSyncEvent = async (
@@ -703,9 +690,7 @@ function App() {
   // every drum instance's sequencer. The drums no longer touch Tone.Transport.
   const startAllDrums = async () => {
     await audioEngine.play({ position: 0 })
-    const starts: Promise<void>[] = []
-    forEachDrum((d) => starts.push(d.start()))
-    await Promise.all(starts)
+    await drumMachine.start()
     metronome.start()
   }
 
@@ -727,9 +712,9 @@ function App() {
         for (const k of armed) finishRecording(k)
         setArmed(new Set())
       }
-      const step = getDrum(DRUM_NODE_ID)?.getState().currentStep ?? 0
+      const step = drumMachine.getState().currentStep
       audioEngine.stop()
-      forEachDrum((d) => d.stop())
+      drumMachine.stop()
       metronome.stop()
       setIsPlaying(false)
       await emitSyncEvent({ type: 'transport_stop', payload: { step } })
@@ -748,7 +733,7 @@ function App() {
         // Ensure the engine is stopped regardless of where in the sequence it failed.
         // audioEngine.stop() is a no-op if it wasn't started yet (preroll cancel path).
         audioEngine.stop()
-        forEachDrum((d) => d.stop())
+        drumMachine.stop()
         metronome.stop()
         if (!(err instanceof Error && err.message === 'PREROLL_CANCELLED')) {
           setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
@@ -765,7 +750,7 @@ function App() {
       await emitSyncEvent({ type: 'transport_play', payload: { step: 0 } })
     } catch (err) {
       audioEngine.stop()
-      forEachDrum((d) => d.stop())
+      drumMachine.stop()
       metronome.stop()
       setNetworkError(err instanceof Error ? err.message : 'TRANSPORT_FAILED')
     } finally {
@@ -826,36 +811,36 @@ function App() {
   // Host-gating is enforced in the panel (disabled), driven by setDrumEditable.
   // A latest-ref keeps the closure fresh (emitSyncEvent closes over roomState)
   // while connectDrumRoom is wired only once.
-  const drumEmitRef = useRef<(nodeId: string, cmd: DrumSyncCmd) => void>(() => {})
-  drumEmitRef.current = (nodeId: string, cmd: DrumSyncCmd) => {
+  const drumEmitRef = useRef<(cmd: DrumSyncCmd) => void>(() => {})
+  drumEmitRef.current = (cmd: DrumSyncCmd) => {
     switch (cmd.type) {
       case 'step_toggle': {
         const timestamp = nextLogicalTimestamp()
-        stepLwwRef.current.set(`${nodeId}:${cmd.track}-${cmd.step}`, timestamp)
-        void emitSyncEvent({ type: 'step_toggle', payload: { nodeId, track: cmd.track, step: cmd.step, value: cmd.value }, timestamp })
+        stepLwwRef.current.set(`${cmd.track}-${cmd.step}`, timestamp)
+        void emitSyncEvent({ type: 'step_toggle', payload: { track: cmd.track, step: cmd.step, value: cmd.value }, timestamp })
         break
       }
       case 'velocity_change':
-        void emitSyncEvent({ type: 'velocity_change', payload: { nodeId, track: cmd.track, step: cmd.step, velocity: cmd.velocity } })
+        void emitSyncEvent({ type: 'velocity_change', payload: { track: cmd.track, step: cmd.step, velocity: cmd.velocity } })
         break
       case 'pattern_switch':
-        clearDrumLww(nodeId)
-        void emitSyncEvent({ type: 'pattern_switch', payload: { nodeId, patternIndex: cmd.patternIndex } })
+        clearDrumLww()
+        void emitSyncEvent({ type: 'pattern_switch', payload: { patternIndex: cmd.patternIndex } })
         break
       case 'step_count_change':
-        void emitSyncEvent({ type: 'step_count_change', payload: { nodeId, stepCount: cmd.stepCount } })
+        void emitSyncEvent({ type: 'step_count_change', payload: { stepCount: cmd.stepCount } })
         break
       case 'swing_change':
-        void emitSyncEvent({ type: 'swing_change', payload: { nodeId, swing: cmd.swing } })
+        void emitSyncEvent({ type: 'swing_change', payload: { swing: cmd.swing } })
         break
       case 'chain_set':
-        void emitSyncEvent({ type: 'chain_set', payload: { nodeId, chain: cmd.chain } })
+        void emitSyncEvent({ type: 'chain_set', payload: { chain: cmd.chain } })
         break
     }
   }
 
   useEffect(() => {
-    connectDrumRoom({ emit: (nodeId, cmd) => drumEmitRef.current(nodeId, cmd) })
+    connectDrumRoom({ emit: (cmd) => drumEmitRef.current(cmd) })
     return () => disconnectDrumRoom()
   }, [])
 
@@ -882,7 +867,7 @@ function App() {
 
   const handleClear = () => {
     // Local-only, host-gated via the button (existing behaviour — not synced).
-    getDrum(DRUM_NODE_ID)?.clearPattern()
+    drumMachine.clearPattern()
   }
 
   const acquireLocalStream = async () => {
@@ -1044,35 +1029,25 @@ function App() {
 
   const applySyncSnapshot = async (snapshot: SyncStateSnapshot | null) => {
     if (!snapshot) return
-    // Node graph: hydrate room topology from the join snapshot (G2/G3)
-    hydrateGraph(snapshot)
-    // Timeline clips (T4): store for hydration when the timeline panel first opens
-    setPendingTimelineClips(snapshot.timelineClips?.['timeline'] ?? null)
+    // Timeline clips (T4): apply room clip state directly to the singleton store
+    // (the timeline exists from app start, so there's no "pending" window).
+    const clipState = snapshot.timelineClips?.['timeline']
+    if (clipState) {
+      const tl = timelineStore.getState()
+      for (const clip of Object.values(clipState)) {
+        const trackId = tl.ensureTrack(clip.trackKey, { name: clip.trackName, kind: clip.trackKind, color: clip.trackColor })
+        tl.addClipWithId({ id: clip.id, trackId, startSec: clip.startSec, durSec: clip.durSec, label: clip.label, kind: clip.kind, proxy: clip.proxy })
+      }
+    }
 
-    // Ensure the primary drum instance exists (it may not be in the hydrated
-    // graph yet) so the room's pattern/swing/chain land in a live engine even
-    // before the user opens the panel. Duplicated drums come in via hydrateGraph.
-    useGraphStore.getState().preloadNodeByType('drum-machine')
-    // Per-node drum state: iterate the `drums` map (primary + duplicates). Fall
-    // back to the legacy top-level fields if an older server omits `drums`.
-    const drumsSnap = snapshot.drums ?? {
-      [DRUM_NODE_ID]: {
-        patternBank: snapshot.patternBank,
-        activePatternIndex: snapshot.activePatternIndex,
-        swing: snapshot.swing,
-        chain: snapshot.chain,
-      },
-    }
-    for (const [id, d] of Object.entries(drumsSnap)) {
-      const inst = getDrum(id)
-      if (!inst) continue
-      inst.setPatternBank(
-        d.patternBank as Parameters<typeof inst.setPatternBank>[0],
-        d.activePatternIndex,
-      )
-      inst.setSwing(d.swing ?? 0)
-      inst.setChain(d.chain ?? null)
-    }
+    // The drum singleton already exists (created at import), so the room's
+    // pattern/swing/chain land in a live engine even before the panel opens.
+    drumMachine.setPatternBank(
+      snapshot.patternBank as Parameters<typeof drumMachine.setPatternBank>[0],
+      snapshot.activePatternIndex,
+    )
+    drumMachine.setSwing(snapshot.swing ?? 0)
+    drumMachine.setChain(snapshot.chain ?? null)
     const safeBpm = audioEngine.setBpm(snapshot.bpm)
     setBpm(safeBpm)
     metronome.setTimeSignature(snapshot.timeSignature as TimeSignature)
@@ -1080,61 +1055,37 @@ function App() {
 
     if (snapshot.isPlaying) {
       await audioEngine.play({ position: 0 })
-      const starts: Promise<void>[] = []
-      forEachDrum((d) => starts.push(d.start({ step: snapshot.currentStep })))
-      await Promise.all(starts)
+      await drumMachine.start({ step: snapshot.currentStep })
       metronome.start()
       setIsPlaying(true)
       return
     }
 
     audioEngine.stop()
-    forEachDrum((d) => d.stop())
+    drumMachine.stop()
     metronome.stop()
     setIsPlaying(false)
   }
 
   const inRoom = Boolean(roomState.roomId)
   const selfSocketId = roomState.socketId
-  const openPanel = useGraphStore((s) => s.openNodeByType)
-  const preloadPanel = useGraphStore((s) => s.preloadNodeByType)
-  const viewMode = useGraphStore((s) => s.viewMode)
-  const setViewMode = useGraphStore((s) => s.setViewMode)
+  const openPanel = usePanelStore((s) => s.open)
 
-  // Node graph: register built-in node types once (idempotent), before any node creation
-  useEffect(() => { registerBuiltinNodes() }, [])
-
-  // Node graph: activate room sync (G2/G3) BEFORE opening builtins, so their
-  // node_add mutations broadcast. Outgoing mutations → room:events; incoming →
-  // applyRemote. Local (settings) and per-client builtins don't depend on this.
-  useEffect(() => {
-    if (!inRoom || !selfSocketId) return
-    setClientTag(selfSocketId)
-    connectGraphSync()
-    return () => { disconnectGraphSync() }
-  }, [inRoom, selfSocketId])
-
-  // Node graph + timeline: reset on leaving a room so a rejoin starts clean (no
-  // stale nodes/positions or timeline tracks). Hydration repopulates shared nodes.
+  // Timeline: clear tracks/clips on leaving a room so a rejoin starts clean.
+  // Singletons (drum/timeline) live the whole session — no dispose, just clear.
   useEffect(() => {
     if (!inRoom) {
-      // Graph reset disposes node instances (incl. per-node Timeline stores).
-      useGraphStore.getState().reset()
+      usePanelStore.getState().reset()
+      timelineStore.getState().clear()
       usePianoRollStore.getState().clear()
-      // Discard any pending clip hydration from the previous room so it doesn't
-      // leak into a subsequent local session.
-      setPendingTimelineClips(null)
     }
   }, [inRoom])
 
-  // Open mixer; preload chat + drum (keeps their per-node instances mounted so
-  // room sync / snapshot state lands even before the user opens the panel).
+  // Open the mixer on entering a room. Chat stays mounted via PanelsView
+  // (keepMounted) so its room subscription lives even while the panel is closed.
   useEffect(() => {
     if (inRoom) {
       openPanel('mixer')
-      preloadPanel('chat')
-      preloadPanel('drum-machine')
-      preloadPanel('timeline') // so Mixer Record can arm the primary timeline before it's opened
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inRoom])
@@ -1230,14 +1181,11 @@ function App() {
       name = p ? p.username : 'Peer'
       color = participantColor(sid)
     }
-    // Record writes to the primary Timeline node — create and show it on demand
-    // so pressing Record on the mixer works even before the panel was opened.
-    let store = getTimeline(TIMELINE_NODE_ID)
-    if (!store) {
-      useGraphStore.getState().openNodeByType('timeline')
-      store = getTimeline(TIMELINE_NODE_ID)
-      if (!store) return null
-    }
+    // Record writes to the primary Timeline (singleton, always registered) — show
+    // its panel so pressing Record on the mixer surfaces the clip.
+    const store = timelineStore
+    if (!store) return null
+    usePanelStore.getState().open('timeline')
     const tl = store.getState()
     tl.pushHistory() // one undo step for the whole arm gesture (track + clip)
     const trackId = tl.ensureTrack(key, { name, kind: 'audio', color })
@@ -1283,7 +1231,7 @@ function App() {
       // DAW-style record: show the timeline and roll the FULL project transport
       // (preroll → click + drums + timeline clips), then start capturing. If the
       // user cancels mid-preroll, revert the arm.
-      useGraphStore.getState().openNodeByType('timeline')
+      usePanelStore.getState().open('timeline')
       if (key.startsWith('local:') && window.nativeAudio !== undefined
           && !audioEngine.getState().isPlaying && !isStarting) {
         await handlePlayStop()
@@ -1465,18 +1413,18 @@ function App() {
     </>
   )
 
-  // Built-in node UI, keyed by type. Shared by BOTH views (Panels + Canvas).
-  // Third-party nodes aren't here — they render via getNodeInstance().render().
+  // Содержимое floating-панелей, по PanelId. Рендерится из PanelsView.
   const panelContents: Record<string, PanelContentFn> = {
     mixer: () => mixerContent,
     chat: () => <ChatPanel selfSocketId={selfSocketId} />,
     metronome: () => metronomeContent,
-    settings: (panelId) => (
-      <SettingsModal onClose={() => useGraphStore.getState().closeNode(panelId)} />
+    'drum-machine': () => <DrumMachineContainer />,
+    settings: () => (
+      <SettingsModal onClose={() => usePanelStore.getState().close('settings')} />
     ),
     // Timeline gets transport props so its toolbar has Play/Stop and per-track R buttons.
     timeline: () => {
-      const tlStore = getTimeline(TIMELINE_NODE_ID)
+      const tlStore = timelineStore
       if (!tlStore) return null
       return (
         <TimelinePanel
@@ -1957,41 +1905,25 @@ function App() {
             </button>
             {addMenuOpen && (
               <div className="add-menu" role="menu">
-                {nodeRegistry.list().map((m) => (
+                {PANEL_IDS.map((id) => (
                   <button
-                    key={m.type}
+                    key={id}
                     type="button"
                     className="add-menu-item"
                     role="menuitem"
-                    onClick={() => { openPanel(m.type); setAddMenuOpen(false) }}
+                    onClick={() => { openPanel(id); setAddMenuOpen(false) }}
                   >
-                    <span className="add-menu-icon" aria-hidden="true">{m.icon}</span>
-                    <span>{m.label}</span>
+                    <span className="add-menu-icon" aria-hidden="true">{PANEL_META[id].icon}</span>
+                    <span>{PANEL_META[id].label}</span>
                   </button>
                 ))}
               </div>
             )}
           </div>
-
-          <button
-            type="button"
-            className={['ghost-action', 'toolbar-view-toggle', viewMode === 'canvas' ? 'is-active' : ''].filter(Boolean).join(' ')}
-            onClick={() => setViewMode(viewMode === 'panels' ? 'canvas' : 'panels')}
-            aria-label={viewMode === 'panels' ? 'Switch to Canvas mode' : 'Switch to Panels mode'}
-            aria-pressed={viewMode === 'canvas'}
-          >
-            {viewMode === 'panels' ? '⊞ Canvas' : '⧉ Panels'}
-          </button>
         </div>
       </section>
 
-      {viewMode === 'canvas' ? (
-        <Suspense fallback={<div className="cv-loading">Loading canvas…</div>}>
-          <CanvasView panelContents={panelContents} />
-        </Suspense>
-      ) : (
-        <PanelsView panelContents={panelContents} />
-      )}
+      <PanelsView panelContents={panelContents} />
       </>}
 
       {showDeviceSetup && (

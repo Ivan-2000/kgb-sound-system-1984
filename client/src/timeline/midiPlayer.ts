@@ -1,6 +1,6 @@
 import * as Tone from 'tone'
 import type { TimelineStoreApi } from './timelineStore'
-import { getDrum } from '../drumMachine/drumNodes'
+import { drumMachine } from '../drumMachine/drumSingleton'
 import type { DrumTrack } from '../drumMachine/drumMachine'
 
 /** Drum pitch → DrumTrack mapping (GM standard). */
@@ -24,8 +24,7 @@ const scheduledEventIds: number[] = []
 export function scheduleMidiClips(store: TimelineStoreApi): void {
   clearMidiClipSchedule()
 
-  const dm = getDrum('drum-machine')
-  if (!dm) return
+  const dm = drumMachine
 
   const { clips } = store.getState()
   const bpm = Tone.getTransport().bpm.value

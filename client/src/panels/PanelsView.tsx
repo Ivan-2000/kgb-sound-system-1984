@@ -1,36 +1,42 @@
 import type { ReactNode } from 'react'
-import { useGraphStore, getNodeInstance, nodeRegistry } from '../graph'
+import { usePanelStore, PANEL_IDS, PANEL_META, type PanelId } from './panelStore'
 import { FloatingPanel } from './FloatingPanel'
 
-/** Node types whose panel stays mounted while closed (preserves subscriptions). */
-const KEEP_MOUNTED = new Set<string>(['chat'])
+/** Panel ids whose content stays mounted while closed (preserves subscriptions). */
+const KEEP_MOUNTED = new Set<PanelId>(['chat'])
 
-/** Render function receives node id so content can wire close callbacks. */
-export type PanelContentFn = (nodeId: string) => ReactNode
+/**
+ * Render function for a panel's content. Keyed by PanelId (a string), so App's
+ * existing string-keyed map assigns без приведения типов.
+ */
+export type PanelContentFn = (id: string) => ReactNode
 
 export interface PanelsViewProps {
-  /** Built-in UI keyed by node type. Third-party nodes fall back to their own render(). */
+  /** UI keyed by panel id. Missing entry → panel is not rendered. */
   panelContents: Record<string, PanelContentFn>
 }
 
 export function PanelsView({ panelContents }: PanelsViewProps) {
-  const nodes = useGraphStore((s) => s.nodes)
+  const panels = usePanelStore((s) => s.panels)
 
   return (
     <div className="panels-layer">
-      {Object.values(nodes).map((node) => {
-        const manifest = nodeRegistry.get(node.type)?.manifest
-        const contentFn = panelContents[node.type]
-        const content = contentFn ? contentFn(node.id) : getNodeInstance(node.id)?.render() ?? null
+      {PANEL_IDS.map((id) => {
+        const p = panels[id]
+        const keep = KEEP_MOUNTED.has(id)
+        // Render only open panels (FloatingPanel handles the keepMounted hide).
+        if (!p.open && !keep) return null
+        const contentFn = panelContents[id]
+        if (!contentFn) return null
         return (
           <FloatingPanel
-            key={node.id}
-            id={node.id}
-            title={manifest?.label ?? node.type}
-            icon={manifest?.icon}
-            keepMounted={KEEP_MOUNTED.has(node.type)}
+            key={id}
+            id={id}
+            title={PANEL_META[id].label}
+            icon={PANEL_META[id].icon}
+            keepMounted={keep}
           >
-            {content}
+            {contentFn(id)}
           </FloatingPanel>
         )
       })}

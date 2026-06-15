@@ -1,13 +1,10 @@
 import { create } from 'zustand'
 
 /**
- * Piano Roll model — FL-style note editor (node #5).
+ * Piano Roll model — FL-style note editor.
  *
- * The Piano Roll is a STANDALONE MIDI source: it holds a grid of notes and, on
- * transport playback, emits {@link NoteEvent}s on its `notesOut` port (wired in
- * `pianoRollNode`). It carries no voice of its own — cable `notesOut` into any
- * `midi`-in (Drum Kit, Sampler, …) to hear it. LOCAL state for now (per-room
- * sync follows the timeline/graph sync work). See [[node-spec]].
+ * Used as the per-clip note editor opened from the Timeline (PR3): it holds a
+ * grid of notes for a MIDI clip. LOCAL state.
  *
  * Time is measured in 16th-note STEPS. `stepsPerBar` is 16 (4/4); `bars` sets
  * the loop length. Playback derives the current step from the shared transport

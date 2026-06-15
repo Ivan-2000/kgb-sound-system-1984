@@ -7,12 +7,10 @@ import type { PianoNote } from '../pianoRoll/pianoRollStore'
  * Tracks hold clips positioned in seconds. The mixer's Record button creates a
  * track + a proxy clip; real native capture → audio data (and per-room sync of
  * the recorded file) lands later. LOCAL state for now — timeline sync follows the
- * recording model. See [[node-spec]].
+ * recording model.
  *
- * PER-NODE (2026-06-02): each Timeline node owns its OWN store via
- * {@link createTimelineStore} (held in the node's `create()`), so duplicated
- * timelines are independent — mirrors the per-node Drum Machine. App reaches the
- * primary timeline through the `timelineNodes` registry (`getTimeline`).
+ * One primary timeline per session: the singleton lives in `timelineSingleton.ts`
+ * (`timelineStore`), imported directly by App / sync / the Mixer's Record button.
  */
 
 export type TrackKind = 'audio' | 'midi'

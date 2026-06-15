@@ -14,11 +14,12 @@ Musicians connect over the internet: shared drum machine, real-time audio/video,
 
 Stack: Electron + React + TypeScript + Vite (client), Node.js + Socket.IO (signaling server), WebRTC via simple-peer, Tone.js + Web Audio API.
 
-> **Current audio transport is a prototype.** Audio runs through browser `getUserMedia` + WebRTC MediaStream. The target architecture is native: PortAudio (ASIO / WASAPI / CoreAudio / ALSA) in the Electron main process, with Opus over WebRTC DataChannel. The native engine is the critical block of Phase 1 (Stream A in TASKS.md).
+> **Audio transport is native.** Audio runs through PortAudio (ASIO / WASAPI / CoreAudio / ALSA) in an Electron `utilityProcess`, with Opus over WebRTC DataChannel (A1–A6 done; see TASKS.md). Browser `getUserMedia` is used **only for video**. Known issues are tracked in `AUDIT.md`.
 
 Key docs:
-- `TASKS.md` — phase checklist, parallel streams, what's done and what's next (**authoritative**)
-- `kgb_sound_roadmap.md` — full spec with phases and acceptance criteria
+- `TASKS.md` — phase checklist, what's done and what's next (**authoritative**)
+- `docs/kgb_sound_system_85_application_architecture_v_2.md` — architecture & signal path
+- `AUDIT.md` — known bugs; `REFACTOR_PLAN.md` — graph-removal refactor log
 
 **Read TASKS.md before writing any code.** If a task spans multiple layers, read both sides first.
 

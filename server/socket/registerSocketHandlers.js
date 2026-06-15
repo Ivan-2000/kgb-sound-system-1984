@@ -14,6 +14,8 @@ const {
 
 const RATE_WINDOW_MS = 60_000
 const MAX_EVENTS_PER_WINDOW = 240
+// Upper bound on a relayed clip WAV (AUDIT §3.2). Matches io maxHttpBufferSize.
+const MAX_CLIP_BYTES = 16 * 1024 * 1024
 
 function buildInviteLink(shortCode) {
   const baseUrl = process.env.INVITE_BASE_URL || ''
@@ -54,6 +56,10 @@ function registerSocketHandlers(io, roomManager) {
 
   io.on('connection', (socket) => {
     socket.on('room:create', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       const parsed = createRoomSchema.safeParse(rawPayload)
       if (!parsed.success) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
@@ -80,6 +86,10 @@ function registerSocketHandlers(io, roomManager) {
     })
 
     socket.on('room:join', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       const parsed = joinRoomSchema.safeParse(rawPayload)
       if (!parsed.success) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
@@ -110,6 +120,10 @@ function registerSocketHandlers(io, roomManager) {
 
     // Join by 4-char short code (user-friendly alternative to UUID join)
     socket.on('room:join-by-code', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       const parsed = joinByCodeSchema.safeParse(rawPayload)
       if (!parsed.success) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
@@ -187,12 +201,16 @@ function registerSocketHandlers(io, roomManager) {
     // Binary WAV relay (T4): sender emits { clipId, data: ArrayBuffer }, server
     // relays to all room members except sender. Not stored server-side.
     socket.on('clip:file', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       if (!rawPayload || typeof rawPayload !== 'object') {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
         return
       }
       const meta = clipFileMetaSchema.safeParse({ clipId: rawPayload.clipId })
-      if (!meta.success || !Buffer.isBuffer(rawPayload.data)) {
+      if (!meta.success || !Buffer.isBuffer(rawPayload.data) || rawPayload.data.length > MAX_CLIP_BYTES) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
         return
       }
@@ -244,6 +262,10 @@ function registerSocketHandlers(io, roomManager) {
     })
 
     socket.on('chat_message', (rawPayload, ack) => {
+      if (!rateLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       const parsed = chatMessageSchema.safeParse(rawPayload)
       if (!parsed.success) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })

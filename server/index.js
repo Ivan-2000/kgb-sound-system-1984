@@ -20,6 +20,9 @@ const io = new Server(server, {
   cors: {
     origin: '*',
   },
+  // Bound per-message size (AUDIT §3.2). Big enough for recorded WAV clips
+  // relayed via `clip:file`, small enough to cap a single abusive payload.
+  maxHttpBufferSize: 16 * 1024 * 1024,
 })
 
 const roomManager = new RoomManager()

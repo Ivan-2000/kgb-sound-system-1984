@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { PointerEvent as RPointerEvent } from 'react'
-import { useGraphStore } from '../graph'
+import { usePanelStore, type PanelId } from './panelStore'
 import './panels.css'
 
 interface FloatingPanelProps {
-  id: string
+  id: PanelId
   title: string
   icon?: string
   children: ReactNode
@@ -13,31 +13,27 @@ interface FloatingPanelProps {
 }
 
 export function FloatingPanel({ id, title, icon, children, keepMounted = false }: FloatingPanelProps) {
-  const panel = useGraphStore((s) => s.nodes[id])
-  const isOpen = useGraphStore((s) => s.openNodes.includes(id))
+  const panel = usePanelStore((s) => s.panels[id])
   // Stable store references — no extra subscriptions
-  const { closeNode, focusNode, moveNode, resizeNode, toggleMinimize } = useGraphStore.getState()
+  const { close, focus, move, resize, toggleMinimize } = usePanelStore.getState()
 
   // Local pos/size drive rendering; synced from store on open/reopen
-  const [pos,  setPos]  = useState(() => panel?.panelPos ?? { x: 20, y: 60 })
-  const [size, setSize] = useState(() => panel?.size     ?? { w: 320, h: 480 })
+  const [pos,  setPos]  = useState(panel.pos)
+  const [size, setSize] = useState(panel.size)
 
   useEffect(() => {
-    // Read from store directly to avoid stale-closure deps on position/size
-    const stored = useGraphStore.getState().nodes[id]
-    if (!stored || !useGraphStore.getState().openNodes.includes(id)) return
-    setPos(stored.panelPos)
+    if (!panel.open) return
+    const stored = usePanelStore.getState().panels[id]
+    setPos(stored.pos)
     setSize(stored.size)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, isOpen])
+  }, [id, panel.open])
 
   // Drag state stored in a ref — no re-renders during motion
   const drag   = useRef<{ ox: number; oy: number; mx: number; my: number } | null>(null)
-  const resize = useRef<{ ox: number; oy: number; ow: number; oh: number } | null>(null)
+  const rsz    = useRef<{ ox: number; oy: number; ow: number; oh: number } | null>(null)
 
-  if (!panel) return null
-
-  if (!isOpen) {
+  if (!panel.open) {
     if (keepMounted) return <div style={{ display: 'none' }}>{children}</div>
     return null
   }
@@ -45,14 +41,14 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
   // Never let the panel overflow the viewport bottom
   const viewportH = typeof window !== 'undefined' ? window.innerHeight : 9999
   const maxH = Math.max(36, viewportH - pos.y - 8)
-  const displayH = panel.isMinimized ? 36 : Math.min(size.h, maxH)
+  const displayH = panel.minimized ? 36 : Math.min(size.h, maxH)
 
   // ── Drag handlers ────────────────────────────────────────────────
   function onTitleDown(e: RPointerEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).closest('button')) return   // let dot-buttons work
     e.currentTarget.setPointerCapture(e.pointerId)           // keep events even off-element
     drag.current = { ox: pos.x, oy: pos.y, mx: e.clientX, my: e.clientY }
-    focusNode(id)
+    focus(id)
   }
   function onTitleMove(e: RPointerEvent<HTMLDivElement>) {
     if (!drag.current) return
@@ -64,7 +60,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     const { ox, oy, mx, my } = drag.current
     const newPos = { x: ox + e.clientX - mx, y: oy + e.clientY - my }
     setPos(newPos)
-    moveNode(id, 'panel', newPos)
+    move(id, newPos)
     drag.current = null
   }
 
@@ -72,11 +68,11 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
   function onResizeDown(e: RPointerEvent<HTMLDivElement>) {
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
-    resize.current = { ox: e.clientX, oy: e.clientY, ow: size.w, oh: size.h }
+    rsz.current = { ox: e.clientX, oy: e.clientY, ow: size.w, oh: size.h }
   }
   function onResizeMove(e: RPointerEvent<HTMLDivElement>) {
-    if (!resize.current) return
-    const { ox, oy, ow, oh } = resize.current
+    if (!rsz.current) return
+    const { ox, oy, ow, oh } = rsz.current
     const maxPanelH = Math.max(60, window.innerHeight - pos.y - 8)
     setSize({
       w: Math.max(160, ow + e.clientX - ox),
@@ -84,23 +80,23 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
     })
   }
   function onResizeUp(e: RPointerEvent<HTMLDivElement>) {
-    if (!resize.current) return
-    const { ox, oy, ow, oh } = resize.current
+    if (!rsz.current) return
+    const { ox, oy, ow, oh } = rsz.current
     const maxPanelH = Math.max(60, window.innerHeight - pos.y - 8)
     const newSize = {
       w: Math.max(160, ow + e.clientX - ox),
       h: Math.min(maxPanelH, Math.max(60, oh + e.clientY - oy)),
     }
     setSize(newSize)
-    resizeNode(id, newSize)
-    resize.current = null
+    resize(id, newSize)
+    rsz.current = null
   }
 
   return (
     <div
       className="fp-wrapper"
-      style={{ left: pos.x, top: pos.y, width: size.w, height: displayH, zIndex: panel.zIndex }}
-      onPointerDown={() => focusNode(id)}
+      style={{ left: pos.x, top: pos.y, width: size.w, height: displayH, zIndex: panel.z }}
+      onPointerDown={() => focus(id)}
     >
       <div className="fp-root">
         <div
@@ -113,7 +109,7 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
             <button
               type="button"
               className="fp-dot fp-dot--red"
-              onClick={(e) => { e.stopPropagation(); closeNode(id) }}
+              onClick={(e) => { e.stopPropagation(); close(id) }}
               aria-label="Close panel"
             />
             <button
@@ -130,14 +126,14 @@ export function FloatingPanel({ id, title, icon, children, keepMounted = false }
           </span>
         </div>
 
-        {!panel.isMinimized && (
+        {!panel.minimized && (
           <div className="fp-content">
             {children}
           </div>
         )}
       </div>
 
-      {!panel.isMinimized && (
+      {!panel.minimized && (
         <div
           className="fp-resize-handle"
           onPointerDown={onResizeDown}

@@ -35,7 +35,6 @@
     }
   },
   "dependencies": {
-    "@xyflow/react": "^12.11.0",
     "buffer": "^6.0.3",
     "events": "^3.3.0",
     "react": "^19.2.6",
@@ -43,7 +42,6 @@
     "simple-peer": "^9.11.1",
     "socket.io-client": "^4.8.3",
     "tone": "^15.1.22",
-    "uuid": "^14.0.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.13"
   },

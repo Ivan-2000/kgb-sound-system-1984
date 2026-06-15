@@ -1,5 +1,5 @@
 import { roomSyncClient } from '../networking/roomSyncClient'
-import { getTimeline } from './timelineNodes'
+import { timelineStore } from './timelineSingleton'
 import { clipAudio } from '../audio/recorder'
 import type { ClipAddEvent, ClipUpdateEvent, ClipRemoveEvent } from '../protocol/syncProtocol'
 import type { ClipFileEvent } from '../networking/roomSyncClient'
@@ -54,32 +54,26 @@ export function sendClipFile(clipId: string, blob: Blob): void {
 
 export function applyClipAdd(event: ClipAddEvent): void {
   if (event.payload.timelineNodeId !== SYNC_TIMELINE_ID) return
-  const store = getTimeline(SYNC_TIMELINE_ID)
-  if (!store) return
   const { trackKey, trackName, trackKind, trackColor, clip } = event.payload
-  const tl = store.getState()
+  const tl = timelineStore.getState()
   const trackId = tl.ensureTrack(trackKey, { name: trackName, kind: trackKind, color: trackColor })
   tl.addClipWithId({ ...clip, trackId })
 }
 
 export function applyClipUpdate(event: ClipUpdateEvent): void {
   if (event.payload.timelineNodeId !== SYNC_TIMELINE_ID) return
-  const store = getTimeline(SYNC_TIMELINE_ID)
-  store?.getState().updateClip(event.payload.clipId, event.payload.patch)
+  timelineStore.getState().updateClip(event.payload.clipId, event.payload.patch)
 }
 
 export function applyClipRemove(event: ClipRemoveEvent): void {
   if (event.payload.timelineNodeId !== SYNC_TIMELINE_ID) return
-  const store = getTimeline(SYNC_TIMELINE_ID)
-  store?.getState().removeClip(event.payload.clipId)
+  timelineStore.getState().removeClip(event.payload.clipId)
 }
 
 export function applyClipFile(event: ClipFileEvent): void {
   const blob = new Blob([event.data], { type: 'audio/wav' })
   clipAudio.set(event.clipId, blob)
-  const store = getTimeline(SYNC_TIMELINE_ID)
-  if (!store) return
-  const clip = store.getState().clips.find((c) => c.id === event.clipId)
-  if (clip?.proxy) store.getState().updateClip(event.clipId, { proxy: false })
+  const clip = timelineStore.getState().clips.find((c) => c.id === event.clipId)
+  if (clip?.proxy) timelineStore.getState().updateClip(event.clipId, { proxy: false })
 }
 
