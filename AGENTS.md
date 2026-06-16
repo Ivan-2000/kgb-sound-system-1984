@@ -18,6 +18,7 @@ AI-agent working guide. **Read this first, then the authoritative docs below.**
 | `docs/kgb_sound_system_85_application_architecture_v_2.md` | System architecture & signal path |
 | `docs/ADR_native_audio.md` | Native-audio decision record (PortAudio/IPC/process model) |
 | `AUDIT.md` | Code-audit findings (bugs to fix — "Wave 2") |
+| `SPRINTS.md` | Ordered action plan + paste-ready prompts, per contributor track |
 | `REFACTOR_PLAN.md` | Log of the graph-removal refactor |
 
 If anything below conflicts with these, the docs win — and fix this file.
