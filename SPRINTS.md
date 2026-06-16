@@ -9,34 +9,59 @@ ordered, actionable version.
 - **Engine track** (Ivan + assistant): native addon / audio engine / VST host.
 - **UI+Server+Sync track** (nik): all `.tsx`, `server/`, sync layer.
 
-Each prompt is self-contained (cold session). Always: branch off `main`, push,
-merge to `main`, the other does `git pull --rebase` daily. Rebuild locally
-(addon `*.node` and VST3 SDK are not in git). Don't push to `origin` without the
-human's ok. Verify before marking done (client → run Electron; native → rebuild addon).
+Each prompt is self-contained (cold session). Branch off `main` (or work on `main`
+directly — files are disjoint), rebuild locally (addon `*.node` and VST3 SDK are not
+in git; SDK via `KGB_VST3_SDK_DIR`).
+
+---
+
+## ⛳ Definition of Done — обязательно в конце КАЖДОГО пункта
+
+Каждый пункт спринта закрывается этой последовательностью (она же продублирована
+в конце каждого промта — выполнять буквально):
+
+1. **Верификация** — client: запустить Electron и проверить поведение; native:
+   пересобрать аддон (`npm run build:vst` / `build:asio`) и проверить. Не отмечать
+   «done», пока не подтверждено вживую.
+2. **Commit** — `git commit` с понятным сообщением, концовка
+   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+3. **Отметить выполненное** — в `TASKS.md` (фичи V*/I*/T*) или `AUDIT.md` (§-пункты):
+   `[ ]`→`[x]` с датой. TASKS.md/AUDIT.md — живые трекеры.
+4. **Merge при необходимости** — если работал в ветке, слить в `main`.
+5. **Push** — `git push origin main` (общая база; nik/вы делаете `git pull --rebase`).
+
+Дефолтная сборка остаётся **VST-OFF** (`build:asio`) — не ломать билд тем, у кого нет SDK.
 
 ---
 
 ## Engine track (Ivan)
 
 ### E1 — VST3 host foundation (V1–V3)
-> Prereq: `KGB_VST3_SDK_DIR` set (run `portaudioAddon/scripts/fetch-vst3-sdk.ps1`).
+> SDK уже установлен и проверен: `KGB_VST3_SDK_DIR = A:\VST_SDK\vst3sdk`.
+> Первый шаг — закоммитить лежащий незакоммиченным `scripts/fetch-vst3-sdk.ps1`
+> вместе с CMake-обвязкой.
 
 ```
 Репо A:\KGB, ветка main. Прочитай CLAUDE.md, AGENTS.md (Two-contributor split),
-docs/ADR_native_audio.md §6. Решение: VST3-хост на ПРЯМОМ Steinberg VST3 SDK,
-в utilityProcess рядом с PortAudio. Аддон собирается MinGW/GCC (риск: SDK таргетит
-MSVC). Зона — только движок (.cc/.mjs/.ts/preload); .tsx и server НЕ трогать.
-Каждый шаг с реальной пересборкой (npm run build:vst):
+SPRINTS.md (Definition of Done), docs/ADR_native_audio.md §6. Решение: VST3-хост на
+ПРЯМОМ Steinberg VST3 SDK, в utilityProcess рядом с PortAudio. SDK уже стоит
+(KGB_VST3_SDK_DIR=A:\VST_SDK\vst3sdk). Аддон собирается MinGW/GCC (главный риск: SDK
+таргетит MSVC). Зона — только движок (.cc/.mjs/.ts/preload); .tsx и server НЕ трогать.
+Каждый шаг с реальной пересборкой:
 1. V1-сборка: VST3 SDK в CMakeLists через KGB_VST3_SDK_DIR (зеркаль блок ASIO),
-   флаги build:vst/build:novst, дефолт VST-OFF; закоммить fetch-vst3-sdk.ps1.
-2. V1-спайк: vstProbe() — загрузить .vst3, перечислить классы фабрики; доказать
-   компиляцию+линковку под MinGW на реальном плагине (напр. Guitar Rig 7).
+   флаги build:vst/build:novst, дефолт VST-OFF; закоммитить fetch-vst3-sdk.ps1.
+2. V1-спайк (ГЛАВНЫЙ РИСК): vstProbe() — загрузить .vst3, перечислить классы фабрики;
+   доказать компиляцию+линковку под MinGW на реальном плагине (напр. Guitar Rig 7).
+   Если host-исходники SDK не идут под GCC — решать тут (минимальный набор .cpp/патчи),
+   не углубляясь дальше.
 3. V1-скелет: IHostApplication, инстанс IComponent/IAudioProcessor, вызов из
    RT-callback с пустой цепочкой; крэш VST → engine-crashed → respawn (A3.5c).
 4. V2: addon.scanVst3(paths[]) → [{name,vendor,type:effect|instrument,version}].
 5. V3: loadPlugin(path,slotId)→дескриптор+параметры; unloadPlugin(slotId); параметры
    в renderer через MessageChannelMain. Завести insertChainStore (логика, не UI).
 Согласуй контракт insertChainStore + window.nativeAudio VST-методы с nik до V3.
+Каждый пункт закрой по Definition of Done: верификация(пересборка) → commit →
+отметка в TASKS.md → merge при необходимости → git push origin.
 ```
 
 ### E2 — VST runtime + live integration (V6, V4, V8, V9, V10)
@@ -52,6 +77,8 @@ MSVC). Зона — только движок (.cc/.mjs/.ts/preload); .tsx и se
 5. V10: при смене устройства/Host API пересоздавать каналы, сохраняя цепочки (state по (channelKey,slotIndex)).
 Проверка: гитара через Guitar Rig 7 на входе; бэндмейт слышит обработанный тон;
 задержка цепочки видна (getLatencySamples) в сторе.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в TASKS.md
+→ merge при необходимости → git push origin.
 ```
 
 ### E3 — Audio-core blockers (AUDIT §1/§2/§4 + latency-half of §5/§8.A.1)
@@ -65,6 +92,8 @@ MSVC). Зона — только движок (.cc/.mjs/.ts/preload); .tsx и se
   sendRequest; §4.5 уборка пира на 'disconnected'; §4.7 стейл-порт renderer.
 - §8.A.1: запись на РЕАЛЬНОМ sample-rate (брать из nativeAudioController-снапшота,
   не хардкод 48k) — тихая порча записей не на 48k.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в AUDIT.md
+→ merge при необходимости → git push origin.
 ```
 
 ### E4 — Track instruments + export + perf (I1/I3 runtime, export, §9.A/§9.D)
@@ -78,6 +107,8 @@ TimelinePanel — у nik, он уже зовёт exportClipFile).
    бинарь-пресеты отдельным файлом).
 4. §9.A: Opus encode/decode в worker-thread (addon.cc — теперь single-owner, без
    очерёдности). §9.D: чистка clipAudio/bufferCache при удалении клипа.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в
+TASKS.md/AUDIT.md → merge при необходимости → git push origin.
 ```
 
 ---
@@ -86,14 +117,17 @@ TimelinePanel — у nik, он уже зовёт exportClipFile).
 
 ### N1 — Server security (AUDIT §3, CRITICAL) ← первым
 ```
-Репо A:\KGB, main. Прочитай CLAUDE.md, AGENTS.md (Two-contributor split), AUDIT.md §3.
-Зона — server/ (+ sync-слой). НЕ трогать .cc/utility/preload/аудио-движок. Сервер — CommonJS, Zod на каждом событии.
+Репо A:\KGB, main. Прочитай CLAUDE.md, AGENTS.md (Two-contributor split),
+SPRINTS.md (Definition of Done), AUDIT.md §3. Зона — server/ (+ sync-слой). НЕ трогать
+.cc/utility/preload/аудио-движок. Сервер — CommonJS, Zod на каждом событии.
 - §3.1 хост-гейтинг фиктивен: захостгейтить clip_add/update/remove, step_toggle,
   velocity_change (сейчас только transport_*/bpm/drum). Любой гость стирает чужой таймлайн.
 - §3.2 clip:file без лимита размера и rate-limit → DoS: лимит + throttle.
 - §3.3 утечка комнат при повторном room:create.  §3.4 капы на рост состояния.
 - §3.5 пароль в открытом виде + слабая проверка.  §3.6/§3.7 chat blind-relay/XSS, username.
 Проверка: гость не может удалить чужой клип; пере-create не плодит комнаты.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в AUDIT.md
+→ merge при необходимости → git push origin.
 ```
 
 ### N2 — Sync correctness (AUDIT §5 sync-half, CRITICAL)
@@ -105,6 +139,8 @@ recorder — у Engine-дорожки; ты владеешь синком кли
 - §5.5 у клипов нет LWW/дедупа — добавить.  §5.6 хост-гейт clip-событий (со §3.1).
 - §5.2 НЕ транслировать локальную latency-компенсацию пирам.
 Проверка: опоздавший участник видит и слышит ранее записанные клипы.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в AUDIT.md
+→ merge при необходимости → git push origin.
 ```
 
 ### N3 — App.tsx decomposition (AUDIT §8.C + §5.4)
@@ -116,6 +152,8 @@ recorder, nativeAudioController) — их API не меняешь, только 
 - §8.C.2: потеря MIDI-нот при гидрации снапшота у опоздавших — починить.
 - §5.4: setState/store-write внутри Tone.js-колбэков — вынести (нарушение CLAUDE.md).
 - §8.C.1: HMR-дубль подписок (Tone 'start'/'stop') — снять.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в AUDIT.md
+→ merge при необходимости → git push origin.
 ```
 
 ### N4 — InsertChain UI + module UI (V5, V7, AUDIT §8.D)
@@ -128,6 +166,8 @@ window.nativeAudio VST-методы (согласован в E1).
    dblclick→окно V4 или V5; показывать задержку каждого инсерта и суммарную.
    Переиспользуется в MixerStrip и Timeline TrackHeader.
 3. §8.D: корректность drum/piano/mixer/timeline-UI (по находкам аудита).
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в
+TASKS.md/AUDIT.md → merge при необходимости → git push origin.
 ```
 
 ### N5 — Render perf + Phase 5 UI (AUDIT §9.C + Phase 5)
@@ -138,6 +178,8 @@ window.nativeAudio VST-методы (согласован в E1).
 - Phase 5 UI: селекторы Host API + размер буфера в SettingsModal (фасады над готовым
   A2/A3-бэкендом); выбор сильной доли; «открыть сохранённую комнату»; UI отключения
   устройства; автосохранение состояния.
+Каждый пункт закрой по Definition of Done: верификация → commit → отметка в
+TASKS.md/AUDIT.md → merge при необходимости → git push origin.
 ```
 
 ---
