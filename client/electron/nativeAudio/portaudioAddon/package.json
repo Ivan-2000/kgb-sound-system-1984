@@ -16,6 +16,8 @@
     "rebuild": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1",
     "build:asio": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1",
     "build:noasio": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1 --CDKGB_NO_ASIO=ON",
+    "build:vst": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1 --CDKGB_WITH_VST=ON",
+    "build:novst": "cmake-js compile --generator Ninja --runtime=electron --runtime-version=42.0.1",
     "gen-implib": "node scripts/gen-electron-implib.mjs"
   }
 }

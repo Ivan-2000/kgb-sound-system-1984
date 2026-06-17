@@ -108,14 +108,72 @@ file an issue and we will evaluate switching the build chain to MSVC.
 
 ---
 
+## Building with VST3 (host)
+
+The addon can host VST3 plugins (effects + instruments) in the same utility
+process as PortAudio — see TASKS.md V1–V10 and `docs/ADR_native_audio.md §6`.
+The VST host is **OFF by default**: `build:asio` / `build:noasio` need no VST SDK.
+
+### Obtaining the VST3 SDK
+
+Same deal as ASIO — Steinberg license, not committed. Run the guide:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File client/electron/nativeAudio/portaudioAddon/scripts/fetch-vst3-sdk.ps1
+```
+
+It clones `github.com/steinbergmedia/vst3sdk` **recursively** and points
+`KGB_VST3_SDK_DIR` at it. We compile only the host subset (`pluginterfaces`,
+`base`, `public.sdk/source/{common,vst/hosting,vst/utility}`).
+
+### Build
+
+```powershell
+npm run build:vst        # ASIO + VST host (needs both SDK env vars)
+npm run build:novst      # alias of build:asio — VST host off
+```
+
+> Switching VST on/off changes a cached CMake value. If a reconfigure picks up
+> the wrong state, delete `build/CMakeCache.txt` (or `cmake-js clean`) and rebuild.
+
+### MinGW / GCC compatibility (the E1 spike)
+
+The VST3 SDK targets MSVC; this addon is MinGW UCRT64. The full host subset
+compiles and links under GCC 14 with three deviations, all handled by the build:
+
+1. **`-O` is mandatory.** UCRT's `swprintf.inl` uses `__builtin_va_arg_pack()`,
+   which only compiles when inlined — i.e. with optimization on. cmake-js Release
+   builds satisfy this; never build the VST sources at `-O0`.
+2. **VST-domain interface IIDs.** The SDK's shipped iid TUs (`coreiids.cpp`,
+   `commoniids.cpp`) define only base + GUI interfaces. `src/vst/vstIids.cc`
+   defines the VST interface IIDs the host uses (same `DEF_CLASS_IID` pattern).
+3. **`plugprovider.cpp` is excluded** — it is a test helper pulling in
+   `ITestPlugProvider`; the host wires component↔controller itself.
+
+`ld` (binutils 2.44) can crash while *printing* undefined-reference messages, so
+a missing symbol surfaces as a silent `ld returned 5` with no diagnostic. If you
+hit it, find the real unresolved symbols with `nm` rather than trusting `ld`'s
+output. The reproducible spike harness proves the chain end-to-end:
+
+```powershell
+npm run build:vst
+node_modules/.bin/cmake-js build --target vst_probe_test   # or: ninja -C build vst_probe_test
+build/vst_probe_test.exe "C:/Program Files/Common Files/VST3/Native Instruments/Guitar Rig 7.vst3"
+```
+
+---
+
 ## CMake flags
 
 | Flag | Default | Effect |
 |---|---|---|
 | `KGB_NO_ASIO=ON` | OFF | Build without ASIO — no SDK needed |
-| `KGB_ASIO_SDK_DIR=/path` | — | SDK path as cmake define (alternative to env var) |
+| `KGB_ASIO_SDK_DIR=/path` | — | ASIO SDK path as cmake define (alternative to env var) |
+| `KGB_WITH_VST=ON` | OFF | Build the VST3 host — needs `KGB_VST3_SDK_DIR` |
+| `KGB_VST3_SDK_DIR=/path` | — | VST3 SDK path as cmake define (alternative to env var) |
 
-Pass cmake defines via cmake-js: `--CDKGB_NO_ASIO=ON` or `--CDKGB_ASIO_SDK_DIR=C:/ASIOSDK2.3.4`.
+Pass cmake defines via cmake-js: `--CDKGB_NO_ASIO=ON`, `--CDKGB_WITH_VST=ON`,
+`--CDKGB_VST3_SDK_DIR=A:/VST_SDK/vst3sdk`.
 
 > **Switching between ASIO and no-ASIO builds:** cmake caches the `KGB_NO_ASIO` value.
 > If you switch build modes, clean first:
