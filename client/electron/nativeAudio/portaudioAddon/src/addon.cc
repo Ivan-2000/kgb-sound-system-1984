@@ -1371,6 +1371,30 @@ static Napi::Value GetParam(const Napi::CallbackInfo& info) {
       static_cast<uint32_t>(info[1].As<Napi::Number>().Int64Value())));
 }
 
+// openEditor(slotId) → boolean   (V4: native plugin editor window)
+static Napi::Value OpenEditor(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "openEditor(slotId:number)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  return Napi::Boolean::New(env, kgb::vst::openEditor(info[0].As<Napi::Number>().Int32Value()));
+}
+
+// closeEditor(slotId) → undefined
+static Napi::Value CloseEditor(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() >= 1 && info[0].IsNumber())
+    kgb::vst::closeEditor(info[0].As<Napi::Number>().Int32Value());
+  return env.Undefined();
+}
+
+// pumpEditor() → undefined   (drain editor window messages; call on a timer)
+static Napi::Value PumpEditor(const Napi::CallbackInfo& info) {
+  kgb::vst::pumpEditorMessages();
+  return info.Env().Undefined();
+}
+
 // setInsertChain(slotIds: number[]) → undefined
 // Sets the ordered input-side insert chain the RT callback applies. Empty array
 // clears it (passthrough). Per-target routing (channel/track) is V6.
@@ -1416,6 +1440,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("unloadPlugin",     Napi::Function::New(env, UnloadPlugin));
   exports.Set("setParam",         Napi::Function::New(env, SetParam));
   exports.Set("getParam",         Napi::Function::New(env, GetParam));
+  exports.Set("openEditor",       Napi::Function::New(env, OpenEditor));
+  exports.Set("closeEditor",      Napi::Function::New(env, CloseEditor));
+  exports.Set("pumpEditor",       Napi::Function::New(env, PumpEditor));
   exports.Set("setInsertChain",   Napi::Function::New(env, SetInsertChain));
   exports.Set("vstEnabled",       Napi::Boolean::New(env, true));
 #else

@@ -18,6 +18,7 @@
 #include "public.sdk/source/vst/utility/stringconvert.h"
 
 #include "pluginterfaces/base/funknownimpl.h"
+#include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
@@ -29,6 +30,10 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace Steinberg;
 
@@ -87,6 +92,8 @@ struct PluginSlot {
   IPtr<Vst::IComponent> component;
   IPtr<Vst::IAudioProcessor> processor;
   IPtr<Vst::IEditController> controller;
+  IPtr<IPlugView> view;       // V4: editor view, when open
+  void* editorHwnd = nullptr; // HWND of the host window holding the view
   bool controllerIsSeparate = false;
   // Only call terminate() on interfaces whose initialize() actually succeeded —
   // terminating after a failed init is undefined for some plugins.
@@ -113,6 +120,14 @@ struct PluginSlot {
   std::atomic<uint32_t> paramRpos{0};
 
   ~PluginSlot() {
+    if (view) {
+      view->setFrame(nullptr);
+      view->removed();
+      view = nullptr;
+    }
+#ifdef _WIN32
+    if (editorHwnd) { DestroyWindow(static_cast<HWND>(editorHwnd)); editorHwnd = nullptr; }
+#endif
     if (processor) processor->setProcessing(false);
     if (component) {
       component->setActive(false);
@@ -502,6 +517,154 @@ void processChain(const int* slotIds, int count,
   }
 
   g_rtInChain.store(false, std::memory_order_release);
+}
+
+// ── Editor window (V4 spike, Windows) ────────────────────────────────────────
+#ifdef _WIN32
+namespace {
+
+// IPlugFrame the plugin calls back into when it wants to resize its view. We
+// resize the host window's client area to match, then echo onSize() back. A
+// single static instance is fine: only one editor pump runs at a time and the
+// frame is stateless (it derives the HWND from the view's window).
+class KgbPlugFrame : public IPlugFrame {
+ public:
+  HWND hwnd = nullptr;
+
+  tresult PLUGIN_API resizeView(IPlugView* view, ViewRect* r) override {
+    if (hwnd && r) {
+      RECT rc{0, 0, r->getWidth(), r->getHeight()};
+      AdjustWindowRectEx(&rc, static_cast<DWORD>(GetWindowLongPtr(hwnd, GWL_STYLE)), FALSE, 0);
+      SetWindowPos(hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (view) view->onSize(r);
+    return kResultTrue;
+  }
+  tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+    QUERY_INTERFACE(iid, obj, FUnknown::iid, IPlugFrame)
+    QUERY_INTERFACE(iid, obj, IPlugFrame::iid, IPlugFrame)
+    *obj = nullptr;
+    return kNoInterface;
+  }
+  uint32 PLUGIN_API addRef() override { return 1000; }   // static lifetime
+  uint32 PLUGIN_API release() override { return 1000; }
+};
+
+KgbPlugFrame g_plugFrame;
+const wchar_t* kEditorWndClass = L"KgbVstEditorWindow";
+
+LRESULT CALLBACK editorWndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }  // hide, don't destroy
+  return DefWindowProcW(h, msg, wp, lp);
+}
+
+void ensureWndClass() {
+  static bool registered = false;
+  if (registered) return;
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = editorWndProc;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.lpszClassName = kEditorWndClass;
+  RegisterClassExW(&wc);
+  registered = true;
+}
+
+}  // namespace
+#endif  // _WIN32
+
+bool openEditor(int slotId) {
+  std::lock_guard<std::mutex> lock(g_loadMutex);
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot || !slot->controller) return false;
+  if (slot->view) return true;  // already open
+
+#ifdef _WIN32
+  IPtr<IPlugView> view = owned(slot->controller->createView(Vst::ViewType::kEditor));
+  if (!view) return false;  // headless plugin — no editor
+  if (view->isPlatformTypeSupported(kPlatformTypeHWND) != kResultTrue) return false;
+
+  ensureWndClass();
+  ViewRect rect{};
+  view->getSize(&rect);
+  RECT wr{0, 0, rect.getWidth() ? rect.getWidth() : 600,
+          rect.getHeight() ? rect.getHeight() : 400};
+  AdjustWindowRectEx(&wr, WS_OVERLAPPEDWINDOW, FALSE, 0);
+
+  HWND hwnd = CreateWindowExW(
+      0, kEditorWndClass, L"VST Editor", WS_OVERLAPPEDWINDOW,
+      CW_USEDEFAULT, CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top,
+      nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+  if (!hwnd) return false;
+
+  g_plugFrame.hwnd = hwnd;
+  view->setFrame(&g_plugFrame);
+  if (view->attached(hwnd, kPlatformTypeHWND) != kResultTrue) {
+    DestroyWindow(hwnd);
+    view->setFrame(nullptr);
+    return false;
+  }
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  slot->view = view;
+  slot->editorHwnd = hwnd;
+  return true;
+#else
+  return false;  // editor hosting is Windows-only for the MVP (ADR: Windows-first)
+#endif
+}
+
+void closeEditor(int slotId) {
+  std::lock_guard<std::mutex> lock(g_loadMutex);
+  if (slotId < 0 || slotId >= kMaxSlots) return;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot || !slot->view) return;
+  slot->view->setFrame(nullptr);
+  slot->view->removed();
+  slot->view = nullptr;
+#ifdef _WIN32
+  if (slot->editorHwnd) {
+    g_plugFrame.hwnd = nullptr;
+    DestroyWindow(static_cast<HWND>(slot->editorHwnd));
+    slot->editorHwnd = nullptr;
+  }
+#endif
+}
+
+bool hasEditor(int slotId) {
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  return slot && slot->view != nullptr;
+}
+
+void runEditorPump(int ms) {
+#ifdef _WIN32
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  MSG msg;
+  while (std::chrono::steady_clock::now() < deadline) {
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+#else
+  (void)ms;
+#endif
+}
+
+void pumpEditorMessages() {
+#ifdef _WIN32
+  MSG msg;
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+#endif
 }
 
 void shutdown() {

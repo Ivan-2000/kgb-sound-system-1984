@@ -155,6 +155,9 @@ interface Window {
       setParam(slotId: number, paramId: number, value: number): Promise<{ ok: boolean; error?: string }>
       getParam(slotId: number, paramId: number): Promise<{ ok: boolean; value?: number; error?: string }>
       setInsertChain(slotIds: number[]): Promise<{ ok: boolean; error?: string }>
+      /** V4: open the plugin's own editor in a native OS window (false if headless). */
+      openEditor(slotId: number): Promise<{ ok: boolean; error?: string }>
+      closeEditor(slotId: number): Promise<{ ok: boolean; error?: string }>
     }
   }
 }

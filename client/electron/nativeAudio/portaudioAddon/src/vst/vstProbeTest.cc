@@ -79,7 +79,35 @@ static int runProcess(const char* path) {
   return finite ? 0 : 1;
 }
 
+// V4 spike: load the plugin, open its editor in a native window, pump messages
+// for a few seconds so it renders and is interactive, then close + unload.
+static int runEditor(const char* path) {
+  auto lr = kgb::vst::loadPlugin(path, "", 48000.0, 512, -1);
+  if (!lr.ok) { std::printf("  loadPlugin FAILED: %s\n", lr.error.c_str()); return 1; }
+  std::printf("  loaded slot=%d  %s\n", lr.slotId, lr.name.c_str());
+
+  if (!kgb::vst::openEditor(lr.slotId)) {
+    std::printf("  openEditor returned false (headless plugin or unsupported view)\n");
+    kgb::vst::unloadPlugin(lr.slotId);
+    return 2;
+  }
+  std::printf("  editor open=%s — pumping 8s (move/resize the window to test)\n",
+              kgb::vst::hasEditor(lr.slotId) ? "yes" : "no");
+  kgb::vst::runEditorPump(8000);
+
+  kgb::vst::closeEditor(lr.slotId);
+  std::printf("  editor closed; hasEditor=%s\n", kgb::vst::hasEditor(lr.slotId) ? "yes" : "no");
+  kgb::vst::unloadPlugin(lr.slotId);
+  std::printf("  unloaded — OK\n");
+  kgb::vst::shutdown();
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc >= 3 && std::string(argv[2]) == "editor") {
+    std::printf("Load+editor: %s\n", argv[1]);
+    return runEditor(argv[1]);
+  }
   if (argc >= 3 && std::string(argv[2]) == "process") {
     std::printf("Load+process: %s\n", argv[1]);
     return runProcess(argv[1]);

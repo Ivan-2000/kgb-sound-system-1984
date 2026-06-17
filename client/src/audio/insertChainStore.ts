@@ -68,6 +68,10 @@ export interface InsertChainState {
   moveInsert(target: InsertTarget, from: number, to: number): Promise<void>
   setBypass(target: InsertTarget, index: number, bypass: boolean): void
   setParam(target: InsertTarget, index: number, paramId: number, value: number): Promise<void>
+  /** V4: open/close the plugin's native editor window. Returns false if the
+   *  plugin is headless (no editor — UI should fall back to generic params, V5). */
+  openEditor(target: InsertTarget, index: number): Promise<boolean>
+  closeEditor(target: InsertTarget, index: number): Promise<void>
   setActiveInputTarget(target: InsertTarget | null): Promise<void>
   /** Drop every loaded plugin (e.g. on stream teardown / engine crash). */
   clearAll(): Promise<void>
@@ -194,6 +198,20 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => {
         },
       }))
       if (v) await v.setParam(slot.slotId, paramId, clamped)
+    },
+
+    async openEditor(target, index) {
+      const v = vst()
+      const slot = (get().chains[targetKey(target)] ?? [])[index]
+      if (!v || !slot) return false
+      const res = await v.openEditor(slot.slotId)
+      return !!res.ok
+    },
+
+    async closeEditor(target, index) {
+      const v = vst()
+      const slot = (get().chains[targetKey(target)] ?? [])[index]
+      if (v && slot) await v.closeEditor(slot.slotId)
     },
 
     async setActiveInputTarget(target) {

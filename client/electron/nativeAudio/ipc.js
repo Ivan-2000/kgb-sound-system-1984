@@ -219,6 +219,14 @@ export function setupAudioIPC() {
     try { return await sendRequest('vstSetInsertChain', opts) }
     catch (e) { return { ok: false, error: e.message } }
   })
+  ipcMain.handle('vst:open-editor', async (_event, opts) => {
+    try { return await sendRequest('vstOpenEditor', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:close-editor', async (_event, opts) => {
+    try { return await sendRequest('vstCloseEditor', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
 }
 
 // open-stream & reinit share the channel-minting logic.

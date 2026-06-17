@@ -39,6 +39,19 @@ function loadAddon() {
   return addon
 }
 
+// V4: drive the plugin editor's Win32 message pump from the Node loop. One
+// shared ~60 Hz timer for any open editor; unref'd so it never keeps the
+// process alive on its own. (The window is created on this JS thread, so the
+// pump must run on it too.)
+let editorPumpTimer = null
+function startEditorPump() {
+  if (editorPumpTimer) return
+  editorPumpTimer = setInterval(() => {
+    try { loadAddon().pumpEditor?.() } catch { /* ignore */ }
+  }, 16)
+  editorPumpTimer.unref?.()
+}
+
 // === Stream / data plane state ===
 let audioDataPort = null      // MessagePortMain owned utility-side, port2 is in renderer
 // Diagnostics: softmix-in messages that reached this process + DECAYING peak
@@ -385,6 +398,24 @@ process.parentPort.on('message', (event) => {
         catch (e) { replyError(id, e) }
         return
       }
+      case 'vstOpenEditor': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try {
+          const ok = a.openEditor(Number(opts?.slotId))
+          if (ok) startEditorPump()  // keep the editor window responsive
+          reply(id, { ok })
+        } catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstCloseEditor': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { a.closeEditor(Number(opts?.slotId)); reply(id, { ok: true }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+
       case 'vstSetInsertChain': {
         const a = loadAddon()
         if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }

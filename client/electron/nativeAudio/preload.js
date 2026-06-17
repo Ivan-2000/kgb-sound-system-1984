@@ -229,5 +229,13 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     /** Set the ordered input-side insert chain (array of loaded slot ids; [] clears).
      *  @returns {Promise<{ok:boolean, error?:string}>} */
     setInsertChain: (slotIds) => ipcRenderer.invoke('vst:set-insert-chain', { slotIds }),
+
+    /** V4: open the plugin's own editor in a native OS window. Resolves
+     *  { ok:false } for a headless plugin (no editor view).
+     *  @returns {Promise<{ok:boolean, error?:string}>} */
+    openEditor: (slotId) => ipcRenderer.invoke('vst:open-editor', { slotId }),
+
+    /** V4: close the plugin editor window. @returns {Promise<{ok:boolean, error?:string}>} */
+    closeEditor: (slotId) => ipcRenderer.invoke('vst:close-editor', { slotId }),
   },
 })

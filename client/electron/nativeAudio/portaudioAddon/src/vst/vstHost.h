@@ -93,6 +93,24 @@ bool unloadPlugin(int slotId);
 bool setParamNormalized(int slotId, uint32_t paramId, double valueNormalized);
 double getParamNormalized(int slotId, uint32_t paramId);
 
+// V4 spike: open the plugin's own editor (IPlugView) in a native OS window
+// (Windows: a top-level HWND). Returns false if the plugin is headless (no
+// editor view) or the platform view type is unsupported. JS-thread only.
+// NOTE: an interactive editor needs a Win32 message pump; see runEditorPump().
+bool openEditor(int slotId);
+void closeEditor(int slotId);
+bool hasEditor(int slotId);
+
+// V4 spike helper: pump the editor window's Win32 messages for `ms`
+// milliseconds (blocking). Stand-in for the utility event-loop integration that
+// V4 proper will wire — proves the editor renders and is interactive.
+void runEditorPump(int ms);
+
+// V4: drain all pending Win32 messages once, non-blocking. Call on a timer from
+// the utility's Node loop (same thread that opened the editor) to keep the
+// editor responsive without blocking IPC.
+void pumpEditorMessages();
+
 // RT-safe: process the ordered insert chain `slotIds[0..count)` over interleaved
 // float audio in place. `numFrames` must be <= the maxBlockSize the slots were
 // loaded with. Empty chain (count == 0) is a no-op passthrough. Only touches the

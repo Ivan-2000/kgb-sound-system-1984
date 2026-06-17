@@ -221,8 +221,9 @@ if(KGB_WITH_VST)
   target_include_directories(${PROJECT_NAME} PRIVATE ${KGB_VST_INCLUDE_DIRS})
   target_compile_definitions(${PROJECT_NAME} PRIVATE KGB_WITH_VST=1 RELEASE=1 NDEBUG=1)
   # SDK hosting on Windows pulls in COM (CoCreateInstance), shell known-folder
-  # paths (SHGetKnownFolderPath) and the FOLDERID_* GUIDs (uuid).
-  target_link_libraries(${PROJECT_NAME} -lole32 -loleaut32 -lshell32 -luuid)
+  # paths (SHGetKnownFolderPath), the FOLDERID_* GUIDs (uuid), and — for the V4
+  # editor window — user32/gdi32.
+  target_link_libraries(${PROJECT_NAME} -lole32 -loleaut32 -lshell32 -luuid -luser32 -lgdi32)
 
   # Standalone V1 spike harness — reproduces the MinGW compile+link+run proof
   # outside Electron (a .node cannot be loaded by plain node — it imports
@@ -234,7 +235,7 @@ if(KGB_WITH_VST)
   target_compile_definitions(vst_probe_test PRIVATE KGB_WITH_VST=1 RELEASE=1 NDEBUG=1)
   target_link_libraries(vst_probe_test
     -static -static-libgcc -static-libstdc++
-    -lole32 -loleaut32 -lshell32 -luuid)
+    -lole32 -loleaut32 -lshell32 -luuid -luser32 -lgdi32)
 endif()
 
 # portaudio_static exposes its include dir as PUBLIC, so target_link_libraries
