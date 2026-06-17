@@ -106,6 +106,9 @@ mixdown WAV/MP3», «Экспорт проекта»; AUDIT.md §9.A,§9.D. Зо
 4. §9.A.1/§9.A.2 (CRIT): Opus в worker-thread (addon — single-owner) + encode-once.
    §9.A.3–5 (HIGH). §9.D.1 (CRIT)/§9.D.2/§9.D.3: чистка clipAudio/bufferCache при
    удалении клипа, аллокации.  §9.B.2: Opus bitrate вниз (с §8.A.2).
+Координация с nik (одна строка App.tsx): `nativeRtcManager.setActive(snap.streamActive, socket?.id)`
+вместо `nativeRtcManager.setActive(snap.streamActive)` в subscribeState-колбэке (строка ~252).
+Это активирует §4.1 glare-tie-break: без socket.id оба пира считают себя impolite.
 Закрой по DoD. Закрывает: TASKS I1,I3,T3,mixdown,project-export; AUDIT §9.A.1,§9.A.2,
 §9.A.3,§9.A.4,§9.A.5,§9.B.2,§9.D.1,§9.D.2,§9.D.3,§1.5. LOW (§2.4,§8.A.4–9,§9.A.6–12,§9.D.4–10) deferred.
 ```

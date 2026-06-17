@@ -79,11 +79,6 @@ class NativeRtcManager {
     this.sendSignalFn = fn
   }
 
-  /** §4.1: call with our own socket ID so we can break offer/answer glare. */
-  setMySocketId(id: string): void {
-    this.mySocketId = id
-  }
-
   setSendEnabled(channelIndex: number, enabled: boolean): void {
     if (enabled) this.sendEnabled.add(channelIndex)
     else this.sendEnabled.delete(channelIndex)
@@ -93,9 +88,11 @@ class NativeRtcManager {
     this.sendEnabled.clear()
   }
 
-  setActive(active: boolean): void {
+  /** §4.1: pass mySocketId when activating so glare tie-break knows our own ID. */
+  setActive(active: boolean, mySocketId?: string): void {
     this.active = active
     if (active) {
+      if (mySocketId !== undefined) this.mySocketId = mySocketId
       if (!window.nativeAudio || this.onOpusUnsub) return
       this.onOpusUnsub = window.nativeAudio.onOpusPacket((msg) => {
         this.broadcastOpusPacket(msg)
