@@ -223,7 +223,7 @@ std::vector<ClassDesc> scan(const std::vector<std::string>& paths) {
       // Only surface real audio modules (effects + instruments), not the
       // companion edit-controller classes ("other").
       if (c.type == "effect" || c.type == "instrument") {
-        c.category = m;  // overload: carry the module path for the caller
+        c.path = m;
         out.push_back(std::move(c));
       }
     }

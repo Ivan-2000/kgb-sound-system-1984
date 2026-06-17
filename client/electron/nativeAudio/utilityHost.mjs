@@ -337,6 +337,62 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      // ── VST3 host (V2 scan / V3 load+unload+params + insert chain) ──────────
+      // The addon only exports these when built with KGB_WITH_VST (build:vst).
+      // With the default VST-OFF build, a.vstEnabled is false → reply an error
+      // the renderer can surface ("VST host not built") rather than crashing.
+      case 'vstScan': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built (use build:vst)' }); return }
+        try { reply(id, { ok: true, plugins: a.scanVst3(opts?.paths) }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstDefaultPaths': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { reply(id, { ok: true, paths: a.defaultVst3Paths() }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstLoad': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        const { path, classUid = '', sampleRate = 48000, maxBlockSize = 512, slotId = -1 } = opts ?? {}
+        if (typeof path !== 'string') { replyError(id, 'vstLoad: path (string) required'); return }
+        try { reply(id, a.loadPlugin(path, classUid, sampleRate, maxBlockSize, slotId)) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstUnload': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { reply(id, { ok: a.unloadPlugin(Number(opts?.slotId)) }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstSetParam': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { reply(id, { ok: a.setParam(Number(opts?.slotId), Number(opts?.paramId), Number(opts?.value)) }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstGetParam': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { reply(id, { ok: true, value: a.getParam(Number(opts?.slotId), Number(opts?.paramId)) }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstSetInsertChain': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { a.setInsertChain(Array.isArray(opts?.slotIds) ? opts.slotIds : []); reply(id, { ok: true }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+
       case 'shutdown': {
         // Graceful drain. closeStream is idempotent — call unconditionally
         // (33a6bb1 fix #5: a paused-but-open stream leaks driver handles

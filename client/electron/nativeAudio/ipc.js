@@ -189,6 +189,36 @@ export function setupAudioIPC() {
     try { return await sendRequest('setRemoteChannelGain', opts) }
     catch (e) { return { ok: false, error: e.message } }
   })
+
+  // ── VST3 host (V2/V3) — thin proxies to the utility. ──────────────────────
+  ipcMain.handle('vst:scan', async (_event, opts) => {
+    try { return await sendRequest('vstScan', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:default-paths', async () => {
+    try { return await sendRequest('vstDefaultPaths') }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:load', async (_event, opts) => {
+    try { return await sendRequest('vstLoad', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:unload', async (_event, opts) => {
+    try { return await sendRequest('vstUnload', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:set-param', async (_event, opts) => {
+    try { return await sendRequest('vstSetParam', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:get-param', async (_event, opts) => {
+    try { return await sendRequest('vstGetParam', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:set-insert-chain', async (_event, opts) => {
+    try { return await sendRequest('vstSetInsertChain', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
 }
 
 // open-stream & reinit share the channel-minting logic.

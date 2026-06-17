@@ -11,6 +11,10 @@
 #include <map>
 #include <vector>
 
+#ifdef KGB_WITH_VST
+#include "vst/vstHost.h"
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 
@@ -378,6 +382,23 @@ static void cleanupDecoderState() {
   g_pendingGains.clear();
 }
 
+#ifdef KGB_WITH_VST
+// ─── VST insert chain (input side) ────────────────────────────────────────────
+// V1-skeleton wiring: the RT callback runs the configured insert chain over the
+// captured input *before* it is monitored / encoded (live insert before Opus,
+// ADR §6). The chain is a list of loaded-plugin slot ids set from JS via
+// vstSetInsertChain(); the default is empty → the callback is a no-op passthrough
+// (zero added cost). Per-target routing (per channel / per timeline track) is V6.
+static const int MAX_VST_CHAIN = 16;
+static std::atomic<int> g_vstChainSlots[MAX_VST_CHAIN];
+static std::atomic<int> g_vstChainCount{0};
+// Preallocated de-interleave-free scratch: the chain processes the input copy in
+// place. Sized in OpenStream to maxBuffer(512) × inputChannels; never realloc'd
+// from the RT thread. g_vstScratchCap guards against frames/channels overrun.
+static float* g_vstScratch = nullptr;
+static std::atomic<unsigned long> g_vstScratchCap{0};  // capacity in floats
+#endif
+
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
 // Runs on the audio thread — must not block.
 //
@@ -406,6 +427,27 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   if (flags & paInputOverflow)    g_xrunCount.fetch_add(1, std::memory_order_relaxed);
   if (flags & paOutputUnderflow)  g_xrunCount.fetch_add(1, std::memory_order_relaxed);
 
+  // ── VST insert chain (before monitor / PCM / Opus) ────────────────────────
+  // Process the captured input through the configured chain into scratch, then
+  // route the processed signal downstream via procIn. Empty chain → procIn == in
+  // (no copy, no cost). Guarded so an undersized scratch never overruns.
+  const float* procIn = in;
+#ifdef KGB_WITH_VST
+  {
+    const int chainCount = g_vstChainCount.load(std::memory_order_acquire);
+    const unsigned long need = frames * static_cast<unsigned long>(inCh);
+    if (in && inCh > 0 && chainCount > 0 && g_vstScratch &&
+        need <= g_vstScratchCap.load(std::memory_order_relaxed)) {
+      int ids[MAX_VST_CHAIN];
+      int n = chainCount < MAX_VST_CHAIN ? chainCount : MAX_VST_CHAIN;
+      for (int i = 0; i < n; i++) ids[i] = g_vstChainSlots[i].load(std::memory_order_relaxed);
+      std::memcpy(g_vstScratch, in, need * sizeof(float));
+      kgb::vst::processChain(ids, n, g_vstScratch, inCh, static_cast<int>(frames));
+      procIn = g_vstScratch;
+    }
+  }
+#endif
+
   // ── Native monitoring + A4b peer mix ─────────────────────────────────────
   // Always zero the output buffer first, then additively blend monitor signal
   // and all inbound peer rings so neither path stomps on the other.
@@ -416,7 +458,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       const float invInCh = 1.0f / static_cast<float>(inCh);
       for (unsigned long f = 0; f < frames; f++) {
         float mono = 0.0f;
-        for (int c = 0; c < inCh; c++) mono += in[f * inCh + c];
+        for (int c = 0; c < inCh; c++) mono += procIn[f * inCh + c];
         mono *= invInCh * gain;
         for (int c = 0; c < outCh; c++) out[f * outCh + c] = mono;
       }
@@ -496,7 +538,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
     const size_t bytes = static_cast<size_t>(frames) * inCh * sizeof(float);
     float* copy = static_cast<float*>(std::malloc(bytes));
     if (copy) {
-      std::memcpy(copy, in, bytes);
+      std::memcpy(copy, procIn, bytes);
       PcmChunk* chunk = new PcmChunk{copy, frames, static_cast<size_t>(inCh)};
       napi_status status = g_pcmTsfn.NonBlockingCall(chunk,
         [](Napi::Env env, Napi::Function jsCb, PcmChunk* c) {
@@ -536,7 +578,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       if (!st.enc) continue;
 
       for (unsigned long f = 0; f < frames; f++) {
-        st.accumBuf[st.accumCount++] = in[f * inCh + ch];
+        st.accumBuf[st.accumCount++] = procIn[f * inCh + ch];
 
         if (st.accumCount >= st.frameSize) {
           // Full Opus frame — ship to JS thread for encoding.
@@ -773,6 +815,18 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   g_streamInputChannels.store(inputChannels, std::memory_order_release);
   g_streamOutputChannels.store(outputChannels, std::memory_order_release);
 
+#ifdef KGB_WITH_VST
+  // Preallocate the VST insert-chain scratch for the worst case (largest buffer
+  // size × input channels), so the RT callback never allocates. Freed in
+  // closeStream. The actual frames per callback is <= bufferSize.
+  {
+    const unsigned long cap = 512ul * static_cast<unsigned long>(inputChannels);
+    std::free(g_vstScratch);
+    g_vstScratch = static_cast<float*>(std::malloc(cap * sizeof(float)));
+    g_vstScratchCap.store(g_vstScratch ? cap : 0, std::memory_order_release);
+  }
+#endif
+
   float initialGain = 0.0f;
   if (opts.Get("monitorGain").IsNumber()) {
     initialGain = static_cast<float>(opts.Get("monitorGain").As<Napi::Number>().DoubleValue());
@@ -934,6 +988,15 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   g_streamInputChannels.store(0, std::memory_order_release);
   g_streamOutputChannels.store(0, std::memory_order_release);
   g_monitorGain.store(0.0f, std::memory_order_relaxed);
+
+#ifdef KGB_WITH_VST
+  // Free the insert-chain scratch. Pa_CloseStream above guarantees the RT
+  // callback has stopped, so this cannot race the audio thread. Loaded plugins
+  // persist across stream restarts (they re-process on the next openStream).
+  g_vstScratchCap.store(0, std::memory_order_release);
+  std::free(g_vstScratch);
+  g_vstScratch = nullptr;
+#endif
 
   if (pcmWasAlive) {
     g_pcmTsfn.Release();
@@ -1187,6 +1250,151 @@ Napi::Value PushSoftmix(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+#ifdef KGB_WITH_VST
+// ─── VST3 host bindings (V2 scan / V3 load+unload+params + chain) ─────────────
+static Napi::Object classDescToObj(Napi::Env env, const kgb::vst::ClassDesc& c) {
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("name",          Napi::String::New(env, c.name));
+  o.Set("vendor",        Napi::String::New(env, c.vendor));
+  o.Set("version",       Napi::String::New(env, c.version));
+  o.Set("category",      Napi::String::New(env, c.category));
+  o.Set("type",          Napi::String::New(env, c.type));
+  o.Set("subCategories", Napi::String::New(env, c.subCategories));
+  o.Set("uid",           Napi::String::New(env, c.uid));
+  o.Set("path",          Napi::String::New(env, c.path));
+  return o;
+}
+
+// scanVst3(paths?: string[]) → ClassDesc[]   (empty/omitted → OS default paths)
+static Napi::Value ScanVst3(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::vector<std::string> paths;
+  if (info.Length() >= 1 && info[0].IsArray()) {
+    Napi::Array arr = info[0].As<Napi::Array>();
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+      Napi::Value v = arr.Get(i);
+      if (v.IsString()) paths.push_back(v.As<Napi::String>().Utf8Value());
+    }
+  }
+  auto classes = kgb::vst::scan(paths);
+  Napi::Array out = Napi::Array::New(env, classes.size());
+  for (uint32_t i = 0; i < classes.size(); i++) out.Set(i, classDescToObj(env, classes[i]));
+  return out;
+}
+
+// defaultVst3Paths() → string[]
+static Napi::Value DefaultVst3Paths(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  auto paths = kgb::vst::defaultSearchPaths();
+  Napi::Array out = Napi::Array::New(env, paths.size());
+  for (uint32_t i = 0; i < paths.size(); i++) out.Set(i, Napi::String::New(env, paths[i]));
+  return out;
+}
+
+// loadPlugin(path, classUid, sampleRate, maxBlockSize, slotId) → LoadResult
+static Napi::Value LoadPlugin(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 5 || !info[0].IsString() || !info[1].IsString() ||
+      !info[2].IsNumber() || !info[3].IsNumber() || !info[4].IsNumber()) {
+    Napi::TypeError::New(env,
+        "loadPlugin(path:string, classUid:string, sampleRate:number, "
+        "maxBlockSize:number, slotId:number)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  auto r = kgb::vst::loadPlugin(
+      info[0].As<Napi::String>().Utf8Value(),
+      info[1].As<Napi::String>().Utf8Value(),
+      info[2].As<Napi::Number>().DoubleValue(),
+      info[3].As<Napi::Number>().Int32Value(),
+      info[4].As<Napi::Number>().Int32Value());
+
+  Napi::Object o = Napi::Object::New(env);
+  o.Set("ok",    Napi::Boolean::New(env, r.ok));
+  o.Set("error", Napi::String::New(env, r.error));
+  o.Set("slotId", Napi::Number::New(env, r.slotId));
+  o.Set("name",   Napi::String::New(env, r.name));
+  o.Set("vendor", Napi::String::New(env, r.vendor));
+  o.Set("type",   Napi::String::New(env, r.type));
+  o.Set("uid",    Napi::String::New(env, r.uid));
+  o.Set("numInputChannels",  Napi::Number::New(env, r.numInputChannels));
+  o.Set("numOutputChannels", Napi::Number::New(env, r.numOutputChannels));
+  Napi::Array params = Napi::Array::New(env, r.params.size());
+  for (uint32_t i = 0; i < r.params.size(); i++) {
+    const auto& p = r.params[i];
+    Napi::Object po = Napi::Object::New(env);
+    po.Set("id",                Napi::Number::New(env, p.id));
+    po.Set("title",             Napi::String::New(env, p.title));
+    po.Set("units",             Napi::String::New(env, p.units));
+    po.Set("defaultNormalized", Napi::Number::New(env, p.defaultNormalized));
+    po.Set("stepCount",         Napi::Number::New(env, p.stepCount));
+    po.Set("flags",             Napi::Number::New(env, p.flags));
+    params.Set(i, po);
+  }
+  o.Set("params", params);
+  return o;
+}
+
+// unloadPlugin(slotId) → boolean
+static Napi::Value UnloadPlugin(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "unloadPlugin(slotId:number)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  return Napi::Boolean::New(env, kgb::vst::unloadPlugin(info[0].As<Napi::Number>().Int32Value()));
+}
+
+// setParam(slotId, paramId, valueNormalized) → boolean
+static Napi::Value SetParam(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+    Napi::TypeError::New(env, "setParam(slotId:number, paramId:number, value:number)")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  return Napi::Boolean::New(env, kgb::vst::setParamNormalized(
+      info[0].As<Napi::Number>().Int32Value(),
+      static_cast<uint32_t>(info[1].As<Napi::Number>().Int64Value()),
+      info[2].As<Napi::Number>().DoubleValue()));
+}
+
+// getParam(slotId, paramId) → number (normalized)
+static Napi::Value GetParam(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+    Napi::TypeError::New(env, "getParam(slotId:number, paramId:number)")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  return Napi::Number::New(env, kgb::vst::getParamNormalized(
+      info[0].As<Napi::Number>().Int32Value(),
+      static_cast<uint32_t>(info[1].As<Napi::Number>().Int64Value())));
+}
+
+// setInsertChain(slotIds: number[]) → undefined
+// Sets the ordered input-side insert chain the RT callback applies. Empty array
+// clears it (passthrough). Per-target routing (channel/track) is V6.
+static Napi::Value SetInsertChain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsArray()) {
+    Napi::TypeError::New(env, "setInsertChain(slotIds:number[])").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  Napi::Array arr = info[0].As<Napi::Array>();
+  int n = 0;
+  for (uint32_t i = 0; i < arr.Length() && n < MAX_VST_CHAIN; i++) {
+    Napi::Value v = arr.Get(i);
+    if (!v.IsNumber()) continue;
+    g_vstChainSlots[n].store(v.As<Napi::Number>().Int32Value(), std::memory_order_relaxed);
+    n++;
+  }
+  // Publish the count last (release) so the RT callback never reads a slot id
+  // that hasn't been written yet.
+  g_vstChainCount.store(n, std::memory_order_release);
+  return env.Undefined();
+}
+#endif  // KGB_WITH_VST
+
 // ─── Module init ──────────────────────────────────────────────────────────────
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("paInit",           Napi::Function::New(env, PaInit));
@@ -1201,6 +1409,18 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("pushInboundOpus",       Napi::Function::New(env, PushInboundOpus));
   exports.Set("setRemoteChannelGain",  Napi::Function::New(env, SetRemoteChannelGain));
   exports.Set("pushSoftmix",           Napi::Function::New(env, PushSoftmix));
+#ifdef KGB_WITH_VST
+  exports.Set("scanVst3",         Napi::Function::New(env, ScanVst3));
+  exports.Set("defaultVst3Paths", Napi::Function::New(env, DefaultVst3Paths));
+  exports.Set("loadPlugin",       Napi::Function::New(env, LoadPlugin));
+  exports.Set("unloadPlugin",     Napi::Function::New(env, UnloadPlugin));
+  exports.Set("setParam",         Napi::Function::New(env, SetParam));
+  exports.Set("getParam",         Napi::Function::New(env, GetParam));
+  exports.Set("setInsertChain",   Napi::Function::New(env, SetInsertChain));
+  exports.Set("vstEnabled",       Napi::Boolean::New(env, true));
+#else
+  exports.Set("vstEnabled",       Napi::Boolean::New(env, false));
+#endif
   return exports;
 }
 

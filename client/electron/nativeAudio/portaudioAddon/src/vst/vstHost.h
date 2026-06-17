@@ -27,6 +27,7 @@ struct ClassDesc {
   std::string type;         // normalized: "effect" | "instrument" | "other"
   std::string subCategories; // e.g. "Fx|Reverb" or "Instrument|Synth"
   std::string uid;          // 32-char hex of the class UID (stable identity)
+  std::string path;         // module path (set by scan(); empty for probe())
 };
 
 // Result of loading a single module and enumerating its factory.

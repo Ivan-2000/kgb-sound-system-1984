@@ -198,4 +198,36 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   /** Diagnostics: how many softmix buffers actually left the renderer
    *  (posted into the audio MessagePort) vs failed (port missing/closed). */
   getSoftmixDiag: () => ({ sent: softmixSent, failed: softmixFailed }),
+
+  // ── VST3 host (V2/V3). Available only with the build:vst addon; with the
+  //    default build these resolve to { ok:false, error:'VST host not built' }.
+  //    Contract surface agreed with nik (AGENTS.md): scanVst3 / loadPlugin /
+  //    unloadPlugin / setParam / getParam / setInsertChain. openEditor (V4) and
+  //    getPluginState (V9) land in E2.
+  vst: {
+    /** Enumerate plugin classes under `paths` (or OS default paths if omitted).
+     *  @returns {Promise<{ok:boolean, plugins?:Array<{name,vendor,version,type:'effect'|'instrument',subCategories,uid,path}>, error?:string}>} */
+    scan: (paths) => ipcRenderer.invoke('vst:scan', { paths }),
+
+    /** OS default VST3 search paths. @returns {Promise<{ok:boolean, paths?:string[], error?:string}>} */
+    defaultPaths: () => ipcRenderer.invoke('vst:default-paths'),
+
+    /** Load a plugin into a runtime slot and set up realtime processing.
+     *  @param {{path:string, classUid?:string, sampleRate?:number, maxBlockSize?:number, slotId?:number}} opts
+     *  @returns {Promise<{ok:boolean, slotId:number, name:string, vendor:string, type:string, uid:string, numInputChannels:number, numOutputChannels:number, params:Array<{id:number,title:string,units:string,defaultNormalized:number,stepCount:number,flags:number}>, error?:string}>} */
+    load: (opts) => ipcRenderer.invoke('vst:load', opts),
+
+    /** Unload the plugin in `slotId`. @returns {Promise<{ok:boolean, error?:string}>} */
+    unload: (slotId) => ipcRenderer.invoke('vst:unload', { slotId }),
+
+    /** Set a normalized [0,1] parameter value. @returns {Promise<{ok:boolean, error?:string}>} */
+    setParam: (slotId, paramId, value) => ipcRenderer.invoke('vst:set-param', { slotId, paramId, value }),
+
+    /** Read a normalized [0,1] parameter value. @returns {Promise<{ok:boolean, value?:number, error?:string}>} */
+    getParam: (slotId, paramId) => ipcRenderer.invoke('vst:get-param', { slotId, paramId }),
+
+    /** Set the ordered input-side insert chain (array of loaded slot ids; [] clears).
+     *  @returns {Promise<{ok:boolean, error?:string}>} */
+    setInsertChain: (slotIds) => ipcRenderer.invoke('vst:set-insert-chain', { slotIds }),
+  },
 })
