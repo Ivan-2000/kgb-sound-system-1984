@@ -55,7 +55,11 @@ class Recorder {
     this.active.delete(channelIdx)
     this.maybeUnsubscribe()
     if (rec.chunks.length === 0 || rec.channelCount === 0) return null
-    const { sampleRate } = nativeAudioController.getSnapshot()
+    // §8.A.1: use the SR actually reported by Pa_GetStreamInfo, not the requested
+    // 48000 constant. On devices that negotiate a different rate (44.1k, 44100/WASAPI)
+    // the WAV header would otherwise encode the wrong pitch/length silently.
+    const snap = nativeAudioController.getSnapshot()
+    const sampleRate = snap.actualSampleRate ?? snap.sampleRate
     const chanIdx = Math.min(channelIdx, rec.channelCount - 1)
     const mono = extractChannel(rec.chunks, chanIdx, rec.channelCount)
     if (mono.length === 0) return null
@@ -75,10 +79,11 @@ class Recorder {
   getLive(channelIdx: number): { clipId: string; durSec: number; peaks: number[] } | null {
     const rec = this.active.get(channelIdx)
     if (!rec) return null
-    const { sampleRate } = nativeAudioController.getSnapshot()
+    const snap = nativeAudioController.getSnapshot()
+    const sr = (snap.actualSampleRate ?? snap.sampleRate) || 48000
     return {
       clipId: rec.clipId,
-      durSec: rec.framesSeen / (sampleRate || 48000),
+      durSec: rec.framesSeen / sr,
       peaks: rec.peaks.slice(),
     }
   }

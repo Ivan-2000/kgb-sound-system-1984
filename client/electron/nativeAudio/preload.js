@@ -16,6 +16,14 @@ const engineCrashHandlers = new Set()
 // A3.5c: main broadcasts this when the audio utilityProcess exits abnormally.
 // Renderer learns the engine is gone without taking the window down with it.
 ipcRenderer.on('audio:engine-crashed', (_event, payload) => {
+  // §4.7: close the stale MessagePort — its utility-side counterpart is dead.
+  // Without this, pushInboundOpus() would keep posting to a dead port, and
+  // streamActive=true could remain set if the openStream reply arrived just
+  // before the crash (the stale-port race described in AUDIT §4.7).
+  if (audioPort) {
+    try { audioPort.close() } catch { /* ignore */ }
+    audioPort = null
+  }
   engineCrashHandlers.forEach((h) => {
     try { h(payload) } catch (err) { console.error('[nativeAudio] engine-crashed handler:', err) }
   })

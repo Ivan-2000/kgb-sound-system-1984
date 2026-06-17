@@ -62,6 +62,9 @@ function decodePacket(buf: ArrayBuffer, fromPeerId: string): InboundOpusPacket {
   return { peerId: fromPeerId, channelId: String(channelIndex), sequence, timestampUs, payload }
 }
 
+// §4.2: maximum valid input channel index (must match MAX_INPUT_CH in addon.cc).
+const MAX_INPUT_CH = 64
+
 class NativeRtcManager {
   private peers = new Map<string, PeerData>()
   private sendSignalFn: SignalFn | null = null
@@ -69,9 +72,16 @@ class NativeRtcManager {
   private active = false
   private rttListeners = new Set<(peerId: string, rttMs: number | null) => void>()
   private sendEnabled = new Set<number>()
+  /** §4.1: our own socket ID — set by App once the socket connects. */
+  private mySocketId: string | null = null
 
   setSendSignal(fn: SignalFn): void {
     this.sendSignalFn = fn
+  }
+
+  /** §4.1: call with our own socket ID so we can break offer/answer glare. */
+  setMySocketId(id: string): void {
+    this.mySocketId = id
   }
 
   setSendEnabled(channelIndex: number, enabled: boolean): void {
@@ -135,6 +145,17 @@ class NativeRtcManager {
       console.log('[nativeRtc] peer', socketId, 'state:', pc.connectionState)
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.cleanupPeer(socketId)
+      } else if (pc.connectionState === 'disconnected') {
+        // §4.5: 'disconnected' is transient — the browser will try to recover.
+        // If it doesn't recover within 10 s, clean up to avoid the leak described
+        // in AUDIT §4.5 (RTCPeerConnection + ping timer living forever).
+        setTimeout(() => {
+          const e = this.peers.get(socketId)
+          if (e && e.pc === pc && pc.connectionState === 'disconnected') {
+            console.warn('[nativeRtc] peer', socketId, 'still disconnected after 10 s — cleaning up')
+            this.cleanupPeer(socketId)
+          }
+        }, 10000)
       }
     }
 
@@ -162,6 +183,24 @@ class NativeRtcManager {
       if (!this.peers.has(fromSocketId)) this.addPeer(fromSocketId, false)
       const entry = this.peers.get(fromSocketId)
       if (!entry) return
+
+      // §4.1: Glare (simultaneous offer) resolution via lexicographic tie-break.
+      // The peer with the LOWER socket ID is "polite": it rolls back its own pending
+      // offer and accepts the remote one. The "impolite" peer (higher ID) ignores
+      // the collision and keeps its offer — the polite peer will answer it.
+      const collision = entry.pc.signalingState !== 'stable'
+      if (collision) {
+        const weArePolite = this.mySocketId !== null && this.mySocketId < fromSocketId
+        if (!weArePolite) {
+          // Impolite: ignore remote offer, our offer takes precedence.
+          return
+        }
+        // Polite: rollback our pending offer before accepting theirs.
+        entry.pc
+          .setLocalDescription({ type: 'rollback' })
+          .catch(() => { /* rollback may fail if state has since changed */ })
+      }
+
       entry.pc
         .setRemoteDescription({ type: 'offer', sdp: signal.sdp })
         .then(() => {
@@ -295,7 +334,16 @@ class NativeRtcManager {
     channel.binaryType = 'arraybuffer'
     channel.onmessage = (e) => {
       if (!window.nativeAudio || !this.active) return
-      window.nativeAudio.pushInboundOpus(decodePacket(e.data as ArrayBuffer, socketId))
+      const buf = e.data as ArrayBuffer
+      // §4.2: reject packets that are too short to contain the 13-byte header.
+      if (buf.byteLength < 14) return
+      const packet = decodePacket(buf, socketId)
+      // §4.2: clamp channelId to the addon's MAX_INPUT_CH range.
+      // A misbehaving/malicious peer sending channelIndex ≥ 64 would exhaust all
+      // 32 g_peerSlots with orphan decoders, blocking legitimate peers.
+      const chIdx = parseInt(packet.channelId, 10)
+      if (!Number.isInteger(chIdx) || chIdx < 0 || chIdx >= MAX_INPUT_CH) return
+      window.nativeAudio.pushInboundOpus(packet)
     }
     channel.onopen = () => {
       console.log('[nativeRtc] peer', socketId, 'datachannel open')
@@ -304,9 +352,14 @@ class NativeRtcManager {
 
   private broadcastOpusPacket(msg: OpusOutMessage): void {
     if (!this.sendEnabled.has(msg.channelIndex)) return
+    // §9.A.2: encode the packet ONCE before the loop — the payload is identical
+    // for all peers and encodePacket allocates a new ArrayBuffer each call.
+    // At 8 participants × 2 channels this was creating 700+ extra ArrayBuffers/s.
+    let encoded: ArrayBuffer | null = null
     for (const entry of this.peers.values()) {
       if (entry.channel?.readyState === 'open') {
-        entry.channel.send(encodePacket(msg))
+        if (!encoded) encoded = encodePacket(msg)
+        entry.channel.send(encoded)
       }
     }
   }

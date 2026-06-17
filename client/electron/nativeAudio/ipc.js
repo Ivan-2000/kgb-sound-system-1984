@@ -71,11 +71,38 @@ function spawnUtility() {
   return u
 }
 
+// §4.3: maximum time (ms) to wait for a reply from the utility process.
+// Covers hung ASIO drivers, a stalled openStream, etc. The exit-handler path
+// already rejects on crash; this guards the "utility is alive but silent" case.
+const REQUEST_TIMEOUT_MS = 10000
+
 function sendRequest(op, opts, transfer) {
   const u = spawnUtility()
   const id = ++reqId
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject })
+    let timer = null
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      pending.delete(id)
+    }
+
+    pending.set(id, {
+      resolve: (v) => { cleanup(); resolve(v) },
+      reject:  (e) => { cleanup(); reject(e) },
+    })
+
+    // §4.3: reject if utility doesn't reply within REQUEST_TIMEOUT_MS.
+    timer = setTimeout(() => {
+      pending.delete(id)
+      timer = null
+      if (transfer) {
+        for (const port of transfer) {
+          try { port.close() } catch { /* already closed */ }
+        }
+      }
+      reject(new Error(`audio:${op} timed out after ${REQUEST_TIMEOUT_MS} ms`))
+    }, REQUEST_TIMEOUT_MS)
+
     try {
       const message = { kind: 'request', id, op, opts }
       if (transfer && transfer.length > 0) {
@@ -84,7 +111,7 @@ function sendRequest(op, opts, transfer) {
         u.postMessage(message)
       }
     } catch (e) {
-      pending.delete(id)
+      cleanup()
       // postMessage threw before the transfer happened (e.g. utility already
       // exited).  The ports were never transferred to the utility process, so
       // close them here to avoid a handle leak (GC would eventually collect

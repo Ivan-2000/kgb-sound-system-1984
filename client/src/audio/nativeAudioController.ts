@@ -4,6 +4,12 @@ import { useInsertChainStore } from './insertChainStore'
 // A2 — auto-select priority: best driver wins, user can override via Settings.
 const HOST_API_PRIORITY: readonly string[] = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'MME']
 
+// §8.A.2: single source of truth for Opus options.
+// 32 kbps is the sweet-spot for mono speech/instrument at this application's
+// use-case; 96 kbps (previous) was 3-4× above Opus saturation point and
+// inflated mesh traffic without perceptible quality gain.
+const OPUS_OPTS = { bitrate: 32000, complexity: 5, frameMs: 20 } as const
+
 function bestApiForDevice(device: NativeAudioDevice): string {
   for (const kind of HOST_API_PRIORITY) {
     if (device.hostApis.some((a) => a.kind === kind)) return kind
@@ -18,7 +24,10 @@ export interface NativeAudioSnapshot {
   selectedOutputId: number | null
   inputHostApiKind: string
   outputHostApiKind: string
+  /** Requested sample rate (may differ from actualSampleRate on some drivers). */
   sampleRate: number
+  /** §8.A.1: real SR reported by Pa_GetStreamInfo; null when no stream is active. */
+  actualSampleRate: number | null
   bufferSize: 64 | 128 | 256 | 512
   inputChannels: number
   /** Maximum input channels the selected device supports (0 when no device selected). */
@@ -43,6 +52,7 @@ class NativeAudioController {
   private inputHostApiKind = ''
   private outputHostApiKind = ''
   private sampleRate = 48000
+  private actualSampleRate: number | null = null  // §8.A.1: from Pa_GetStreamInfo
   private bufferSize: 64 | 128 | 256 | 512 = 256
   private inputChannels = 2
   private activeInputChannels = 0
@@ -172,6 +182,7 @@ class NativeAudioController {
       inputHostApiKind: this.inputHostApiKind,
       outputHostApiKind: this.outputHostApiKind,
       sampleRate: this.sampleRate,
+      actualSampleRate: this.actualSampleRate,
       bufferSize: this.bufferSize,
       inputChannels: this.inputChannels,
       maxInputChannels: this.maxInputChannelsForCurrent(),
@@ -291,7 +302,7 @@ class NativeAudioController {
       inputChannels: this.inputChannels,
       monitor: this.monitorGain > 0,
       monitorGain: this.monitorGain,
-      opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
+      opus: OPUS_OPTS,  // §8.A.2
     }
     if (resolvedOut) {
       opts.outputDeviceId = resolvedOut.id
@@ -321,6 +332,8 @@ class NativeAudioController {
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
+      // §8.A.1: save the SR actually negotiated by Pa_GetStreamInfo (may differ from requested).
+      this.actualSampleRate = result.sampleRate ?? null
       // V10: re-push all per-channel VST chains after (re)open — native g_chanChain*
       // tables survive closeStream/openStream but are reset on utility process respawn.
       void useInsertChainStore.getState().resyncAllChains()
@@ -328,6 +341,7 @@ class NativeAudioController {
       this.error = result.error ?? 'openStream failed'
       this.inputLatencyMs = null
       this.outputLatencyMs = null
+      this.actualSampleRate = null
     }
     this.notify()
     return result
@@ -343,6 +357,7 @@ class NativeAudioController {
     this.unsubscribePcm()
     this.inputLatencyMs = null
     this.outputLatencyMs = null
+    this.actualSampleRate = null
     this.notify()
   }
 
@@ -389,7 +404,7 @@ class NativeAudioController {
       inputChannels: this.inputChannels,
       monitor: this.monitorGain > 0,
       monitorGain: this.monitorGain,
-      opus: { bitrate: 96000, complexity: 5, frameMs: 20 },
+      opus: OPUS_OPTS,  // §8.A.2
     }
     if (resolvedOut) {
       opts.outputDeviceId = resolvedOut.id
@@ -417,6 +432,7 @@ class NativeAudioController {
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
+      this.actualSampleRate = result.sampleRate ?? null  // §8.A.1
       // V10: re-push per-channel VST chains after device change / engine respawn.
       void useInsertChainStore.getState().resyncAllChains()
     } else {
@@ -435,6 +451,7 @@ class NativeAudioController {
       this.error = result.error ?? 'reinit failed'
       this.inputLatencyMs = null
       this.outputLatencyMs = null
+      this.actualSampleRate = null
     }
     this.notify()
     return result

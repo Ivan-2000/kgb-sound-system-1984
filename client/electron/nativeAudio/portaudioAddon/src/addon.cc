@@ -89,11 +89,12 @@ static std::atomic<int>  g_opusNumCh{0}; // set (release) before Pa_StartStream
 // For A4 we encode on the JS thread for simplicity; xrun pressure from the
 // encoder will surface in xrunCount/dropCount metrics added by A4.5.
 struct OpusEncJob {
-  int      channelIndex;
-  uint32_t sequence;
-  int64_t  timestampUs;  // Pa stream time in µs at the start of this frame
-  float*   pcm;          // malloc'd copy, frameSize floats
-  int      frameSize;
+  int          channelIndex;
+  uint32_t     sequence;
+  int64_t      timestampUs;   // Pa stream time in µs at the start of this frame
+  float*       pcm;           // malloc'd copy, frameSize floats
+  int          frameSize;
+  OpusEncoder* enc;           // §2.1: snapshot at enqueue time — not the global pointer
 };
 
 static Napi::ThreadSafeFunction g_opusTsfn;
@@ -158,6 +159,9 @@ struct PeerDecState {
   // M5: per-channel RMS level, leaky integrator: lvl = 0.9*lvl + 0.1*frameRms.
   // Written exclusively from PaCallback (RT), read from JS thread (GetStats) — atomic to prevent tearing.
   std::atomic<float>                       rmsLevel{0.0f};
+  // §1.3: EWMA of ring fill level (samples). Written + read only from RT callback.
+  // Used to detect ADC-clock/DAC-clock drift and compensate by ±1 sample/callback.
+  std::atomic<float>                       fillEwma{0.0f};
 
   PeerDecState() = default;
   PeerDecState(const PeerDecState&) = delete;
@@ -176,10 +180,14 @@ static std::atomic<PeerDecState*> g_peerSlots[MAX_PEERS];
 // AudioWorklet captures Tone.js master output and forwards it here via IPC.
 // Ring capacity: 8192 samples ≈ 170 ms at 48 kHz (power-of-two for index masking).
 // Producer: utility JS thread (PushSoftmix).  Consumer: RT callback (PaCallback).
-static constexpr uint32_t SOFTMIX_RING_CAP = 8192u;
+// §1.1 target fill: ~5 ms ahead (256 samples at 48 kHz). EWMA tracks actual fill;
+// rpos is adjusted by ±1 sample/callback to compensate AudioContext vs PA clock drift.
+static constexpr uint32_t SOFTMIX_RING_CAP    = 8192u;
+static constexpr uint32_t SOFTMIX_TARGET_FILL = 256u;   // §1.1: ~5 ms playout target
 static float              g_softmixBuf[SOFTMIX_RING_CAP] = {};
 static std::atomic<uint32_t> g_softmixRpos{0};
 static std::atomic<uint32_t> g_softmixWpos{0};
+static float              g_softmixFillEwma = 0.0f;     // §1.1: RT-only, no atomic needed
 
 // ─── hostApiKind helpers ──────────────────────────────────────────────────────
 static const char* hostApiKind(PaHostApiTypeId t) {
@@ -551,18 +559,48 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       const float curLev = peer->rmsLevel.load(std::memory_order_relaxed);
       peer->rmsLevel.store(0.9f * curLev + 0.1f * frameRms, std::memory_order_relaxed);
 
-      peer->ring.rpos.store(r + take, std::memory_order_release);
+      // §1.3: drift compensation — track EWMA of ring fill and adjust rpos by
+      // ±1 sample to match sender ADC clock to our DAC clock.
+      // Target: 2 × decode frame (≈ 40 ms) buffered ahead.
+      // The output mix always uses `take` samples (unchanged); only rpos advances
+      // by `consume` to absorb (speed up) or retain (slow down) one sample.
+      {
+        const float alpha   = 1.0f / 64.0f; // slow EWMA (~0.3 s at 187 Hz)
+        const float curEwma = peer->fillEwma.load(std::memory_order_relaxed);
+        const float newEwma = curEwma + alpha * (static_cast<float>(avail) - curEwma);
+        peer->fillEwma.store(newEwma, std::memory_order_relaxed);
+
+        const float target = static_cast<float>(DEC_FRAME_DEFAULT * 2); // ~40 ms
+        uint32_t consume = take;
+        if (newEwma > target + static_cast<float>(frames) && take + 1u <= avail)
+          consume = take + 1u;  // overfull: drain 1 extra sample to catch up
+        else if (newEwma < target * 0.5f && consume > 0u)
+          consume = take - 1u;  // underfull: retain 1 sample to slow down
+        peer->ring.rpos.store(r + consume, std::memory_order_release);
+      }
     }
 
     // Softmix: Tone.js / Web Audio PCM routed through PortAudio output.
     // AudioWorklet captures the Tone.js master bus (stereo→mono) and sends it
     // here via IPC. Mixed additively so it blends with monitor and peer audio.
+    // §1.1: EWMA of ring fill tracks AudioContext vs PortAudio clock drift; rpos
+    // advances by `consume` (= take ±1) to compensate without audible artifacts.
     {
       const uint32_t smr   = g_softmixRpos.load(std::memory_order_relaxed);
       const uint32_t smw   = g_softmixWpos.load(std::memory_order_acquire);
       const uint32_t avail = smw - smr; // unsigned wrap is intentional
       const uint32_t take  = avail < static_cast<uint32_t>(frames)
                                ? avail : static_cast<uint32_t>(frames);
+
+      // §1.1: update EWMA of available samples and derive drift adjustment.
+      const float smAlpha = 1.0f / 64.0f;
+      g_softmixFillEwma += smAlpha * (static_cast<float>(avail) - g_softmixFillEwma);
+      uint32_t consume = take;
+      if (g_softmixFillEwma > static_cast<float>(SOFTMIX_TARGET_FILL + frames) && take + 1u <= avail)
+        consume = take + 1u;  // ring growing → drain 1 extra
+      else if (g_softmixFillEwma < static_cast<float>(SOFTMIX_TARGET_FILL) * 0.5f && consume > 0u)
+        consume = take - 1u;  // ring shrinking → retain 1 sample
+
       for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
         const float samp = (f < take)
             ? g_softmixBuf[(smr + f) & (SOFTMIX_RING_CAP - 1u)]
@@ -570,18 +608,27 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
         for (int c = 0; c < outCh; c++)
           out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] += samp;
       }
-      if (take > 0)
-        g_softmixRpos.store(smr + take, std::memory_order_release);
+      if (consume > 0u)
+        g_softmixRpos.store(smr + consume, std::memory_order_release);
     }
 
-    // Hard-clip the final mix to [-1, 1] to prevent DAC distortion when
-    // several hot peers are active simultaneously (monitor + N peers can
-    // easily exceed ±1 without this guard).
-    for (unsigned long f = 0; f < frames; f++) {
-      for (int c = 0; c < outCh; c++) {
-        float& s = out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)];
-        if      (s >  1.0f) s =  1.0f;
-        else if (s < -1.0f) s = -1.0f;
+    // §2.2: Soft peak limiter — find the frame peak; if it exceeds 1.0, scale the
+    // entire frame down uniformly. This preserves the mix balance (unlike hard-clip
+    // which distorts the loudest peaks) and prevents DAC overflow.
+    {
+      float peak = 0.0f;
+      for (unsigned long f = 0; f < frames; f++) {
+        for (int c = 0; c < outCh; c++) {
+          float v = out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)];
+          if (v < 0.0f) v = -v;
+          if (v > peak) peak = v;
+        }
+      }
+      if (peak > 1.0f) {
+        const float inv = 1.0f / peak;
+        for (unsigned long f = 0; f < frames; f++)
+          for (int c = 0; c < outCh; c++)
+            out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] *= inv;
       }
     }
   }
@@ -647,18 +694,19 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
               tsUs,
               pcmCopy,
               st.frameSize,
+              st.enc,  // §2.1: snapshot — survives closeStream/reinit without reading global
             };
             napi_status s = g_opusTsfn.NonBlockingCall(job,
               [](Napi::Env env, Napi::Function jsCb, OpusEncJob* j) {
                 // Consumed from queue — decrement fill tracker immediately.
                 g_opusTsfnFill.fetch_sub(1, std::memory_order_relaxed);
 
-                // Encoder pointer may be null if closeStream() ran on the JS
-                // thread between the NonBlockingCall and this lambda firing.
-                // Both closeStream() and this lambda run on the same JS thread
-                // so they never interleave, but the sequence can be:
-                //   RT enqueues job → closeStream sets enc=nullptr → lambda runs
-                OpusEncoder* enc = g_opusCh[j->channelIndex].enc;
+                // §2.1: use snapshotted encoder pointer. After closeStream/reinit the
+                // global g_opusCh[].enc may be a NEW encoder; using it with OLD PCM
+                // would corrupt its state. The snapshot captures the encoder that was
+                // alive when the job was enqueued — it may be null if closeStream ran
+                // after enqueue, in which case we simply skip encoding.
+                OpusEncoder* enc = j->enc;
                 if (enc) {
                   unsigned char encoded[OPUS_MAX_PACKET];
                   int encodedLen = opus_encode_float(enc, j->pcm, j->frameSize,
@@ -746,11 +794,6 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   }
 
   Napi::Object opts = info[0].As<Napi::Object>();
-
-  // A3.5c smoke-test affordance: abort() to verify crash isolation.
-  if (opts.Get("crashMe").IsBoolean() && opts.Get("crashMe").As<Napi::Boolean>().Value()) {
-    std::abort();
-  }
 
   // Resolve device IDs
   const bool hasInputDeviceId  = opts.Get("inputDeviceId").IsNumber();
@@ -1032,9 +1075,12 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   const bool opusWasAlive = g_opusTsfnAlive.exchange(false, std::memory_order_acq_rel);
 
   if (g_stream) {
-    PaError stopErr = Pa_StopStream(g_stream);
+    // §8.A.3: Pa_AbortStream terminates immediately without waiting for buffers
+    // to drain — Pa_StopStream can block indefinitely with a hung ASIO driver,
+    // freezing the synchronous utility dispatcher and all pending IPC requests.
+    PaError stopErr = Pa_AbortStream(g_stream);
     if (stopErr != paNoError)
-      std::fprintf(stderr, "[addon] Pa_StopStream: %s — forcing close\n",
+      std::fprintf(stderr, "[addon] Pa_AbortStream: %s — forcing close\n",
                    Pa_GetErrorText(stopErr));
     // Pa_CloseStream is called unconditionally: it stops the stream if still
     // active (e.g. ASIO driver hang) and frees resources.  cleanupDecoderState
