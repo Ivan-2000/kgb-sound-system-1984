@@ -107,7 +107,7 @@ export function encodeWavMono(samples: Float32Array, sampleRate: number): Blob {
 /** Encode a mono Float32 buffer as MP3 using the background worker. */
 export function encodeMp3(samples: Float32Array, sampleRate: number, kbps = 128): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    import('./mp3Encoder.worker?worker').then(({ default: Mp3Worker }) => {
+    import('../workers/mp3Encoder.worker?worker').then(({ default: Mp3Worker }) => {
       const worker = new Mp3Worker()
       const copy = new Float32Array(samples)  // transfer-safe copy
       worker.onmessage = (e: MessageEvent<{ mp3?: ArrayBuffer; error?: string }>) => {
