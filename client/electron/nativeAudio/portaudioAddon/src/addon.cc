@@ -511,125 +511,112 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   }
 #endif
 
-  // ── Native monitoring + A4b peer mix ─────────────────────────────────────
-  // Always zero the output buffer first, then additively blend monitor signal
-  // and all inbound peer rings so neither path stomps on the other.
+  // ── §9.A.5: merged output pass ───────────────────────────────────────────
+  // Monitor + all peer rings + softmix summed per-frame in ONE loop instead
+  // of N_peers+3 separate passes. Drift compensation is computed outside the
+  // frame loop; only rpos advances and RMS updates happen after the loop.
   if (out && outCh > 0) {
-    std::memset(out, 0, frames * static_cast<size_t>(outCh) * sizeof(float));
+    // ── Pre-compute per-peer state (outside the hot frame loop) ────────────
+    struct PeerMix {
+      PeerDecState* peer   = nullptr;
+      float         gain   = 0.0f;
+      uint32_t      r      = 0;
+      uint32_t      take   = 0;
+      uint32_t      consume= 0;
+      float         sumSq  = 0.0f;
+    };
+    PeerMix pm[MAX_PEERS] = {};
 
-    if (in && inCh > 0 && gain > 0.0f) {
-      const float invInCh = 1.0f / static_cast<float>(inCh);
-      for (unsigned long f = 0; f < frames; f++) {
-        float mono = 0.0f;
-        for (int c = 0; c < inCh; c++) mono += procIn[f * inCh + c];
-        mono *= invInCh * gain;
-        for (int c = 0; c < outCh; c++) out[f * outCh + c] = mono;
-      }
-    }
-
-    // A4b + M4 + M5: mix one mono PCM ring per remote peer into every output channel,
-    // scaled by the per-channel gain (M4). Simultaneously compute pre-gain RMS for
-    // the leaky integrator (M5) so the VU meter reflects the actual decoded level.
     for (int s = 0; s < MAX_PEERS; s++) {
       PeerDecState* peer = g_peerSlots[s].load(std::memory_order_acquire);
       if (!peer) continue;
-      const float peerGain = peer->gain.load(std::memory_order_relaxed);
       const uint32_t r     = peer->ring.rpos.load(std::memory_order_relaxed);
-      const uint32_t w     = peer->ring.wpos.load(std::memory_order_acquire);
-      const uint32_t avail = w - r; // unsigned subtraction handles wrap correctly
+      const uint32_t avail = peer->ring.wpos.load(std::memory_order_acquire) - r;
       const uint32_t take  = avail < static_cast<uint32_t>(frames)
                                ? avail : static_cast<uint32_t>(frames);
-
-      float sumSq = 0.0f;
-      for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
-        float raw = 0.0f;
-        if (f < take) {
-          raw = peer->ring.buf[(r + f) & (PEER_RING_CAP - 1)];
-          sumSq += raw * raw;
-        }
-        const float samp = raw * peerGain;
-        for (int c = 0; c < outCh; c++) out[f * outCh + c] += samp;
-      }
-
-      // M5: leaky integrator — level = 0.9*level + 0.1*frameRms.
-      // RMS over decoded samples only (pre-gain); 0 when ring was empty (underrun).
-      const float frameRms = (take > 0)
-          ? std::sqrt(sumSq / static_cast<float>(take))
-          : 0.0f;
-      const float curLev = peer->rmsLevel.load(std::memory_order_relaxed);
-      peer->rmsLevel.store(0.9f * curLev + 0.1f * frameRms, std::memory_order_relaxed);
-
-      // §1.3: drift compensation — track EWMA of ring fill and adjust rpos by
-      // ±1 sample to match sender ADC clock to our DAC clock.
-      // Target: 2 × decode frame (≈ 40 ms) buffered ahead.
-      // The output mix always uses `take` samples (unchanged); only rpos advances
-      // by `consume` to absorb (speed up) or retain (slow down) one sample.
-      {
-        const float alpha   = 1.0f / 64.0f; // slow EWMA (~0.3 s at 187 Hz)
-        const float curEwma = peer->fillEwma.load(std::memory_order_relaxed);
-        const float newEwma = curEwma + alpha * (static_cast<float>(avail) - curEwma);
-        peer->fillEwma.store(newEwma, std::memory_order_relaxed);
-
-        const float target = static_cast<float>(DEC_FRAME_DEFAULT * 2); // ~40 ms
-        uint32_t consume = take;
-        if (newEwma > target + static_cast<float>(frames) && take + 1u <= avail)
-          consume = take + 1u;  // overfull: drain 1 extra sample to catch up
-        else if (newEwma < target * 0.5f && consume > 0u)
-          consume = take - 1u;  // underfull: retain 1 sample to slow down
-        peer->ring.rpos.store(r + consume, std::memory_order_release);
-      }
-    }
-
-    // Softmix: Tone.js / Web Audio PCM routed through PortAudio output.
-    // AudioWorklet captures the Tone.js master bus (stereo→mono) and sends it
-    // here via IPC. Mixed additively so it blends with monitor and peer audio.
-    // §1.1: EWMA of ring fill tracks AudioContext vs PortAudio clock drift; rpos
-    // advances by `consume` (= take ±1) to compensate without audible artifacts.
-    {
-      const uint32_t smr   = g_softmixRpos.load(std::memory_order_relaxed);
-      const uint32_t smw   = g_softmixWpos.load(std::memory_order_acquire);
-      const uint32_t avail = smw - smr; // unsigned wrap is intentional
-      const uint32_t take  = avail < static_cast<uint32_t>(frames)
-                               ? avail : static_cast<uint32_t>(frames);
-
-      // §1.1: update EWMA of available samples and derive drift adjustment.
-      const float smAlpha = 1.0f / 64.0f;
-      g_softmixFillEwma += smAlpha * (static_cast<float>(avail) - g_softmixFillEwma);
+      // §1.3: drift EWMA and consume, computed before the frame loop.
+      const float alpha   = 1.0f / 64.0f;
+      const float curEwma = peer->fillEwma.load(std::memory_order_relaxed);
+      const float newEwma = curEwma + alpha * (static_cast<float>(avail) - curEwma);
+      peer->fillEwma.store(newEwma, std::memory_order_relaxed);
+      const float target  = static_cast<float>(DEC_FRAME_DEFAULT * 2);
       uint32_t consume = take;
-      if (g_softmixFillEwma > static_cast<float>(SOFTMIX_TARGET_FILL + frames) && take + 1u <= avail)
-        consume = take + 1u;  // ring growing → drain 1 extra
-      else if (g_softmixFillEwma < static_cast<float>(SOFTMIX_TARGET_FILL) * 0.5f && consume > 0u)
-        consume = take - 1u;  // ring shrinking → retain 1 sample
-
-      for (uint32_t f = 0; f < static_cast<uint32_t>(frames); f++) {
-        const float samp = (f < take)
-            ? g_softmixBuf[(smr + f) & (SOFTMIX_RING_CAP - 1u)]
-            : 0.0f;
-        for (int c = 0; c < outCh; c++)
-          out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] += samp;
-      }
-      if (consume > 0u)
-        g_softmixRpos.store(smr + consume, std::memory_order_release);
+      if (newEwma > target + static_cast<float>(frames) && take + 1u <= avail)
+        consume = take + 1u;
+      else if (newEwma < target * 0.5f && consume > 0u)
+        consume = take - 1u;
+      pm[s] = {peer, peer->gain.load(std::memory_order_relaxed), r, take, consume, 0.0f};
     }
 
-    // §2.2: Soft peak limiter — find the frame peak; if it exceeds 1.0, scale the
-    // entire frame down uniformly. This preserves the mix balance (unlike hard-clip
-    // which distorts the loudest peaks) and prevents DAC overflow.
-    {
-      float peak = 0.0f;
-      for (unsigned long f = 0; f < frames; f++) {
-        for (int c = 0; c < outCh; c++) {
-          float v = out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)];
-          if (v < 0.0f) v = -v;
-          if (v > peak) peak = v;
-        }
+    // ── Pre-compute softmix state ──────────────────────────────────────────
+    const uint32_t smr   = g_softmixRpos.load(std::memory_order_relaxed);
+    const uint32_t smAvail = g_softmixWpos.load(std::memory_order_acquire) - smr;
+    const uint32_t smTake = smAvail < static_cast<uint32_t>(frames)
+                              ? smAvail : static_cast<uint32_t>(frames);
+    // §1.1: softmix EWMA drift before the frame loop.
+    const float smAlpha = 1.0f / 64.0f;
+    g_softmixFillEwma += smAlpha * (static_cast<float>(smAvail) - g_softmixFillEwma);
+    uint32_t smConsume = smTake;
+    if (g_softmixFillEwma > static_cast<float>(SOFTMIX_TARGET_FILL + frames) && smTake + 1u <= smAvail)
+      smConsume = smTake + 1u;
+    else if (g_softmixFillEwma < static_cast<float>(SOFTMIX_TARGET_FILL) * 0.5f && smConsume > 0u)
+      smConsume = smTake - 1u;
+
+    // ── Single merged frame loop ───────────────────────────────────────────
+    const bool hasMonitor = (in && inCh > 0 && gain > 0.0f);
+    const float invInCh   = hasMonitor ? 1.0f / static_cast<float>(inCh) : 0.0f;
+    float peak = 0.0f;
+
+    for (unsigned long f = 0; f < frames; f++) {
+      float acc = 0.0f;
+
+      // Monitor
+      if (hasMonitor) {
+        float mono = 0.0f;
+        for (int c = 0; c < inCh; c++) mono += procIn[f * static_cast<unsigned long>(inCh) + static_cast<unsigned long>(c)];
+        acc += mono * invInCh * gain;
       }
-      if (peak > 1.0f) {
-        const float inv = 1.0f / peak;
-        for (unsigned long f = 0; f < frames; f++)
-          for (int c = 0; c < outCh; c++)
-            out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] *= inv;
+
+      // All peers (A4b + M4 + M5 sumSq accumulation)
+      for (int s = 0; s < MAX_PEERS; s++) {
+        if (!pm[s].peer) continue;
+        float raw = 0.0f;
+        if (static_cast<uint32_t>(f) < pm[s].take)
+          raw = pm[s].peer->ring.buf[(pm[s].r + static_cast<uint32_t>(f)) & (PEER_RING_CAP - 1)];
+        pm[s].sumSq += raw * raw;
+        acc += raw * pm[s].gain;
       }
+
+      // Softmix (§1.1)
+      if (static_cast<uint32_t>(f) < smTake)
+        acc += g_softmixBuf[(smr + static_cast<uint32_t>(f)) & (SOFTMIX_RING_CAP - 1u)];
+
+      // Write + track peak for §2.2 limiter
+      const float absAcc = acc < 0.0f ? -acc : acc;
+      if (absAcc > peak) peak = absAcc;
+      for (int c = 0; c < outCh; c++)
+        out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] = acc;
+    }
+
+    // ── Post-loop: advance rpos + update RMS for all peers ─────────────────
+    for (int s = 0; s < MAX_PEERS; s++) {
+      if (!pm[s].peer) continue;
+      const float frameRms = (pm[s].take > 0)
+          ? std::sqrt(pm[s].sumSq / static_cast<float>(pm[s].take))
+          : 0.0f;
+      const float curLev = pm[s].peer->rmsLevel.load(std::memory_order_relaxed);
+      pm[s].peer->rmsLevel.store(0.9f * curLev + 0.1f * frameRms, std::memory_order_relaxed);
+      pm[s].peer->ring.rpos.store(pm[s].r + pm[s].consume, std::memory_order_release);
+    }
+    if (smConsume > 0u)
+      g_softmixRpos.store(smr + smConsume, std::memory_order_release);
+
+    // §2.2: soft peak limiter — second pass only when output exceeds ±1.0.
+    if (peak > 1.0f) {
+      const float inv = 1.0f / peak;
+      for (unsigned long f = 0; f < frames; f++)
+        for (int c = 0; c < outCh; c++)
+          out[f * static_cast<unsigned long>(outCh) + static_cast<unsigned long>(c)] *= inv;
     }
   }
 
@@ -1574,6 +1561,57 @@ static Napi::Value SetPluginState(const Napi::CallbackInfo& info) {
   return r;
 }
 
+// I3: noteOn(slotId, channel, pitch, velocity) → undefined
+static Napi::Value VstNoteOn(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 4) {
+    Napi::TypeError::New(env, "noteOn(slotId,channel,pitch,velocity)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  kgb::vst::noteOn(info[0].As<Napi::Number>().Int32Value(),
+                   info[1].As<Napi::Number>().Int32Value(),
+                   info[2].As<Napi::Number>().Int32Value(),
+                   info[3].As<Napi::Number>().Int32Value());
+  return env.Undefined();
+}
+
+// I3: noteOff(slotId, channel, pitch) → undefined
+static Napi::Value VstNoteOff(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3) {
+    Napi::TypeError::New(env, "noteOff(slotId,channel,pitch)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  kgb::vst::noteOff(info[0].As<Napi::Number>().Int32Value(),
+                    info[1].As<Napi::Number>().Int32Value(),
+                    info[2].As<Napi::Number>().Int32Value());
+  return env.Undefined();
+}
+
+// I1: setTrackChain(trackId, slotIds[]) → undefined
+// Registers the VST insert chain for a logical track ID.
+// An empty/missing slotIds array clears the chain for that track.
+static Napi::Value VstSetTrackChain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "setTrackChain(trackId,slotIds[])").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  const int trackId = info[0].As<Napi::Number>().Int32Value();
+  std::vector<int> slots;
+  if (info.Length() >= 2 && info[1].IsArray()) {
+    Napi::Array arr = info[1].As<Napi::Array>();
+    slots.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+      Napi::Value v = arr.Get(i);
+      if (v.IsNumber()) slots.push_back(v.As<Napi::Number>().Int32Value());
+    }
+  }
+  kgb::vst::setTrackChain(trackId, slots.empty() ? nullptr : slots.data(),
+                           static_cast<int>(slots.size()));
+  return env.Undefined();
+}
+
 // setInsertChain(slotIds: number[]) → undefined
 // Sets the ordered input-side global insert chain (all channels together).
 // V6 per-channel chains (setChannelChain) are preferred for per-strip routing.
@@ -1626,6 +1664,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setChannelChain",  Napi::Function::New(env, SetChannelChain));
   exports.Set("getPluginState",   Napi::Function::New(env, GetPluginState));
   exports.Set("setPluginState",   Napi::Function::New(env, SetPluginState));
+  exports.Set("noteOn",           Napi::Function::New(env, VstNoteOn));
+  exports.Set("noteOff",          Napi::Function::New(env, VstNoteOff));
+  exports.Set("setTrackChain",    Napi::Function::New(env, VstSetTrackChain));
   exports.Set("vstEnabled",       Napi::Boolean::New(env, true));
 #else
   exports.Set("vstEnabled",       Napi::Boolean::New(env, false));

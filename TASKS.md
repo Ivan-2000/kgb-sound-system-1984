@@ -264,7 +264,7 @@
 - [x] Undo / Redo (на жестах)
 - [x] **T1 — Snap to grid** — привязка клипов и краёв к BPM-сетке (доли / такты), переключаемая *(кнопка ⁞⁞ в тулбаре Timeline; режим Такт/Доля; grid lines в ruler и lanes; 2026-06-08)*
 - [x] **T2 — Реальная запись на armed-дорожку** — нативный захват (PortAudio input → buffer) → конверт в WAV → клип на armed-аудиодорожке; пока идёт запись — прокси-клип; по стопу — реальная длительность, proxy:false, blob в clipAudio для экспорта *(recorder.ts; 2026-06-08)*
-- [ ] **T3 — MP3-кодирование в фоне** — ffmpeg-wasm worker, не блокирует UI
+- [x] **T3 — MP3-кодирование в фоне** — lamejs Web Worker (mp3Encoder.worker.ts), не блокирует UI; ffmpeg-wasm заменён на lamejs (нет SharedArrayBuffer/CDN deps) *(E4, 2026-06-18)*
 - [x] **T4 — Синк клипов между участниками** — `clip_add/clip_update/clip_remove` через `syncProtocol`; бинарный WAV через отдельный `clip:file` сокет-event; прокси→реальный при получении файла; hydration для опоздавших участников через `timelineNodes.setPendingTimelineClips` *(2026-06-08)*
 - [x] **T5 — Latency compensation** — сдвиг `startSec` клипа назад на `inputLatencyMs / 1000` при disarm; значение берётся из `nativeAudioController.getSnapshot().inputLatencyMs` (заполняется A6 при `openStream`); patch включает `startSec` и транслируется пирам через T4 `clip_update` *(2026-06-08)*
 
@@ -276,14 +276,14 @@
 - [x] **PR5 — Перенос паттерна из Drum в миди-клип** — кнопка «→ Timeline» в DrumMachinePanel; конвертер `drumState → NoteEvent[]` (kick=36, snare=38, hat=42, crash=49); добавляет MIDI-клип с нотами в primaryTimeline. *(2026-06-08)*
 
 **Инструмент дорожки и звук миди-клипа:**
-- [ ] **I1 — InsertChain на дорожке таймлайна** — переиспользование V6/V7: TrackHeader содержит компонент `<InsertChain target="track" id={trackId} />`; цепочка применяется при воспроизведении клипов дорожки → mixer master.
+- [x] **I1 — InsertChain на дорожке таймлайна** — `setTrackChain` в vstHost.cc/addon.cc; JS-wiring в insertChainStore.ts (syncTrackChain/resyncAllChains); IPC preload+ipc.js+utilityHost.mjs; electron.d.ts. Chain регистрируется при добавлении VST в track-target. *(E4, 2026-06-18)*
 - [x] **I2 — Голос для барабанных клипов (переходный период)** — `midiPlayer.ts`: `scheduleMidiClips(store)` на `Transport.start`; drum pitches (36/38/42/49) → `dm.triggerVoice(track, velocity, time)`; timelineNode.tsx подписывается на 'start'/'dispose'. *(2026-06-08)*
-- [ ] **I3 — Голос для мелодических клипов** — без VST не звучит (заглушка / тишина / встроенный простейший синт-семплер — решить при подходе к реализации). При появлении V8 — VST-инструмент в первом слоте InsertChain дорожки даёт реальный голос.
+- [x] **I3 — Голос для мелодических клипов** — noteOn/noteOff SPSC-ring в vstHost.cc PluginSlot; дренируется в processChain → Vst::EventList перед process(); Napi VstNoteOn/VstNoteOff/IPC/preload; midiPlayer.ts расписывает ноты через VSTi первого instrument-слота track-chain. *(E4, 2026-06-18)*
 
 **Экспорт:**
-- [ ] Финальный mixdown в WAV
-- [ ] Финальный mixdown в MP3
-- [ ] Экспорт проекта (JSON: дорожки/клипы/параметры VST; бинарные пресеты VST — отдельный файл)
+- [x] Финальный mixdown в WAV — `mixdown.ts` renderMixdown + encodeWavMono; `exportClip.ts` exportMixdown *(E4, 2026-06-18)*
+- [x] Финальный mixdown в MP3 — lamejs worker через encodeMp3 в mixdown.ts *(E4, 2026-06-18)*
+- [x] Экспорт проекта (JSON: дорожки/клипы/параметры VST; бинарные пресеты VST base64) — `projectExport.ts` exportProject/downloadProject *(E4, 2026-06-18)*
 
 ### Критерий готовности
 

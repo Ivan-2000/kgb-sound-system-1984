@@ -31,6 +31,8 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -82,10 +84,19 @@ std::string classifyType(const std::string& category,
 // (HostProcessData, param/event lists) is pre-allocated here at load time, so
 // the RT path never allocates.
 constexpr int kParamRingSize = 256;  // power of two
+constexpr int kMidiRingSize  = 128;  // power of two; enough for dense poly playback
 
 struct ParamSet {
   Vst::ParamID id;
   double value;
+};
+
+// I3: compact MIDI event for the lock-free ring (JS thread → RT).
+struct MidiEvt {
+  uint8_t type;      // 0 = noteOn, 1 = noteOff
+  uint8_t channel;   // 0-15
+  uint8_t pitch;     // 0-127
+  uint8_t velocity;  // 0-127 (noteOn only; noteOff always 0)
 };
 
 struct PluginSlot {
@@ -119,6 +130,12 @@ struct PluginSlot {
   ParamSet paramRing[kParamRingSize];
   std::atomic<uint32_t> paramWpos{0};
   std::atomic<uint32_t> paramRpos{0};
+
+  // I3 SPSC ring: JS thread queues noteOn/noteOff, RT drains into eventList
+  // before process(). Capacity covers dense chords; overflow drops silently.
+  MidiEvt midiRing[kMidiRingSize];
+  std::atomic<uint32_t> midiWpos{0};
+  std::atomic<uint32_t> midiRpos{0};
 
   ~PluginSlot() {
     if (view) {
@@ -489,6 +506,38 @@ void processChain(const int* slotIds, int count,
       slot->paramRpos.store(w, std::memory_order_release);
     }
 
+    // I3: drain MIDI events into the event list for this block.
+    // eventList was cleared at the end of the previous block (see below).
+    {
+      uint32_t mr = slot->midiRpos.load(std::memory_order_relaxed);
+      const uint32_t mw = slot->midiWpos.load(std::memory_order_acquire);
+      for (; mr != mw; ++mr) {
+        const MidiEvt& me = slot->midiRing[mr & (kMidiRingSize - 1)];
+        Vst::Event e{};
+        e.sampleOffset = 0;
+        e.ppqPosition  = 0;
+        e.flags        = Vst::Event::kIsLive;
+        if (me.type == 0) {
+          e.type = Vst::Event::kNoteOnEvent;
+          e.noteOn.channel  = me.channel;
+          e.noteOn.pitch    = me.pitch;
+          e.noteOn.velocity = me.velocity / 127.0f;
+          e.noteOn.length   = 0;
+          e.noteOn.tuning   = 0.0f;
+          e.noteOn.noteId   = -1;
+        } else {
+          e.type = Vst::Event::kNoteOffEvent;
+          e.noteOff.channel  = me.channel;
+          e.noteOff.pitch    = me.pitch;
+          e.noteOff.velocity = 0.0f;
+          e.noteOff.noteId   = -1;
+          e.noteOff.tuning   = 0.0f;
+        }
+        slot->eventList.addEvent(e);
+      }
+      slot->midiRpos.store(mw, std::memory_order_release);
+    }
+
     // De-interleave stream audio into the plugin's input channel buffers.
     for (int c = 0; c < inCh; ++c) {
       float* dst = pd.inputs[0].channelBuffers32[c];
@@ -749,9 +798,79 @@ void pumpEditorMessages() {
 #endif
 }
 
+// ── I3: MIDI note events ──────────────────────────────────────────────────────
+
+bool noteOn(int slotId, int channel, int pitch, int velocity) {
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot) return false;
+  const uint32_t w = slot->midiWpos.load(std::memory_order_relaxed);
+  const uint32_t r = slot->midiRpos.load(std::memory_order_acquire);
+  if (w - r >= kMidiRingSize) return true;  // ring full — drop
+  slot->midiRing[w & (kMidiRingSize - 1)] = {
+    0,
+    static_cast<uint8_t>(channel  & 0x0F),
+    static_cast<uint8_t>(pitch    & 0x7F),
+    static_cast<uint8_t>(velocity & 0x7F)
+  };
+  slot->midiWpos.store(w + 1, std::memory_order_release);
+  return true;
+}
+
+bool noteOff(int slotId, int channel, int pitch) {
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot) return false;
+  const uint32_t w = slot->midiWpos.load(std::memory_order_relaxed);
+  const uint32_t r = slot->midiRpos.load(std::memory_order_acquire);
+  if (w - r >= kMidiRingSize) return true;
+  slot->midiRing[w & (kMidiRingSize - 1)] = {
+    1,
+    static_cast<uint8_t>(channel & 0x0F),
+    static_cast<uint8_t>(pitch   & 0x7F),
+    0
+  };
+  slot->midiWpos.store(w + 1, std::memory_order_release);
+  return true;
+}
+
+// ── I1: per-track insert chains ───────────────────────────────────────────────
+// JS-thread only — no RT access. trackId is an opaque integer handle the JS
+// side assigns (e.g. index into the timeline tracks array).
+
+namespace {
+  std::unordered_map<int, std::vector<int>> g_trackChains;
+  std::mutex g_trackChainMutex;
+}
+
+bool setTrackChain(int trackId, const int* slotIds, int count) {
+  std::lock_guard<std::mutex> lock(g_trackChainMutex);
+  if (count <= 0 || !slotIds) {
+    g_trackChains.erase(trackId);
+    return true;
+  }
+  g_trackChains[trackId].assign(slotIds, slotIds + count);
+  return true;
+}
+
+bool getTrackChain(int trackId, int* slotIds, int& count, int maxSlots) {
+  std::lock_guard<std::mutex> lock(g_trackChainMutex);
+  auto it = g_trackChains.find(trackId);
+  if (it == g_trackChains.end()) { count = 0; return false; }
+  const auto& chain = it->second;
+  count = static_cast<int>(chain.size() < static_cast<size_t>(maxSlots)
+                           ? chain.size() : static_cast<size_t>(maxSlots));
+  std::copy(chain.begin(), chain.begin() + count, slotIds);
+  return true;
+}
+
 void shutdown() {
   for (int i = 0; i < kMaxSlots; ++i)
     unloadPlugin(i);
+  {
+    std::lock_guard<std::mutex> lock(g_trackChainMutex);
+    g_trackChains.clear();
+  }
   std::lock_guard<std::mutex> lock(g_loadMutex);
   g_hostContext = nullptr;
 }

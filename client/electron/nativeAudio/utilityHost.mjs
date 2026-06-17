@@ -61,6 +61,7 @@ let audioDataPort = null      // MessagePortMain owned utility-side, port2 is in
 // read-and-reset value would almost always report silence.
 let softmixReceived = 0
 let softmixPeak = 0
+let diagActive = false  // §9.A.4: gate peak scan behind Settings-open flag
 let pcmStreamId = 0
 let firstChunkSent = false    // attach Pa_GetStreamInfo() latency to the FIRST PCM frame only
 let paInitialized = false
@@ -118,13 +119,16 @@ function doOpenStream(opts, port1) {
       try {
         const samples = new Float32Array(pmsg.payload)
         softmixReceived++
-        let msgPeak = 0
-        for (let i = 0; i < samples.length; i++) {
-          const v = samples[i] < 0 ? -samples[i] : samples[i]
-          if (v > msgPeak) msgPeak = v
+        // §9.A.4: only run the peak scan when Settings is open.
+        if (diagActive) {
+          let msgPeak = 0
+          for (let i = 0; i < samples.length; i++) {
+            const v = samples[i] < 0 ? -samples[i] : samples[i]
+            if (v > msgPeak) msgPeak = v
+          }
+          // ~375 msgs/s × 0.99 ≈ −33 dB/s decay: readable at any polling rate.
+          softmixPeak = Math.max(msgPeak, softmixPeak * 0.99)
         }
-        // ~375 msgs/s × 0.99 ≈ −33 dB/s decay: readable at any polling rate.
-        softmixPeak = Math.max(msgPeak, softmixPeak * 0.99)
         a.pushSoftmix(samples)
       } catch (e) {
         if (softmixReceived <= 1) console.error('[utility] pushSoftmix error:', e)
@@ -334,6 +338,13 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      // §9.A.4: toggle peak scan (call with active=true when Settings opens, false on close).
+      case 'setDiagnosticsActive': {
+        diagActive = !!opts?.active
+        reply(id, { ok: true })
+        return
+      }
+
       // M4: set per-channel output gain for a remote peer.
       case 'setRemoteChannelGain': {
         const { peerId, channelId, gain } = opts ?? {}
@@ -451,6 +462,38 @@ process.parentPort.on('message', (event) => {
         }
         try { reply(id, a.setPluginState(Number(opts?.slotId), opts.data)) }
         catch (e) { replyError(id, e) }
+        return
+      }
+
+      // I3: MIDI note events for VSTi slots.
+      case 'vstNoteOn': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: true }); return }
+        try {
+          a.noteOn(Number(opts?.slotId), Number(opts?.channel ?? 0),
+                   Number(opts?.pitch), Number(opts?.velocity ?? 100))
+          reply(id, { ok: true })
+        } catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstNoteOff': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: true }); return }
+        try {
+          a.noteOff(Number(opts?.slotId), Number(opts?.channel ?? 0), Number(opts?.pitch))
+          reply(id, { ok: true })
+        } catch (e) { replyError(id, e) }
+        return
+      }
+
+      // I1: per-track insert chain registration.
+      case 'vstSetTrackChain': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: true }); return }
+        try {
+          a.setTrackChain(Number(opts?.trackId), Array.isArray(opts?.slotIds) ? opts.slotIds : [])
+          reply(id, { ok: true })
+        } catch (e) { replyError(id, e) }
         return
       }
 

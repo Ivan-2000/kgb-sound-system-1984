@@ -93,6 +93,27 @@ async function syncChannelChain(target: InsertTarget, chains: Record<string, Ins
   await v.setChannelChain(chIdx, slots.filter((s) => !s.bypass).map((s) => s.slotId))
 }
 
+/** Deterministic 31-bit integer from a string id (for native track chain map key). */
+function stableIntId(id: string): number {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (Math.imul(31, h) + id.charCodeAt(i)) >>> 0
+  return h >>> 1
+}
+
+/** I1: push one 'track' target's non-bypassed slots to the native per-track chain. */
+async function syncTrackChain(target: InsertTarget, chains: Record<string, InsertSlot[]>): Promise<void> {
+  const v = vst()
+  if (!v || target.kind !== 'track') return
+  const slots = chains[targetKey(target)] ?? []
+  await v.setTrackChain(stableIntId(target.id), slots.filter((s) => !s.bypass).map((s) => s.slotId))
+}
+
+/** Sync any target kind to native. */
+async function syncChain(target: InsertTarget, chains: Record<string, InsertSlot[]>): Promise<void> {
+  if (target.kind === 'channel') return syncChannelChain(target, chains)
+  if (target.kind === 'track') return syncTrackChain(target, chains)
+}
+
 export const useInsertChainStore = create<InsertChainState>((set, get) => ({
   available: [],
   scanning: false,
@@ -146,7 +167,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     const key = targetKey(target)
     const newChains = { ...get().chains, [key]: [...(get().chains[key] ?? []), slot] }
     set({ chains: newChains })
-    await syncChannelChain(target, newChains)
+    await syncChain(target, newChains)
     return slot
   },
 
@@ -160,7 +181,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     const newChains = { ...get().chains, [key]: newChain }
     set({ chains: newChains })
     // Push updated chain before unloading so the RT callback stops using the slot.
-    await syncChannelChain(target, newChains)
+    await syncChain(target, newChains)
     if (v) await v.unload(slot.slotId)
   },
 
@@ -172,7 +193,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     chain.splice(to, 0, moved)
     const newChains = { ...get().chains, [key]: chain }
     set({ chains: newChains })
-    await syncChannelChain(target, newChains)
+    await syncChain(target, newChains)
   },
 
   setBypass(target, index, bypass) {
@@ -185,7 +206,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     }
     set({ chains: newChains })
     // V6: bypass wiring — exclude bypassed slots from the native chain list.
-    void syncChannelChain(target, newChains)
+    void syncChain(target, newChains)
   },
 
   async setParam(target, index, paramId, value) {
@@ -265,12 +286,16 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     for (const [key, slots] of Object.entries(chains)) {
       const sep = key.indexOf(':')
       if (sep < 0) continue
-      const kind = key.slice(0, sep)
+      const kind = key.slice(0, sep) as InsertTargetKind
       const id   = key.slice(sep + 1)
-      if (kind !== 'channel') continue
-      const chIdx = parseInt(id, 10)
-      if (!Number.isFinite(chIdx) || chIdx < 0) continue
-      await v.setChannelChain(chIdx, slots.filter((s) => !s.bypass).map((s) => s.slotId))
+      const activeSlots = slots.filter((s) => !s.bypass).map((s) => s.slotId)
+      if (kind === 'channel') {
+        const chIdx = parseInt(id, 10)
+        if (!Number.isFinite(chIdx) || chIdx < 0) continue
+        await v.setChannelChain(chIdx, activeSlots)
+      } else if (kind === 'track') {
+        await v.setTrackChain(stableIntId(id), activeSlots)
+      }
     }
   },
 

@@ -20,6 +20,8 @@ const scheduledEventIds: number[] = []
 const activePlayers: Tone.Player[] = []
 /** Decoded buffers per clipId — blob decoding is async, cache survives restarts. */
 const bufferCache = new Map<string, Tone.ToneAudioBuffer>()
+/** §9.D.3: player pool — reuse Tone.Player across play/stop cycles to reduce GC pressure. */
+const playerPool = new Map<string, Tone.Player>()
 
 export function scheduleAudioClips(store: TimelineStoreApi): void {
   clearAudioClipSchedule()
@@ -44,11 +46,17 @@ export function scheduleAudioClips(store: TimelineStoreApi): void {
     const gen = scheduleGeneration
     void loadBuffer(clip.id, blob).then((buffer) => {
       if (gen !== scheduleGeneration || !buffer) return
-      const player = new Tone.Player(buffer).toDestination()
+      // §9.D.3: reuse player from pool instead of creating a new one each play.
+      let player = playerPool.get(clip.id)
+      if (!player) {
+        player = new Tone.Player().toDestination()
+        playerPool.set(clip.id, player)
+      }
+      player.buffer = buffer
       activePlayers.push(player)
       const dur = Math.min(clip.durSec, buffer.duration)
       const id = Tone.getTransport().schedule((time) => {
-        player.start(time, 0, dur)
+        player!.start(time, 0, dur)
       }, clip.startSec)
       scheduledEventIds.push(id)
     })
@@ -75,15 +83,33 @@ async function loadBuffer(clipId: string, blob: Blob): Promise<Tone.ToneAudioBuf
   }
 }
 
-/** Cancel scheduled events and dispose players — call on transport stop/dispose. */
+/** Cancel scheduled events and stop active players — call on transport stop/dispose. */
 export function clearAudioClipSchedule(): void {
   scheduleGeneration++
   for (const id of scheduledEventIds) {
     Tone.getTransport().clear(id)
   }
   scheduledEventIds.length = 0
+  // §9.D.3: stop pooled players but don't dispose — they are reused across play cycles.
   for (const p of activePlayers) {
-    try { p.stop(); p.dispose() } catch { /* already disposed */ }
+    try { p.stop() } catch { /* already stopped */ }
   }
   activePlayers.length = 0
+}
+
+/**
+ * §9.D.2: Dispose bufferCache entry and pool player for a clip.
+ * Call when the clip is permanently removed (removeClip).
+ */
+export function disposeClipBuffers(id: string): void {
+  const buf = bufferCache.get(id)
+  if (buf) {
+    try { buf.dispose() } catch { /* already disposed */ }
+    bufferCache.delete(id)
+  }
+  const player = playerPool.get(id)
+  if (player) {
+    try { player.stop(); player.dispose() } catch { /* already disposed */ }
+    playerPool.delete(id)
+  }
 }

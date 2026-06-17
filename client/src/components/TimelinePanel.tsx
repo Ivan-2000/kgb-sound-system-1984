@@ -330,7 +330,9 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
   }
   function changeCodec(next: ExportCodec) { setCodec(next); setBitrate(next === 'mp3' ? 320 : 16) }
   function doExport() {
-    if (exportTarget) exportClipFile({ clipId: exportTarget.clipId, label: exportTarget.label, durSec: exportTarget.durSec, codec, bitrate })
+    if (exportTarget) {
+      void exportClipFile({ clipId: exportTarget.clipId, label: exportTarget.label, durSec: exportTarget.durSec, codec, bitrate })
+    }
     setExportTarget(null)
   }
   const menuDelete = (clipId: string) => st().selectedIds.includes(clipId) && st().selectedIds.length > 1 ? [...st().selectedIds].forEach((id) => st().removeClip(id)) : st().removeClip(clipId)
@@ -590,7 +592,7 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
               </select>
             </label>
             {!exportTarget?.hasAudio && (
-              <p className="tl-export-note">Клип не содержит записанного аудио — экспортируется тишина-плейсхолдер. MP3-кодирование — с T3.</p>
+              <p className="tl-export-note">Клип не содержит записанного аудио — экспортируется тишина-плейсхолдер.</p>
             )}
             <div className="tl-export-actions">
               <button type="button" className="ghost-action ghost-action--sm" onClick={() => setExportTarget(null)}>Отмена</button>

@@ -37,6 +37,8 @@ class AudioEngine {
   private smFrames = 0
   /** Diagnostics: decaying peak |sample| in forwarded PCM (NOT reset on read). */
   private smPeak = 0
+  /** §9.A.4: only run the peak scan when Settings is open (caller toggles via setDiagnosticsActive). */
+  private diagActive = false
 
   constructor() {
     Tone.getTransport().bpm.value = DEFAULT_BPM
@@ -108,15 +110,16 @@ class AudioEngine {
       worklet.port.onmessage = (e: MessageEvent<{ samples: ArrayBuffer }>) => {
         const buf = e.data?.samples
         if (!buf || !this.portAudioActive) return
-        // Diagnostics scan (buffer is structured-clone copied, not detached).
-        // Decaying peak — same scheme as utilityHost (~−33 dB/s at 375 msg/s).
-        const a = new Float32Array(buf)
-        let msgPeak = 0
-        for (let i = 0; i < a.length; i++) {
-          const v = a[i] < 0 ? -a[i] : a[i]
-          if (v > msgPeak) msgPeak = v
+        // §9.A.4: peak scan only when Settings is open.
+        if (this.diagActive) {
+          const a = new Float32Array(buf)
+          let msgPeak = 0
+          for (let i = 0; i < a.length; i++) {
+            const v = a[i] < 0 ? -a[i] : a[i]
+            if (v > msgPeak) msgPeak = v
+          }
+          this.smPeak = Math.max(msgPeak, this.smPeak * 0.99)
         }
-        this.smPeak = Math.max(msgPeak, this.smPeak * 0.99)
         this.smFrames++
         window.nativeAudio!.pushSoftmix(buf)
       }
@@ -147,6 +150,11 @@ class AudioEngine {
    */
   setPortAudioActive(active: boolean): void {
     this.portAudioActive = active
+  }
+
+  /** §9.A.4: toggle the expensive peak scan. Call with true when Settings opens, false on close. */
+  setDiagnosticsActive(active: boolean): void {
+    this.diagActive = active
   }
 
   /**

@@ -125,6 +125,20 @@ void processChain(const int* slotIds, int count,
 bool getPluginState(int slotId, std::vector<uint8_t>& out);
 bool setPluginState(int slotId, const std::vector<uint8_t>& data);
 
+// I3: queue a MIDI Note On/Off event to be delivered to the VSTi at the start
+// of the next RT process block. Lock-free (SPSC: JS thread → RT).
+// pitch = MIDI note 0-127, velocity = 0-127 (noteOn), channel = 0-15.
+bool noteOn(int slotId, int channel, int pitch, int velocity);
+bool noteOff(int slotId, int channel, int pitch);
+
+// I1: per-track VST insert chain (I1/E4). Stores ordered slotIds for a logical
+// track ID. During live playback the RT callback does not intercept Tone.js
+// audio; this call registers the chain for use by the offline mixdown (E4 T3).
+// trackId is an arbitrary integer handle (JS assigns). JS-thread only.
+bool setTrackChain(int trackId, const int* slotIds, int count);
+// Retrieve the chain for a given trackId (copy into slotIds/count). Returns false if empty.
+bool getTrackChain(int trackId, int* slotIds, int& count, int maxSlots);
+
 // Unload everything and drop the shared host context. JS-thread only.
 void shutdown();
 

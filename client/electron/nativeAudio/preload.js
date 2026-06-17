@@ -207,6 +207,9 @@ contextBridge.exposeInMainWorld('nativeAudio', {
    *  (posted into the audio MessagePort) vs failed (port missing/closed). */
   getSoftmixDiag: () => ({ sent: softmixSent, failed: softmixFailed }),
 
+  /** §9.A.4: enable/disable the softmix peak scan (true when Settings panel is open). */
+  setDiagnosticsActive: (active) => ipcRenderer.invoke('audio:set-diagnostics-active', { active }),
+
   // ── VST3 host (V2/V3). Available only with the build:vst addon; with the
   //    default build these resolve to { ok:false, error:'VST host not built' }.
   //    Contract surface agreed with nik (AGENTS.md): scanVst3 / loadPlugin /
@@ -259,5 +262,17 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     /** V9: restore a plugin from a previously saved binary preset.
      *  @returns {Promise<{ok:boolean, error?:string}>} */
     setState: (slotId, data) => ipcRenderer.invoke('vst:set-state', { slotId, data }),
+
+    /** I3: queue a MIDI Note On for a VSTi slot (fire-and-forget). */
+    noteOn: (slotId, channel, pitch, velocity) =>
+      ipcRenderer.invoke('vst:note-on', { slotId, channel, pitch, velocity }),
+
+    /** I3: queue a MIDI Note Off for a VSTi slot (fire-and-forget). */
+    noteOff: (slotId, channel, pitch) =>
+      ipcRenderer.invoke('vst:note-off', { slotId, channel, pitch }),
+
+    /** I1: register the VST insert chain for a logical track ID. */
+    setTrackChain: (trackId, slotIds) =>
+      ipcRenderer.invoke('vst:set-track-chain', { trackId, slotIds }),
   },
 })

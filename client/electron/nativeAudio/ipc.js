@@ -202,6 +202,11 @@ export function setupAudioIPC() {
     try { return await sendRequest('getStats') }
     catch { return { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 } }
   })
+  // §9.A.4: gate peak scan behind Settings-open flag.
+  ipcMain.handle('audio:set-diagnostics-active', async (_event, opts) => {
+    try { return await sendRequest('setDiagnosticsActive', opts) }
+    catch { return { ok: false } }
+  })
 
   // A4b: inbound Opus from remote peer → utility decoder → PortAudio output mix.
   // Hot path bypasses this via the direct audioPort MessagePort (see preload.js);
@@ -256,6 +261,18 @@ export function setupAudioIPC() {
   })
   ipcMain.handle('vst:set-state', async (_event, opts) => {
     try { return await sendRequest('vstSetState', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:note-on', async (_event, opts) => {
+    try { return await sendRequest('vstNoteOn', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:note-off', async (_event, opts) => {
+    try { return await sendRequest('vstNoteOff', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:set-track-chain', async (_event, opts) => {
+    try { return await sendRequest('vstSetTrackChain', opts) }
     catch (e) { return { ok: false, error: e.message } }
   })
   ipcMain.handle('vst:open-editor', async (_event, opts) => {

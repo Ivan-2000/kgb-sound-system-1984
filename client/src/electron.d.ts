@@ -139,6 +139,8 @@ interface Window {
     pushSoftmix(samples: ArrayBuffer): boolean
     /** Diagnostics: softmix buffers posted from the renderer vs failed (no port). */
     getSoftmixDiag(): { sent: number; failed: number }
+    /** §9.A.4: enable/disable the softmix peak scan (call when Settings panel opens/closes). */
+    setDiagnosticsActive(active: boolean): Promise<{ ok: boolean }>
     /** VST3 host (V2/V3). Present only with the build:vst addon; otherwise every
      *  call resolves to { ok:false, error:'VST host not built' }. */
     vst: {
@@ -165,6 +167,13 @@ interface Window {
       getState(slotId: number): Promise<{ ok: boolean; data?: ArrayBuffer | null; error?: string }>
       /** V9: restore a plugin from a previously saved binary preset. */
       setState(slotId: number, data: ArrayBuffer): Promise<{ ok: boolean; error?: string }>
+      /** I3: queue a MIDI Note On event for a VSTi slot (lock-free, delivered on next RT block). */
+      noteOn(slotId: number, channel: number, pitch: number, velocity: number): Promise<void>
+      /** I3: queue a MIDI Note Off event for a VSTi slot. */
+      noteOff(slotId: number, channel: number, pitch: number): Promise<void>
+      /** I1: register the VST insert chain for a logical track ID.
+       *  Empty slotIds clears the chain for that track. JS-thread only. */
+      setTrackChain(trackId: number, slotIds: number[]): Promise<void>
     }
   }
 }

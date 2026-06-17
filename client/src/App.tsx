@@ -249,7 +249,7 @@ function App() {
   useEffect(() => {
     return nativeAudioController.subscribeState((snap) => {
       setNativeSnapshot(snap)
-      nativeRtcManager.setActive(snap.streamActive)
+      nativeRtcManager.setActive(snap.streamActive, roomSyncClient.getState().socketId ?? undefined)
       // Gate the softmix feed: only push Tone.js PCM to PortAudio while the
       // stream has an output side (otherwise the ring isn't drained). The Web
       // Audio sink is permanently silenced in Electron (toneNativeContext.ts).
@@ -289,11 +289,12 @@ function App() {
   // Finalise one recording: stop the recorder, write real duration + waveform
   // into the clip, apply latency compensation, sync the result to peers.
   // Called from disarm AND from transport Stop (stop ends recording, DAW-style).
-  const finishRecording = (key: string) => {
+  // §9.D.1: async because stopAsync() may stream-flush to OPFS.
+  const finishRecording = async (key: string): Promise<void> => {
     if (!key.startsWith('local:') || window.nativeAudio === undefined) return
     stopLiveWaveform(key)
     const channelIdx = Number(key.slice(6))
-    const result = recorder.stop(channelIdx)
+    const result = await recorder.stopAsync(channelIdx)
     if (!result) return
     const realDur = Math.max(0.2, result.durSec)
     const store = timelineStore
@@ -709,7 +710,7 @@ function App() {
       // Stop also ends any active recording (DAW behaviour): finalise armed
       // channels' clips before halting the transport.
       if (armed.size > 0) {
-        for (const k of armed) finishRecording(k)
+        for (const k of armed) void finishRecording(k)
         setArmed(new Set())
       }
       const step = drumMachine.getState().currentStep
@@ -1201,7 +1202,7 @@ function App() {
 
     if (!willArm) {
       // Disarm: stop recording, finalise the clip (shared with transport Stop).
-      finishRecording(key)
+      void finishRecording(key)
       setArmed((prev) => { const next = new Set(prev); next.delete(key); return next })
       return
     }

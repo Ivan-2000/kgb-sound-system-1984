@@ -25,7 +25,10 @@ export function SettingsModal({ onClose }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null)
 
   // Poll bridge diagnostics while the modal is open — cheap counters only.
+  // §9.A.4: activate peak scan when Settings opens; deactivate on close.
   useEffect(() => {
+    audioEngine.setDiagnosticsActive(true)
+    void window.nativeAudio?.setDiagnosticsActive?.(true)
     const id = setInterval(() => {
       setBridgeStats(audioEngine.getBridgeStats())
       if (window.nativeAudio) {
@@ -40,7 +43,11 @@ export function SettingsModal({ onClose }: Props) {
         }).catch(() => { /* engine down — keep last value */ })
       }
     }, 500)
-    return () => clearInterval(id)
+    return () => {
+      clearInterval(id)
+      audioEngine.setDiagnosticsActive(false)
+      void window.nativeAudio?.setDiagnosticsActive?.(false)
+    }
   }, [])
 
   useEffect(() => {

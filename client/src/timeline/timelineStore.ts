@@ -1,5 +1,7 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import type { PianoNote } from '../pianoRoll/pianoRollStore'
+import { clipAudio } from '../audio/recorder'
+import { disposeClipBuffers } from './audioClipPlayer'
 
 /**
  * Timeline model.
@@ -171,6 +173,10 @@ export function createTimelineStore(): TimelineStoreApi {
   },
 
   removeClip(id) {
+    // §9.D.2: free WAV blob and decoded ToneAudioBuffer + pooled player to prevent
+    // RAM growing unboundedly across multiple record/delete cycles.
+    clipAudio.delete(id)
+    disposeClipBuffers(id)
     set((s) => {
       const clips = s.clips.filter((c) => c.id !== id)
       // Auto-remove tracks left with no clips.
