@@ -26,6 +26,7 @@ type PeerData = {
   rttMs: number | null
   pingTimer: ReturnType<typeof setInterval> | null
   stalenessTimer: ReturnType<typeof setTimeout> | null
+  disconnectedTimer: ReturnType<typeof setTimeout> | null
 }
 type CtrlMsg = { type: 'ping'; t: number } | { type: 'pong'; t: number }
 type SignalFn = (targetSocketId: string, signal: unknown) => void
@@ -107,7 +108,7 @@ class NativeRtcManager {
     if (this.peers.has(socketId)) return
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    const entry: PeerData = { pc, channel: null, ctrl: null, pendingCandidates: [], isInitiator: initiator, rttMs: null, pingTimer: null, stalenessTimer: null }
+    const entry: PeerData = { pc, channel: null, ctrl: null, pendingCandidates: [], isInitiator: initiator, rttMs: null, pingTimer: null, stalenessTimer: null, disconnectedTimer: null }
     this.peers.set(socketId, entry)
 
     if (initiator) {
@@ -146,13 +147,17 @@ class NativeRtcManager {
         // §4.5: 'disconnected' is transient — the browser will try to recover.
         // If it doesn't recover within 10 s, clean up to avoid the leak described
         // in AUDIT §4.5 (RTCPeerConnection + ping timer living forever).
-        setTimeout(() => {
-          const e = this.peers.get(socketId)
-          if (e && e.pc === pc && pc.connectionState === 'disconnected') {
-            console.warn('[nativeRtc] peer', socketId, 'still disconnected after 10 s — cleaning up')
-            this.cleanupPeer(socketId)
-          }
-        }, 10000)
+        const entry = this.peers.get(socketId)
+        if (entry) {
+          if (entry.disconnectedTimer !== null) clearTimeout(entry.disconnectedTimer)
+          entry.disconnectedTimer = setTimeout(() => {
+            const e = this.peers.get(socketId)
+            if (e && e.pc === pc && pc.connectionState === 'disconnected') {
+              console.warn('[nativeRtc] peer', socketId, 'still disconnected after 10 s — cleaning up')
+              this.cleanupPeer(socketId)
+            }
+          }, 10000)
+        }
       }
     }
 
@@ -277,6 +282,7 @@ class NativeRtcManager {
     if (!entry) return
     if (entry.pingTimer !== null) clearInterval(entry.pingTimer)
     if (entry.stalenessTimer !== null) clearTimeout(entry.stalenessTimer)
+    if (entry.disconnectedTimer !== null) clearTimeout(entry.disconnectedTimer)
     try { entry.pc.close() } catch { /* ignored */ }
     this.peers.delete(socketId)
   }
