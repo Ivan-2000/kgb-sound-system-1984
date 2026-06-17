@@ -88,6 +88,10 @@ struct PluginSlot {
   IPtr<Vst::IAudioProcessor> processor;
   IPtr<Vst::IEditController> controller;
   bool controllerIsSeparate = false;
+  // Only call terminate() on interfaces whose initialize() actually succeeded —
+  // terminating after a failed init is undefined for some plugins.
+  bool componentInitialized = false;
+  bool controllerInitialized = false;
 
   Vst::HostProcessData processData;
   Vst::ParameterChanges inputParamChanges;
@@ -112,9 +116,9 @@ struct PluginSlot {
     if (processor) processor->setProcessing(false);
     if (component) {
       component->setActive(false);
-      component->terminate();
+      if (componentInitialized) component->terminate();
     }
-    if (controllerIsSeparate && controller)
+    if (controllerIsSeparate && controller && controllerInitialized)
       controller->terminate();
     processData.unprepare();
     // Drop interface refs before the module unloads its library.
@@ -261,28 +265,30 @@ LoadResult loadPlugin(const std::string& path, const std::string& classUid,
 
   const auto& factory = module->getFactory();
 
-  // Locate the requested class (or the first audio-module class).
-  const VST3::Hosting::ClassInfo* chosen = nullptr;
-  auto infos = factory.classInfos();
-  for (const auto& ci : infos) {
+  // Locate the requested class (or the first audio-module class). Copy it out
+  // by value — `infos` is a local that outlives the search, but a value keeps
+  // the chosen descriptor independent of it.
+  VST3::Hosting::ClassInfo chosen;
+  bool found = false;
+  for (const auto& ci : factory.classInfos()) {
     if (ci.category() != kVstAudioEffectClass) continue;
     if (classUid.empty() || uidToHex(ci.ID()) == classUid) {
-      static thread_local VST3::Hosting::ClassInfo held;
-      held = ci;
-      chosen = &held;
+      chosen = ci;
+      found = true;
       break;
     }
   }
-  if (!chosen) { r.error = "audio module class not found in module"; return r; }
+  if (!found) { r.error = "audio module class not found in module"; return r; }
 
   auto slot = std::make_unique<PluginSlot>();
   slot->module = module;
 
-  slot->component = factory.createInstance<Vst::IComponent>(chosen->ID());
+  slot->component = factory.createInstance<Vst::IComponent>(chosen.ID());
   if (!slot->component) { r.error = "createInstance(IComponent) failed"; return r; }
   if (slot->component->initialize(hostContext()) != kResultOk) {
     r.error = "component->initialize failed"; return r;
   }
+  slot->componentInitialized = true;
 
   slot->processor = FUnknownPtr<Vst::IAudioProcessor>(slot->component);
   if (!slot->processor) { r.error = "plugin has no IAudioProcessor"; return r; }
@@ -299,7 +305,8 @@ LoadResult loadPlugin(const std::string& path, const std::string& classUid,
       slot->controller = factory.createInstance<Vst::IEditController>(VST3::UID(cid));
       if (slot->controller) {
         slot->controllerIsSeparate = true;
-        slot->controller->initialize(hostContext());
+        if (slot->controller->initialize(hostContext()) == kResultOk)
+          slot->controllerInitialized = true;
         // (component↔controller IConnectionPoint wiring is added in E2 for
         // editor/parameter round-tripping; not required to process audio.)
       }
@@ -364,10 +371,10 @@ LoadResult loadPlugin(const std::string& path, const std::string& classUid,
   // Descriptor for the caller.
   r.ok = true;
   r.slotId = slotId;
-  r.name = chosen->name();
-  r.vendor = chosen->vendor();
-  r.type = classifyType(chosen->category(), chosen->subCategories());
-  r.uid = uidToHex(chosen->ID());
+  r.name = chosen.name();
+  r.vendor = chosen.vendor();
+  r.type = classifyType(chosen.category(), chosen.subCategories());
+  r.uid = uidToHex(chosen.ID());
   r.numInputChannels = slot->numInCh;
   r.numOutputChannels = slot->numOutCh;
 
