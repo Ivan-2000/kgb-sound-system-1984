@@ -1,4 +1,5 @@
 import { normalizeDeviceName } from './deviceUtils'
+import { useInsertChainStore } from './insertChainStore'
 
 // A2 — auto-select priority: best driver wins, user can override via Settings.
 const HOST_API_PRIORITY: readonly string[] = ['ASIO', 'WASAPI_EXCLUSIVE', 'WASAPI', 'DirectSound', 'MME']
@@ -320,6 +321,9 @@ class NativeAudioController {
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
+      // V10: re-push all per-channel VST chains after (re)open — native g_chanChain*
+      // tables survive closeStream/openStream but are reset on utility process respawn.
+      void useInsertChainStore.getState().resyncAllChains()
     } else {
       this.error = result.error ?? 'openStream failed'
       this.inputLatencyMs = null
@@ -413,6 +417,8 @@ class NativeAudioController {
       this.error = null
       if (result.inputLatency !== undefined) this.inputLatencyMs = Math.round(result.inputLatency * 1000)
       if (result.outputLatency !== undefined) this.outputLatencyMs = Math.round(result.outputLatency * 1000)
+      // V10: re-push per-channel VST chains after device change / engine respawn.
+      void useInsertChainStore.getState().resyncAllChains()
     } else {
       // Roll back all settings mutations so callers see a consistent state.
       this.sampleRate = prevSampleRate

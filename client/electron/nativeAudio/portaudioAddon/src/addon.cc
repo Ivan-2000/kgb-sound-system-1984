@@ -384,19 +384,27 @@ static void cleanupDecoderState() {
 
 #ifdef KGB_WITH_VST
 // ─── VST insert chain (input side) ────────────────────────────────────────────
-// V1-skeleton wiring: the RT callback runs the configured insert chain over the
-// captured input *before* it is monitored / encoded (live insert before Opus,
-// ADR §6). The chain is a list of loaded-plugin slot ids set from JS via
-// vstSetInsertChain(); the default is empty → the callback is a no-op passthrough
-// (zero added cost). Per-target routing (per channel / per timeline track) is V6.
+// Global (all-channels) chain — legacy V1 path kept for backward compat.
+// V6 per-channel chains run AFTER this in PaCallback and take precedence on each
+// individual channel. Use setInsertChain([]) to leave the global path empty.
 static const int MAX_VST_CHAIN = 16;
 static std::atomic<int> g_vstChainSlots[MAX_VST_CHAIN];
 static std::atomic<int> g_vstChainCount{0};
-// Preallocated de-interleave-free scratch: the chain processes the input copy in
-// place. Sized in OpenStream to maxBuffer(512) × inputChannels; never realloc'd
-// from the RT thread. g_vstScratchCap guards against frames/channels overrun.
+// Preallocated de-interleave-free scratch: both global and per-channel chains
+// process the input copy in-place. Sized in OpenStream to maxBuffer(512) ×
+// inputChannels; never realloc'd from the RT thread.
 static float* g_vstScratch = nullptr;
 static std::atomic<unsigned long> g_vstScratchCap{0};  // capacity in floats
+
+// V6: per-channel insert chains. Indexed by physical input channel [0, MAX_INPUT_CH).
+// Persists across stream restarts; cleared only by setChannelChain(ch, []).
+// Applied per-channel after the global chain so each mixer strip has its own VST.
+static std::atomic<int> g_chanChainSlots[MAX_INPUT_CH][MAX_VST_CHAIN];
+static std::atomic<int> g_chanChainCounts[MAX_INPUT_CH];  // 0 = no chain
+
+// Mono scratch for de-interleave → per-channel process → re-interleave (V6).
+// Allocated in openStream (512 floats), freed in closeStream.
+static float* g_monoScratch = nullptr;
 #endif
 
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
@@ -444,6 +452,53 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       std::memcpy(g_vstScratch, in, need * sizeof(float));
       kgb::vst::processChain(ids, n, g_vstScratch, inCh, static_cast<int>(frames));
       procIn = g_vstScratch;
+    }
+  }
+#endif
+
+  // ── V6: per-channel chains ────────────────────────────────────────────────
+  // For each physical input channel with a chain: de-interleave → process mono
+  // → re-interleave. Runs after the global chain so both can coexist.
+  // All downstream paths (monitor/PCM/Opus) already use procIn, so they see the
+  // post-chain signal automatically (V8).
+#ifdef KGB_WITH_VST
+  {
+    bool anyPerChan = false;
+    for (int ch = 0; ch < inCh && ch < MAX_INPUT_CH; ch++) {
+      if (g_chanChainCounts[ch].load(std::memory_order_acquire) > 0) {
+        anyPerChan = true; break;
+      }
+    }
+    if (anyPerChan && g_monoScratch && in && inCh > 0) {
+      // Ensure we have a writable interleaved copy in g_vstScratch.
+      if (procIn == in) {
+        const unsigned long need = frames * static_cast<unsigned long>(inCh);
+        if (g_vstScratch && need <= g_vstScratchCap.load(std::memory_order_relaxed)) {
+          std::memcpy(g_vstScratch, in, need * sizeof(float));
+          procIn = g_vstScratch;
+        }
+      }
+      // procIn == g_vstScratch only when need ≤ g_vstScratchCap = 512 × inCh,
+      // i.e. frames ≤ 512, which is also g_monoScratch's allocation size.
+      if (procIn == g_vstScratch && frames <= 512UL) {
+        for (int ch = 0; ch < inCh && ch < MAX_INPUT_CH; ch++) {
+          int n = g_chanChainCounts[ch].load(std::memory_order_acquire);
+          if (n <= 0) continue;
+          int ids[MAX_VST_CHAIN];
+          const int take = (n < MAX_VST_CHAIN) ? n : MAX_VST_CHAIN;
+          for (int k = 0; k < take; k++)
+            ids[k] = g_chanChainSlots[ch][k].load(std::memory_order_relaxed);
+          // De-interleave channel ch into mono scratch
+          for (unsigned long f = 0; f < frames; f++)
+            g_monoScratch[f] = g_vstScratch[f * static_cast<unsigned long>(inCh)
+                                              + static_cast<unsigned long>(ch)];
+          kgb::vst::processChain(ids, take, g_monoScratch, 1, static_cast<int>(frames));
+          // Re-interleave back
+          for (unsigned long f = 0; f < frames; f++)
+            g_vstScratch[f * static_cast<unsigned long>(inCh)
+                          + static_cast<unsigned long>(ch)] = g_monoScratch[f];
+        }
+      }
     }
   }
 #endif
@@ -825,6 +880,9 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     g_vstScratch = static_cast<float*>(std::malloc(cap * sizeof(float)));
     g_vstScratchCap.store(g_vstScratch ? cap : 0, std::memory_order_release);
   }
+  // V6: mono scratch for per-channel processing (max bufferSize = 512 samples).
+  std::free(g_monoScratch);
+  g_monoScratch = static_cast<float*>(std::malloc(512 * sizeof(float)));
 #endif
 
   float initialGain = 0.0f;
@@ -992,10 +1050,12 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
 #ifdef KGB_WITH_VST
   // Free the insert-chain scratch. Pa_CloseStream above guarantees the RT
   // callback has stopped, so this cannot race the audio thread. Loaded plugins
-  // persist across stream restarts (they re-process on the next openStream).
+  // and per-channel chain tables persist across stream restarts (V10).
   g_vstScratchCap.store(0, std::memory_order_release);
   std::free(g_vstScratch);
   g_vstScratch = nullptr;
+  std::free(g_monoScratch);
+  g_monoScratch = nullptr;
 #endif
 
   if (pcmWasAlive) {
@@ -1395,9 +1455,79 @@ static Napi::Value PumpEditor(const Napi::CallbackInfo& info) {
   return info.Env().Undefined();
 }
 
+// V6: setChannelChain(channelIdx:number, slotIds:number[]) → undefined
+// Sets the insert chain for a single physical input channel. Empty array clears
+// the chain for that channel (passthrough). Persists across stream restarts.
+static Napi::Value SetChannelChain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+    Napi::TypeError::New(env, "setChannelChain(channelIdx:number, slotIds:number[])")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  const int ch = info[0].As<Napi::Number>().Int32Value();
+  if (ch < 0 || ch >= MAX_INPUT_CH) {
+    Napi::RangeError::New(env, "channelIdx out of range [0, 63]")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  Napi::Array arr = info[1].As<Napi::Array>();
+  int n = 0;
+  for (uint32_t i = 0; i < arr.Length() && n < MAX_VST_CHAIN; i++) {
+    Napi::Value v = arr.Get(i);
+    if (!v.IsNumber()) continue;
+    g_chanChainSlots[ch][n].store(v.As<Napi::Number>().Int32Value(), std::memory_order_relaxed);
+    n++;
+  }
+  // Publish count last (release) so RT never reads a stale slot id.
+  g_chanChainCounts[ch].store(n, std::memory_order_release);
+  return env.Undefined();
+}
+
+// V9: getPluginState(slotId:number) → {ok:boolean, data?:ArrayBuffer, error?:string}
+static Napi::Value GetPluginState(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "getPluginState(slotId:number)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  std::vector<uint8_t> data;
+  const bool ok = kgb::vst::getPluginState(info[0].As<Napi::Number>().Int32Value(), data);
+  Napi::Object r = Napi::Object::New(env);
+  r.Set("ok", Napi::Boolean::New(env, ok));
+  if (ok && !data.empty()) {
+    Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, data.size());
+    std::memcpy(ab.Data(), data.data(), data.size());
+    r.Set("data", ab);
+  } else {
+    r.Set("data", env.Null());
+    if (!ok) r.Set("error", Napi::String::New(env, "getPluginState failed"));
+  }
+  return r;
+}
+
+// V9: setPluginState(slotId:number, data:ArrayBuffer) → {ok:boolean, error?:string}
+static Napi::Value SetPluginState(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArrayBuffer()) {
+    Napi::TypeError::New(env, "setPluginState(slotId:number, data:ArrayBuffer)")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  Napi::ArrayBuffer ab = info[1].As<Napi::ArrayBuffer>();
+  const std::vector<uint8_t> data(
+      static_cast<const uint8_t*>(ab.Data()),
+      static_cast<const uint8_t*>(ab.Data()) + ab.ByteLength());
+  const bool ok = kgb::vst::setPluginState(info[0].As<Napi::Number>().Int32Value(), data);
+  Napi::Object r = Napi::Object::New(env);
+  r.Set("ok", Napi::Boolean::New(env, ok));
+  if (!ok) r.Set("error", Napi::String::New(env, "setPluginState failed"));
+  return r;
+}
+
 // setInsertChain(slotIds: number[]) → undefined
-// Sets the ordered input-side insert chain the RT callback applies. Empty array
-// clears it (passthrough). Per-target routing (channel/track) is V6.
+// Sets the ordered input-side global insert chain (all channels together).
+// V6 per-channel chains (setChannelChain) are preferred for per-strip routing.
 static Napi::Value SetInsertChain(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   if (info.Length() < 1 || !info[0].IsArray()) {
@@ -1444,6 +1574,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("closeEditor",      Napi::Function::New(env, CloseEditor));
   exports.Set("pumpEditor",       Napi::Function::New(env, PumpEditor));
   exports.Set("setInsertChain",   Napi::Function::New(env, SetInsertChain));
+  exports.Set("setChannelChain",  Napi::Function::New(env, SetChannelChain));
+  exports.Set("getPluginState",   Napi::Function::New(env, GetPluginState));
+  exports.Set("setPluginState",   Napi::Function::New(env, SetPluginState));
   exports.Set("vstEnabled",       Napi::Boolean::New(env, true));
 #else
   exports.Set("vstEnabled",       Napi::Boolean::New(env, false));

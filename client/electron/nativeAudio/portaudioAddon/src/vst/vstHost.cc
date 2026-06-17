@@ -18,6 +18,7 @@
 #include "public.sdk/source/vst/utility/stringconvert.h"
 
 #include "pluginterfaces/base/funknownimpl.h"
+#include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
@@ -517,6 +518,87 @@ void processChain(const int* slotIds, int count,
   }
 
   g_rtInChain.store(false, std::memory_order_release);
+}
+
+// ── V9: plugin state (preset) get/set ────────────────────────────────────────
+// Minimal IBStream implementations for IComponent::getState / setState.
+
+namespace {
+
+struct WriteStream final : public IBStream {
+  std::vector<uint8_t>& buf;
+  explicit WriteStream(std::vector<uint8_t>& b) : buf(b) {}
+  tresult PLUGIN_API read(void*, int32, int32*) override { return kNotImplemented; }
+  tresult PLUGIN_API write(void* src, int32 n, int32* written) override {
+    int32 wrote = 0;
+    if (src && n > 0) { buf.insert(buf.end(), (uint8_t*)src, (uint8_t*)src + n); wrote = n; }
+    if (written) *written = wrote;
+    return kResultOk;
+  }
+  tresult PLUGIN_API seek(int64, int32, int64*) override { return kNotImplemented; }
+  tresult PLUGIN_API tell(int64*) override { return kNotImplemented; }
+  tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+    QUERY_INTERFACE(iid, obj, FUnknown::iid, IBStream)
+    QUERY_INTERFACE(iid, obj, IBStream::iid, IBStream)
+    *obj = nullptr; return kNoInterface;
+  }
+  uint32 PLUGIN_API addRef()  override { return 1000; }
+  uint32 PLUGIN_API release() override { return 1000; }
+};
+
+struct ReadStream final : public IBStream {
+  const std::vector<uint8_t>& buf;
+  size_t pos = 0;
+  explicit ReadStream(const std::vector<uint8_t>& b) : buf(b) {}
+  tresult PLUGIN_API read(void* dst, int32 n, int32* rd) override {
+    if (!dst || n <= 0) { if (rd) *rd = 0; return kResultOk; }
+    size_t avail = buf.size() > pos ? buf.size() - pos : 0;
+    size_t take  = static_cast<size_t>(n) < avail ? static_cast<size_t>(n) : avail;
+    std::memcpy(dst, buf.data() + pos, take);
+    pos += take;
+    if (rd) *rd = static_cast<int32>(take);
+    return kResultOk;
+  }
+  tresult PLUGIN_API write(void*, int32, int32*) override { return kNotImplemented; }
+  tresult PLUGIN_API seek(int64 p, int32 mode, int64* res) override {
+    int64 newPos;
+    if      (mode == kIBSeekSet) newPos = p;
+    else if (mode == kIBSeekCur) newPos = static_cast<int64>(pos) + p;
+    else if (mode == kIBSeekEnd) newPos = static_cast<int64>(buf.size()) + p;
+    else { if (res) *res = static_cast<int64>(pos); return kResultFalse; }
+    // Clamp to [0, buf.size()] — negative casts to size_t produce SIZE_MAX.
+    pos = (newPos < 0) ? 0 : static_cast<size_t>(newPos);
+    if (res) *res = static_cast<int64>(pos);
+    return kResultOk;
+  }
+  tresult PLUGIN_API tell(int64* p) override {
+    if (p) *p = static_cast<int64>(pos); return kResultOk;
+  }
+  tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+    QUERY_INTERFACE(iid, obj, FUnknown::iid, IBStream)
+    QUERY_INTERFACE(iid, obj, IBStream::iid, IBStream)
+    *obj = nullptr; return kNoInterface;
+  }
+  uint32 PLUGIN_API addRef()  override { return 1000; }
+  uint32 PLUGIN_API release() override { return 1000; }
+};
+
+}  // namespace
+
+bool getPluginState(int slotId, std::vector<uint8_t>& out) {
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot || !slot->component) return false;
+  WriteStream ws(out);
+  return slot->component->getState(&ws) == kResultOk;
+}
+
+bool setPluginState(int slotId, const std::vector<uint8_t>& data) {
+  if (slotId < 0 || slotId >= kMaxSlots) return false;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot || !slot->component) return false;
+  ReadStream rs(data);
+  return slot->component->setState(&rs) == kResultOk;
 }
 
 // ── Editor window (V4 spike, Windows) ────────────────────────────────────────

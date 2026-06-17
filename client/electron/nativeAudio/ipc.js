@@ -219,6 +219,18 @@ export function setupAudioIPC() {
     try { return await sendRequest('vstSetInsertChain', opts) }
     catch (e) { return { ok: false, error: e.message } }
   })
+  ipcMain.handle('vst:set-channel-chain', async (_event, opts) => {
+    try { return await sendRequest('vstSetChannelChain', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:get-state', async (_event, opts) => {
+    try { return await sendRequest('vstGetState', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+  ipcMain.handle('vst:set-state', async (_event, opts) => {
+    try { return await sendRequest('vstSetState', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
   ipcMain.handle('vst:open-editor', async (_event, opts) => {
     try { return await sendRequest('vstOpenEditor', opts) }
     catch (e) { return { ok: false, error: e.message } }

@@ -158,6 +158,13 @@ interface Window {
       /** V4: open the plugin's own editor in a native OS window (false if headless). */
       openEditor(slotId: number): Promise<{ ok: boolean; error?: string }>
       closeEditor(slotId: number): Promise<{ ok: boolean; error?: string }>
+      /** V6: set the insert chain for physical input channel `channelIdx`.
+       *  Empty slotIds clears that channel's chain. Persists across reinit (V10). */
+      setChannelChain(channelIdx: number, slotIds: number[]): Promise<{ ok: boolean; error?: string }>
+      /** V9: read binary preset state of a loaded plugin slot. */
+      getState(slotId: number): Promise<{ ok: boolean; data?: ArrayBuffer | null; error?: string }>
+      /** V9: restore a plugin from a previously saved binary preset. */
+      setState(slotId: number, data: ArrayBuffer): Promise<{ ok: boolean; error?: string }>
     }
   }
 }

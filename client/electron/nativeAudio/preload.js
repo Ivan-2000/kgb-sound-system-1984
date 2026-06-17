@@ -237,5 +237,19 @@ contextBridge.exposeInMainWorld('nativeAudio', {
 
     /** V4: close the plugin editor window. @returns {Promise<{ok:boolean, error?:string}>} */
     closeEditor: (slotId) => ipcRenderer.invoke('vst:close-editor', { slotId }),
+
+    /** V6: set the insert chain for a single physical input channel.
+     *  Empty slotIds clears the chain. Persists across stream restarts (V10).
+     *  @returns {Promise<{ok:boolean, error?:string}>} */
+    setChannelChain: (channelIdx, slotIds) =>
+      ipcRenderer.invoke('vst:set-channel-chain', { channelIdx, slotIds }),
+
+    /** V9: get the binary preset state of a loaded plugin.
+     *  @returns {Promise<{ok:boolean, data?:ArrayBuffer, error?:string}>} */
+    getState: (slotId) => ipcRenderer.invoke('vst:get-state', { slotId }),
+
+    /** V9: restore a plugin from a previously saved binary preset.
+     *  @returns {Promise<{ok:boolean, error?:string}>} */
+    setState: (slotId, data) => ipcRenderer.invoke('vst:set-state', { slotId, data }),
   },
 })

@@ -424,6 +424,36 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      // V6: per-channel chain — one chain per physical input channel.
+      case 'vstSetChannelChain': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        const ch = Number(opts?.channelIdx)
+        if (!Number.isFinite(ch) || !Number.isInteger(ch) || ch < 0) { replyError(id, 'channelIdx must be a non-negative integer'); return }
+        try { a.setChannelChain(ch, Array.isArray(opts?.slotIds) ? opts.slotIds : []); reply(id, { ok: true }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+
+      // V9: binary preset state.
+      case 'vstGetState': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        try { reply(id, a.getPluginState(Number(opts?.slotId))) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+      case 'vstSetState': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: false, error: 'VST host not built' }); return }
+        if (!(opts?.data instanceof ArrayBuffer)) {
+          replyError(id, 'vstSetState: data must be an ArrayBuffer'); return
+        }
+        try { reply(id, a.setPluginState(Number(opts?.slotId), opts.data)) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+
       case 'shutdown': {
         // Graceful drain. closeStream is idempotent — call unconditionally
         // (33a6bb1 fix #5: a paused-but-open stream leaks driver handles

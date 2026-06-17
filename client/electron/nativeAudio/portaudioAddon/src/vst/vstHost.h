@@ -118,6 +118,13 @@ void pumpEditorMessages();
 void processChain(const int* slotIds, int count,
                   float* interleaved, int numChannels, int numFrames);
 
+// V9: binary preset state — project save/load. JS-thread only.
+// getPluginState writes IComponent::getState() output to `out`; returns false if
+// the slot is empty or the plugin returns an error.
+// setPluginState feeds `data` back via IComponent::setState(); returns false on error.
+bool getPluginState(int slotId, std::vector<uint8_t>& out);
+bool setPluginState(int slotId, const std::vector<uint8_t>& data);
+
 // Unload everything and drop the shared host context. JS-thread only.
 void shutdown();
 
