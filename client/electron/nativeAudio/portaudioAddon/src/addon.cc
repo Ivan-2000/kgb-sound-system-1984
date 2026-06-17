@@ -701,13 +701,16 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
                 // Consumed from queue — decrement fill tracker immediately.
                 g_opusTsfnFill.fetch_sub(1, std::memory_order_relaxed);
 
-                // §2.1: use snapshotted encoder pointer. After closeStream/reinit the
-                // global g_opusCh[].enc may be a NEW encoder; using it with OLD PCM
-                // would corrupt its state. The snapshot captures the encoder that was
-                // alive when the job was enqueued — it may be null if closeStream ran
-                // after enqueue, in which case we simply skip encoding.
+                // §2.1: use snapshotted encoder pointer, but validate it against the
+                // current global before use.
+                // - closeStream: cleanupOpusState() frees the encoder and sets the
+                //   global to nullptr. j->enc is a dangling pointer; the global ≠
+                //   j->enc → skip, preventing use-after-free.
+                // - reinit: global is now enc_new ≠ enc_old (j->enc) → skip,
+                //   preventing old PCM from corrupting the new encoder's state.
+                // - normal path: global == j->enc → encode.
                 OpusEncoder* enc = j->enc;
-                if (enc) {
+                if (enc && g_opusCh[j->channelIndex].enc == enc) {
                   unsigned char encoded[OPUS_MAX_PACKET];
                   int encodedLen = opus_encode_float(enc, j->pcm, j->frameSize,
                                                      encoded, OPUS_MAX_PACKET);

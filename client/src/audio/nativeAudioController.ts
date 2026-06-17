@@ -75,6 +75,7 @@ class NativeAudioController {
       this.unsubscribePcm()
       this.inputLatencyMs = null
       this.outputLatencyMs = null
+      this.actualSampleRate = null
       this.error = 'Audio engine crashed'
       this.notify()
     })

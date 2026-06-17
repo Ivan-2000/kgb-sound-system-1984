@@ -192,16 +192,27 @@ class NativeRtcManager {
           // Impolite: ignore remote offer, our offer takes precedence.
           return
         }
-        // Polite: rollback our pending offer before accepting theirs.
+        // Polite: rollback must complete before setRemoteDescription — they share
+        // the same RTCPeerConnection state machine and cannot run concurrently.
         entry.pc
           .setLocalDescription({ type: 'rollback' })
-          .catch(() => { /* rollback may fail if state has since changed */ })
+          .then(() => entry.pc.setRemoteDescription({ type: 'offer', sdp: signal.sdp }))
+          .then(() => {
+            this.flushPendingCandidates(entry)
+            return entry.pc.createAnswer()
+          })
+          .then((answer) => entry.pc.setLocalDescription(answer))
+          .then(() => {
+            const desc = entry.pc.localDescription
+            if (desc) this.sendSignal(fromSocketId, { type: desc.type, sdp: desc.sdp })
+          })
+          .catch((e) => { console.error('[nativeRtc] handle offer (polite rollback) failed', e) })
+        return
       }
 
       entry.pc
         .setRemoteDescription({ type: 'offer', sdp: signal.sdp })
         .then(() => {
-          // Flush ICE candidates that arrived before the remote description was set
           this.flushPendingCandidates(entry)
           return entry.pc.createAnswer()
         })
