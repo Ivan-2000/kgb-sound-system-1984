@@ -437,7 +437,7 @@
 | Аудиодвижок (базовый) | Web Audio API + Tone.js | [x] Работает (прототип) |
 | Аудиодвижок (нативный) | PortAudio — ASIO / WASAPI / DirectSound / MME (Win), CoreAudio (macOS), ALSA / JACK (Linux) | [~] A3–A3.5c готовы; **A4a готово** — libopus v1.5.2 (git submodule, BSD-3), per-channel `OpusEncoder*`, PCM-аккумуляция без alloc в RT, TSFN → `kind:'opus-out'` → renderer, `onOpusPacket` / `getStats` / `pushInboundOpus` в preload; **A4.5 готово** — `audio:get-stats` (xrunCount, dropCount, bufferFillPct, cpuLoad); A4b decoder отложен |
 | Аудиотранспорт (нативный) | Opus через WebRTC DataChannel (замена `getUserMedia`) | [x] **A5 готово** — `nativeRtcManager.ts`: RTCPeerConnection + DataChannel per peer, бинарный заголовок 13 байт, UDP-семантика (ordered:false, maxRetransmits:0), signal routing через `_kgbAudio` флаг; **A6 готово** — `kgb-ctrl` ping-pong RTT per peer (ordered, reliable), `subscribeRtt()`, PortAudio In/Out latency в SettingsModal |
-| VST-хостинг | VST3 SDK (или JUCE) в `utilityProcess` рядом с PortAudio; UI плагина — в собственном OS-окне (без embed в Electron, MVP) | [ ] Phase 2 V1–V10 — решения по ADR закрыты |
+| VST-хостинг | VST3 SDK (или JUCE) в `utilityProcess` рядом с PortAudio; UI плагина — в собственном OS-окне (без embed в Electron, MVP) | [~] V1/V2/V3/V4/V6/V8/V9/V10 ✅ (E1+E2); V5/V7 (nik N4) `[ ]` |
 | Сеть (signalling) | WebRTC + Socket.IO | [x] Работает |
 | MIDI | WebMIDI API **или** нативный PortMidi-bridge — развилка MI1, решается при подходе к реализации | [ ] Phase 5 (низкий приоритет) |
 | Кодирование | ffmpeg-wasm (фоновый воркер) | [ ] Не начат |
@@ -449,7 +449,7 @@
 | Фаза | Прогресс |
 |---|---|
 | Phase 1 — Сеть и комнаты | ~98% *(A1–A6 + A2 авто-выбор + перечисление каналов готовы; acceptance — гитара через ASIO end-to-end)* |
-| Phase 2 — Миксер и запись | ~32% *(M1–M5 готовы и Send-toggle; выбор устройства/auto-fill (7 пунктов), V1–V10 VST/InsertChain, преролл — не начаты)* |
+| Phase 2 — Миксер и запись | ~65% *(M1–M5 + Send-toggle готовы; V1/V2/V3/V4/V6/V8/V9/V10 VST/InsertChain готовы (E1+E2); V5/V7 у nik (N4); остаток: output-шина, при смене устройства сохранение fader/mute, buffer-size UI)* |
 | Phase 3 — Монтажный стол и MIDI | ~60% *(T1–T5 + PR1–PR5 + I2 — готово (Спринт 3–4); впереди I1 InsertChain дорожки, I3 мелодика, экспорт)* |
 | Phase 4 — Метроном и драм-машина | ~85% *(перенос паттерна в миди-клип готов (PR5); остаток: NTP sync, drift correction)* |
 | Phase 5 — UI и полировка | ~60% *(SettingsModal Native Audio реализован; MIDI-инпут MI1–MI6 — в конце разработки, низкий приоритет)* |
