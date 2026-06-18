@@ -134,7 +134,7 @@ malloc() внутри callback → периодические xrun (щелчки
 
 Ключевые файлы: addon.cc (PaCallback, PushInboundOpus, OpusChannelState),
 nativeAudio/utilityHost.mjs (не трогать).
-Закрывает: AUDIT §9.A.1, §1.5.
+Закрой по DoD (commit + push + ✅ в ledger E5). Закрывает: AUDIT §9.A.1, §1.5.
 ```
 
 ---
