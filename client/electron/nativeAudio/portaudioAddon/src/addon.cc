@@ -154,7 +154,17 @@ static std::atomic<uint32_t> g_pcmRpos{0};   // worker consumer
 // Worker thread + synchronisation (all non-RT).
 static std::thread             g_opusThread;
 static std::atomic<bool>       g_opusThreadRun{false};
-static std::mutex              g_opusMx;   // codec lifecycle + decode queue + TSFN use
+// g_opusMx guards codec lifecycle (encoder/decoder/peer create+destroy, pending
+// gains) and TSFN use vs Release. Held by the worker during encode/decode and by
+// the rare JS-thread ops (open/closeStream, setRemoteChannelGain) — NOT by the
+// frequent PushInboundOpus / PushSoftmix / GetStats, so the JS event loop never
+// blocks on codec work.
+static std::mutex              g_opusMx;
+// g_decodeQueueMx guards ONLY the inbound queue + condvar — held for the duration
+// of a push/pop (microseconds), never across a decode. Keeping it separate from
+// g_opusMx is what stops PushInboundOpus (JS thread) from stalling behind the
+// worker's opus_decode_float (§1.5).
+static std::mutex              g_decodeQueueMx;
 static std::condition_variable g_opusCv;   // wakes worker for inbound packets / shutdown
 
 // Inbound Opus packet handed from the JS thread (PushInboundOpus) to the worker.
@@ -164,7 +174,7 @@ struct InboundPkt {
   uint32_t             sequence;
   std::vector<uint8_t> payload;
 };
-static std::deque<InboundPkt> g_decodeQueue;        // guarded by g_opusMx
+static std::deque<InboundPkt> g_decodeQueue;        // guarded by g_decodeQueueMx
 static const size_t           DECODE_QUEUE_MAX = 2048;  // defensive backlog cap
 
 // ─── A4.5 Stats counters (monotonic — UI diffs them) ─────────────────────────
@@ -596,24 +606,36 @@ static bool drainPcmRing() {
   return did;
 }
 
-// Drain the inbound decode queue: pop each packet, run the jitter buffer and
-// opus_decode_float() (off the JS thread, §1.5), pushing PCM into the peer ring.
-// Held under g_opusMx per packet so it serialises with cleanupDecoderState().
+// Drain the inbound decode queue: pop each packet (under g_decodeQueueMx), then
+// run the jitter buffer + opus_decode_float() under g_opusMx (off the JS thread,
+// §1.5), pushing PCM into the peer ring. The two locks are taken in separate
+// scopes — never simultaneously — so neither the JS producer nor closeStream is
+// blocked by a decode.
 static bool drainDecodeQueue() {
   bool did = false;
   for (;;) {
-    std::lock_guard<std::mutex> lk(g_opusMx);
-    if (g_decodeQueue.empty()) break;
-    InboundPkt pkt = std::move(g_decodeQueue.front());
-    g_decodeQueue.pop_front();
-
-    PeerDecState* peer = findOrCreatePeer(pkt.key);
-    if (peer) {
-      if (!peer->seqInit) { peer->nextSeq = pkt.sequence; peer->seqInit = true; }
-      // Drop late arrivals (signed wrap-aware), then jitter-buffer + flush.
-      if (static_cast<int32_t>(pkt.sequence - peer->nextSeq) >= 0 && !pkt.payload.empty()) {
-        peer->jitter.emplace(pkt.sequence, std::move(pkt.payload));
-        decodeAndFlush(peer);
+    InboundPkt pkt;
+    {
+      std::lock_guard<std::mutex> qlk(g_decodeQueueMx);
+      if (g_decodeQueue.empty()) break;
+      pkt = std::move(g_decodeQueue.front());
+      g_decodeQueue.pop_front();
+    }
+    {
+      std::lock_guard<std::mutex> lk(g_opusMx);
+      // If the stream was torn down between pop and here, do NOT create a peer —
+      // it would leak into the next stream. closeStream sets outputChannels=0
+      // (release) before its g_opusMx cleanup, so this load (acquire) sees 0.
+      if (g_streamOutputChannels.load(std::memory_order_acquire) != 0) {
+        PeerDecState* peer = findOrCreatePeer(pkt.key);
+        if (peer) {
+          if (!peer->seqInit) { peer->nextSeq = pkt.sequence; peer->seqInit = true; }
+          // Drop late arrivals (signed wrap-aware), then jitter-buffer + flush.
+          if (static_cast<int32_t>(pkt.sequence - peer->nextSeq) >= 0 && !pkt.payload.empty()) {
+            peer->jitter.emplace(pkt.sequence, std::move(pkt.payload));
+            decodeAndFlush(peer);
+          }
+        }
       }
     }
     did = true;
@@ -632,8 +654,10 @@ static void opusWorkerMain() {
     did |= drainPcmRing();
     did |= drainDecodeQueue();
     if (!did) {
-      std::unique_lock<std::mutex> lk(g_opusMx);
-      g_opusCv.wait_for(lk, std::chrono::milliseconds(1), [] {
+      // Wait on the queue mutex (the condvar's predicate touches g_decodeQueue).
+      // The 1 ms timeout backstops the RT-produced rings, which cannot notify.
+      std::unique_lock<std::mutex> qlk(g_decodeQueueMx);
+      g_opusCv.wait_for(qlk, std::chrono::milliseconds(1), [] {
         return !g_opusThreadRun.load(std::memory_order_relaxed) ||
                !g_decodeQueue.empty();
       });
@@ -1309,6 +1333,14 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   g_monoScratch = nullptr;
 #endif
 
+  // Discard any inbound packets queued for the worker — they belong to the
+  // stream being torn down. (outputChannels is already 0 above, so even a packet
+  // the worker popped just before this clear is skipped in drainDecodeQueue.)
+  {
+    std::lock_guard<std::mutex> qlk(g_decodeQueueMx);
+    g_decodeQueue.clear();
+  }
+
   // E5: coordinate codec/TSFN teardown with the worker thread. Under g_opusMx
   // the worker is either idle or about to re-check the alive flags; once we set
   // them false + Release here, the worker (next time it locks) skips all delivery
@@ -1318,10 +1350,6 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
 
   const bool pcmWasAlive  = g_tsfnAlive.exchange(false, std::memory_order_acq_rel);
   const bool opusWasAlive = g_opusTsfnAlive.exchange(false, std::memory_order_acq_rel);
-
-  // Discard any inbound packets queued for the worker — they belong to the
-  // stream being torn down.
-  g_decodeQueue.clear();
 
   if (pcmWasAlive) {
     g_pcmTsfn.Release();
@@ -1491,16 +1519,19 @@ Napi::Value PushInboundOpus(const Napi::CallbackInfo& info) {
   if (len == 0) return env.Undefined();
 
   // Hand the packet to the worker thread (off the JS event loop). ArrayBuffer
-  // data must be read on the JS thread, so copy into the queue item here.
-  std::lock_guard<std::mutex> lk(g_opusMx);
-  if (g_decodeQueue.size() >= DECODE_QUEUE_MAX) {
-    // Worker overwhelmed (e.g. a stall): drop newest rather than grow unbounded.
-    g_dropCount.fetch_add(1, std::memory_order_relaxed);
-    return env.Undefined();
+  // data must be read on the JS thread, so copy into the queue item here. Only
+  // the lightweight queue mutex is taken — never blocks behind a decode.
+  {
+    std::lock_guard<std::mutex> qlk(g_decodeQueueMx);
+    if (g_decodeQueue.size() >= DECODE_QUEUE_MAX) {
+      // Worker overwhelmed (e.g. a stall): drop newest rather than grow unbounded.
+      g_dropCount.fetch_add(1, std::memory_order_relaxed);
+      return env.Undefined();
+    }
+    g_decodeQueue.push_back(InboundPkt{
+        peerId + "/" + channelId, sequence,
+        std::vector<uint8_t>(data, data + len)});
   }
-  g_decodeQueue.push_back(InboundPkt{
-      peerId + "/" + channelId, sequence,
-      std::vector<uint8_t>(data, data + len)});
   g_opusCv.notify_one();
   return env.Undefined();
 }

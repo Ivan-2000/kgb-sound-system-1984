@@ -448,11 +448,16 @@ ring между audio thread и worker thread», §5 `encoderWorker.cc`/`decoder
 - **Decode:** `pushInboundOpus` (JS) только кладёт пакет в `g_decodeQueue`; worker
   гоняет jitter-buffer + `opus_decode_float()` и пишет в per-peer `PeerRing`
   (RT-потребитель не изменился).
-- **Sync:** `g_opusMx` сериализует использование кодеков воркером против их
-  создания/уничтожения (open/closeStream) и Release TSFN — RT-поток мьютекс не
-  трогает (только lock-free кольца). Поколение потока (`g_streamGen`) в каждом
-  слоте кольца защищает reinit от ABA при переиспользовании указателя энкодера
-  (усиление фикса §2.1).
+- **Sync:** два мьютекса (RT-поток ни один не трогает — только lock-free кольца).
+  `g_opusMx` сериализует использование кодеков воркером против их
+  создания/уничтожения (open/closeStream) и Release TSFN. Очередь декода —
+  отдельный лёгкий `g_decodeQueueMx` (держится только на push/pop, не на декоде),
+  чтобы `pushInboundOpus` (частый, JS-поток) не стопорился за `opus_decode_float`
+  воркера (§1.5). Воркер берёт мьютексы в разных scope, никогда одновременно →
+  дедлок невозможен. Стейл-пир после close отсекается проверкой
+  `g_streamOutputChannels==0` в декод-секции. Поколение потока (`g_streamGen`) в
+  каждом слоте кольца защищает reinit от ABA при переиспользовании указателя
+  энкодера (усиление фикса §2.1).
 - **Верификация (R8):** пересборка `build:asio` (VST+ASIO ON) чистая; live-тест в
   Electron-ABI duplex WASAPI@48k — `onPcm`/`onOpus` текут, **xrunCount == 0,
   dropCount == 0**; reinit и loopback-decode (144 пакета → 2 peer-канала)
