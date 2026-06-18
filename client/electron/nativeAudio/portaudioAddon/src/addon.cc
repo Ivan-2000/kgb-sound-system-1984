@@ -4,11 +4,17 @@
 #include <opus.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <string>
+#include <deque>
 #include <map>
+#include <mutex>
+#include <new>
+#include <string>
+#include <thread>
 #include <vector>
 
 #ifdef KGB_WITH_VST
@@ -62,6 +68,13 @@ static std::atomic<float> g_monitorGain{0.0f};
 static Napi::ThreadSafeFunction g_pcmTsfn;
 static std::atomic<bool> g_tsfnAlive{false};
 
+// E5: stream generation, bumped on every openStream (under g_opusMx). The RT
+// callback stamps every ring slot with the current generation; the worker
+// thread discards any slot whose generation no longer matches — this is what
+// makes a reinit (close→open) safe even if the OS reuses a freed encoder
+// pointer (would otherwise re-introduce the §2.1 stale-PCM corruption via ABA).
+static std::atomic<uint32_t> g_streamGen{0};
+
 // ─── A4 Opus encoder state ───────────────────────────────────────────────────
 // Max 64 input channels (covers even pro multichannel interfaces).
 // Max Opus frame: 60ms × 48kHz = 2880 samples.
@@ -81,24 +94,78 @@ struct OpusChannelState {
 static OpusChannelState g_opusCh[MAX_INPUT_CH];
 static std::atomic<int>  g_opusNumCh{0}; // set (release) before Pa_StartStream
 
-// OpusEncJob carries one full Opus frame worth of PCM to the JS thread.
-// malloc'd pcm is freed inside the TSFN lambda after opus_encode_float().
-//
-// Known follow-up: move opus_encode_float() to a dedicated worker thread (ring
-// buffer SPSC RT→worker) to avoid holding the JS event loop during encoding.
-// For A4 we encode on the JS thread for simplicity; xrun pressure from the
-// encoder will surface in xrunCount/dropCount metrics added by A4.5.
-struct OpusEncJob {
-  int          channelIndex;
-  uint32_t     sequence;
-  int64_t      timestampUs;   // Pa stream time in µs at the start of this frame
-  float*       pcm;           // malloc'd copy, frameSize floats
-  int          frameSize;
-  OpusEncoder* enc;           // §2.1: snapshot at enqueue time — not the global pointer
-};
-
 static Napi::ThreadSafeFunction g_opusTsfn;
 static std::atomic<bool>        g_opusTsfnAlive{false};
+
+// ─── E5: Opus worker thread (§9.A.1 / §1.5) ──────────────────────────────────
+// The RT callback no longer mallocs or runs opus_encode/decode. Instead a single
+// dedicated worker thread (one per process) owns all heavy codec work:
+//   • encode:  RT writes raw PCM frames into a lock-free SPSC ring (g_encRing);
+//              the worker pops them, calls opus_encode_float(), and ships the
+//              encoded packet to JS via g_opusTsfn.
+//   • PCM tap: RT writes raw input blocks into a second SPSC ring (g_pcmRing);
+//              the worker pops them and ships to JS via g_pcmTsfn (recorder/VU).
+//   • decode:  PushInboundOpus (JS thread) enqueues raw packets into
+//              g_decodeQueue; the worker pops, runs the jitter buffer +
+//              opus_decode_float(), and pushes PCM into the per-peer PeerRing
+//              (consumed by the RT callback exactly as before).
+// The RT thread is the SOLE producer of the two SPSC rings and never blocks.
+// g_opusMx serialises the worker's codec usage against codec create/destroy
+// (openStream/closeStream) and TSFN release — none of which run on the RT thread.
+
+// Carries one ENCODED Opus packet from the worker thread back to the JS thread.
+struct OpusOutJob {
+  int          channelIndex;
+  uint32_t     sequence;
+  int64_t      timestampUs;       // Pa stream time in µs at the frame start
+  int          len;
+  unsigned char data[OPUS_MAX_PACKET];
+};
+
+// Lock-free SPSC encode ring: RT callback = sole producer, worker = sole consumer.
+// Each slot holds one full Opus frame of PCM (no malloc on either side).
+struct EncodeSlot {
+  int      channelIndex;
+  uint32_t sequence;
+  int64_t  timestampUs;
+  int      frameSize;
+  uint32_t gen;                   // stream generation — worker drops stale slots
+  float    pcm[MAX_OPUS_FRAME];
+};
+static const int ENC_RING_SLOTS = 128;   // power of two; handles a 64-ch burst ×2
+static EncodeSlot           g_encRing[ENC_RING_SLOTS];
+static std::atomic<uint32_t> g_encWpos{0};   // RT producer
+static std::atomic<uint32_t> g_encRpos{0};   // worker consumer
+
+// Lock-free SPSC PCM ring: RT callback = sole producer, worker = sole consumer.
+// One slot per callback block. Slot is sized for the worst case (64 ch × 512
+// frames) so the RT memcpy is always in-bounds.
+struct PcmSlot {
+  uint32_t frames;
+  uint32_t channels;
+  uint32_t gen;
+  float    data[MAX_INPUT_CH * 512];
+};
+static const int PCM_RING_SLOTS = 8;     // power of two
+static PcmSlot              g_pcmRing[PCM_RING_SLOTS];
+static std::atomic<uint32_t> g_pcmWpos{0};   // RT producer
+static std::atomic<uint32_t> g_pcmRpos{0};   // worker consumer
+
+// Worker thread + synchronisation (all non-RT).
+static std::thread             g_opusThread;
+static std::atomic<bool>       g_opusThreadRun{false};
+static std::mutex              g_opusMx;   // codec lifecycle + decode queue + TSFN use
+static std::condition_variable g_opusCv;   // wakes worker for inbound packets / shutdown
+
+// Inbound Opus packet handed from the JS thread (PushInboundOpus) to the worker.
+// Allocated on the JS thread — std::string / std::vector are fine here (not RT).
+struct InboundPkt {
+  std::string          key;       // "peerId/channelId"
+  uint32_t             sequence;
+  std::vector<uint8_t> payload;
+};
+static std::deque<InboundPkt> g_decodeQueue;        // guarded by g_opusMx
+static const size_t           DECODE_QUEUE_MAX = 2048;  // defensive backlog cap
 
 // ─── A4.5 Stats counters (monotonic — UI diffs them) ─────────────────────────
 // xrunCount: paInputOverflow + paOutputUnderflow events from PaStreamCallbackFlags.
@@ -291,10 +358,16 @@ static void cleanupOpusState() {
   g_opusNumCh.store(0, std::memory_order_release);
 }
 
-// ─── A4b decoder helpers (JS thread only) ────────────────────────────────────
+// ─── A4b decoder helpers ──────────────────────────────────────────────────────
+// findOrCreatePeer / decodeAndFlush run on the WORKER thread (E5) and must be
+// called with g_opusMx held — that serialises them against cleanupDecoderState()
+// and the g_pendingGains writers on the JS thread. The RT callback only ever
+// READS g_peerSlots (acquire) and the per-peer PeerRing it consumes, so peer
+// publication (release store) / RT acquire is the only cross-thread contract
+// with the audio thread.
 
 // Find existing or create new PeerDecState for 'key'.  Returns nullptr on OOM or
-// decoder create failure.  Called only from the JS thread (no concurrent writes).
+// decoder create failure.  Caller holds g_opusMx.
 static PeerDecState* findOrCreatePeer(const std::string& key) {
   int freeSlot = -1;
   for (int i = 0; i < MAX_PEERS; i++) {
@@ -378,7 +451,8 @@ static void decodeAndFlush(PeerDecState* peer) {
   }
 }
 
-// Destroy all peer decoders.  Safe to call only after Pa_StopStream().
+// Destroy all peer decoders.  Caller holds g_opusMx and must have stopped the RT
+// callback first (Pa_AbortStream/Pa_CloseStream) so peer rings are no longer read.
 static void cleanupDecoderState() {
   for (int i = 0; i < MAX_PEERS; i++) {
     PeerDecState* p = g_peerSlots[i].exchange(nullptr, std::memory_order_acq_rel);
@@ -388,6 +462,183 @@ static void cleanupDecoderState() {
     }
   }
   g_pendingGains.clear();
+}
+
+// ─── E5: worker-thread drains ────────────────────────────────────────────────
+
+// Marshal one encoded Opus packet to the JS thread via g_opusTsfn. Re-acquires
+// g_opusMx (callers must NOT hold it) so a concurrent closeStream Release()
+// cannot finalise the TSFN mid-call.
+static void opusDeliverEncoded(int ch, uint32_t seq, int64_t ts,
+                               const unsigned char* data, int len) {
+  std::lock_guard<std::mutex> lk(g_opusMx);
+  if (!g_opusTsfnAlive.load(std::memory_order_acquire)) return;
+  OpusOutJob* job = new (std::nothrow) OpusOutJob();
+  if (!job) { g_dropCount.fetch_add(1, std::memory_order_relaxed); return; }
+  job->channelIndex = ch;
+  job->sequence     = seq;
+  job->timestampUs  = ts;
+  job->len          = len;
+  std::memcpy(job->data, data, static_cast<size_t>(len));
+  napi_status s = g_opusTsfn.NonBlockingCall(job,
+    [](Napi::Env env, Napi::Function jsCb, OpusOutJob* j) {
+      g_opusTsfnFill.fetch_sub(1, std::memory_order_relaxed);
+      try {
+        Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, static_cast<size_t>(j->len));
+        std::memcpy(ab.Data(), j->data, static_cast<size_t>(j->len));
+        jsCb.Call({
+          ab,
+          Napi::Number::New(env, j->channelIndex),
+          Napi::Number::New(env, static_cast<double>(j->sequence)),
+          Napi::BigInt::New(env, j->timestampUs),
+        });
+      } catch (...) {}
+      delete j;
+    });
+  if (s == napi_ok) {
+    g_opusTsfnFill.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    delete job;
+    g_dropCount.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+// Drain the encode ring: pop each PCM frame, encode it (under g_opusMx so the
+// encoder can't be destroyed mid-encode), and deliver. Stale frames (generation
+// mismatch) or frames whose encoder is gone are skipped. Returns true if any
+// slot was processed.
+static bool drainEncodeRing() {
+  bool did = false;
+  for (;;) {
+    const uint32_t r = g_encRpos.load(std::memory_order_relaxed);
+    const uint32_t w = g_encWpos.load(std::memory_order_acquire);
+    if (r == w) break;
+    EncodeSlot& slot = g_encRing[r & (ENC_RING_SLOTS - 1)];
+    const int      ch  = slot.channelIndex;
+    const uint32_t seq = slot.sequence;
+    const int64_t  ts  = slot.timestampUs;
+    const int      fsz = slot.frameSize;
+
+    int encodedLen = 0;
+    unsigned char encoded[OPUS_MAX_PACKET];
+    {
+      std::lock_guard<std::mutex> lk(g_opusMx);
+      OpusEncoder* enc = (ch >= 0 && ch < MAX_INPUT_CH) ? g_opusCh[ch].enc : nullptr;
+      if (enc && slot.gen == g_streamGen.load(std::memory_order_relaxed) &&
+          fsz > 0 && fsz <= MAX_OPUS_FRAME) {
+        encodedLen = opus_encode_float(enc, slot.pcm, fsz, encoded, OPUS_MAX_PACKET);
+      }
+    }
+    // Free the slot only after the encode has read slot.pcm. The SPSC contract
+    // (RT cannot reuse slot r until rpos advances past it) guarantees slot.pcm
+    // was stable throughout the encode above.
+    g_encRpos.store(r + 1, std::memory_order_release);
+    if (encodedLen > 0) opusDeliverEncoded(ch, seq, ts, encoded, encodedLen);
+    did = true;
+  }
+  return did;
+}
+
+// Drain the PCM ring: pop each raw input block and ship it to the JS thread via
+// g_pcmTsfn (recorder / VU). Stale generations are skipped. malloc here is on the
+// worker thread, never the RT thread.
+static bool drainPcmRing() {
+  bool did = false;
+  for (;;) {
+    const uint32_t r = g_pcmRpos.load(std::memory_order_relaxed);
+    const uint32_t w = g_pcmWpos.load(std::memory_order_acquire);
+    if (r == w) break;
+    PcmSlot& slot = g_pcmRing[r & (PCM_RING_SLOTS - 1)];
+    const uint32_t frames   = slot.frames;
+    const uint32_t channels = slot.channels;
+    const size_t   count    = static_cast<size_t>(frames) * channels;
+    {
+      std::lock_guard<std::mutex> lk(g_opusMx);
+      if (count > 0 &&
+          slot.gen == g_streamGen.load(std::memory_order_relaxed) &&
+          g_tsfnAlive.load(std::memory_order_acquire)) {
+        const size_t bytes = count * sizeof(float);
+        float* copy = static_cast<float*>(std::malloc(bytes));
+        if (copy) {
+          std::memcpy(copy, slot.data, bytes);   // slot.data stable: rpos not advanced
+          PcmChunk* chunk = new (std::nothrow) PcmChunk{copy, frames, channels};
+          if (!chunk) {
+            std::free(copy);
+            g_dropCount.fetch_add(1, std::memory_order_relaxed);
+          } else {
+            napi_status s = g_pcmTsfn.NonBlockingCall(chunk,
+              [](Napi::Env env, Napi::Function jsCb, PcmChunk* c) {
+                const size_t b = c->frames * c->channels * sizeof(float);
+                try {
+                  Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, b);
+                  std::memcpy(ab.Data(), c->data, b);
+                  jsCb.Call({
+                    ab,
+                    Napi::Number::New(env, static_cast<double>(c->frames)),
+                    Napi::Number::New(env, static_cast<double>(c->channels)),
+                  });
+                } catch (...) {}
+                std::free(c->data);
+                delete c;
+              });
+            if (s != napi_ok) {
+              std::free(copy);
+              delete chunk;
+              g_dropCount.fetch_add(1, std::memory_order_relaxed);
+            }
+          }
+        }
+      }
+    }
+    g_pcmRpos.store(r + 1, std::memory_order_release);
+    did = true;
+  }
+  return did;
+}
+
+// Drain the inbound decode queue: pop each packet, run the jitter buffer and
+// opus_decode_float() (off the JS thread, §1.5), pushing PCM into the peer ring.
+// Held under g_opusMx per packet so it serialises with cleanupDecoderState().
+static bool drainDecodeQueue() {
+  bool did = false;
+  for (;;) {
+    std::lock_guard<std::mutex> lk(g_opusMx);
+    if (g_decodeQueue.empty()) break;
+    InboundPkt pkt = std::move(g_decodeQueue.front());
+    g_decodeQueue.pop_front();
+
+    PeerDecState* peer = findOrCreatePeer(pkt.key);
+    if (peer) {
+      if (!peer->seqInit) { peer->nextSeq = pkt.sequence; peer->seqInit = true; }
+      // Drop late arrivals (signed wrap-aware), then jitter-buffer + flush.
+      if (static_cast<int32_t>(pkt.sequence - peer->nextSeq) >= 0 && !pkt.payload.empty()) {
+        peer->jitter.emplace(pkt.sequence, std::move(pkt.payload));
+        decodeAndFlush(peer);
+      }
+    }
+    did = true;
+  }
+  return did;
+}
+
+// Worker entry point. One thread per process; created in Init, joined via the
+// env cleanup hook. Drains the three queues; idles on a 1 ms timed wait so the
+// RT-produced rings (which cannot safely notify a condvar) are still picked up
+// promptly, while inbound packets wake it immediately.
+static void opusWorkerMain() {
+  while (g_opusThreadRun.load(std::memory_order_acquire)) {
+    bool did = false;
+    did |= drainEncodeRing();
+    did |= drainPcmRing();
+    did |= drainDecodeQueue();
+    if (!did) {
+      std::unique_lock<std::mutex> lk(g_opusMx);
+      g_opusCv.wait_for(lk, std::chrono::milliseconds(1), [] {
+        return !g_opusThreadRun.load(std::memory_order_relaxed) ||
+               !g_decodeQueue.empty();
+      });
+    }
+  }
 }
 
 #ifdef KGB_WITH_VST
@@ -416,25 +667,26 @@ static float* g_monoScratch = nullptr;
 #endif
 
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
-// Runs on the audio thread — must not block.
+// Runs on the audio thread — must not block and must not allocate.
 //
 // Responsibilities:
 //   1. A4.5 stats: count xruns from PaStreamCallbackFlags.
-//   2. Native monitoring: copy input → output × g_monitorGain.
-//   3. PCM TSFN: ship raw PCM to the JS thread (existing A3 path).
+//   2. Native monitoring + peer/softmix mix into the output buffer.
+//   3. PCM tap: copy the raw input block into the lock-free PCM ring (g_pcmRing);
+//      the worker thread ships it to the JS recorder/VU.
 //   4. A4 Opus: accumulate per-channel PCM; when a full Opus frame is ready,
-//      push it to the JS thread (g_opusTsfn) for encoding.
+//      copy it into the lock-free encode ring (g_encRing); the worker thread
+//      encodes and ships it.
 //
-// RT-safety note: the existing code already does malloc/new in the RT callback
-// to carry PCM to the TSFN (see comment in the PCM block below). The Opus path
-// follows the same pattern. A future improvement (encoder worker thread) will
-// replace both malloc calls with a preallocated SPSC ring — tracked as a
-// follow-up, not a blocker for A4.
+// E5 (§9.A.1): the RT callback no longer mallocs or runs opus_encode/decode.
+// Both former malloc sites are replaced by bounded copies into preallocated SPSC
+// rings consumed by the dedicated worker thread (opusWorkerMain).
 static int PaCallback(const void* input, void* output, unsigned long frames,
                       const PaStreamCallbackTimeInfo* timeInfo,
                       PaStreamCallbackFlags flags, void* /*userData*/) {
   const float* in  = static_cast<const float*>(input);
   float*       out = static_cast<float*>(output);
+  const uint32_t streamGen = g_streamGen.load(std::memory_order_relaxed);
   const int inCh  = g_streamInputChannels.load(std::memory_order_acquire);
   const int outCh = g_streamOutputChannels.load(std::memory_order_acquire);
   const float gain = g_monitorGain.load(std::memory_order_relaxed);
@@ -620,44 +872,33 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
     }
   }
 
-  // ── PCM TSFN (A3 path) ────────────────────────────────────────────────────
-  // malloc/new here is technically not RT-safe; this is a known A3 limitation
-  // (see ADR §6.1 R8). A preallocated ring will replace this in a follow-up.
+  // ── PCM ring (RT → worker → onPcm TSFN) ───────────────────────────────────
+  // E5 (§9.A.1): bounded copy into a preallocated SPSC ring; no malloc here. The
+  // worker thread (drainPcmRing) does the malloc + TSFN marshalling.
   if (in && inCh > 0 && g_tsfnAlive.load(std::memory_order_acquire)) {
-    const size_t bytes = static_cast<size_t>(frames) * inCh * sizeof(float);
-    float* copy = static_cast<float*>(std::malloc(bytes));
-    if (copy) {
-      std::memcpy(copy, procIn, bytes);
-      PcmChunk* chunk = new PcmChunk{copy, frames, static_cast<size_t>(inCh)};
-      napi_status status = g_pcmTsfn.NonBlockingCall(chunk,
-        [](Napi::Env env, Napi::Function jsCb, PcmChunk* c) {
-          const size_t bytes = c->frames * c->channels * sizeof(float);
-          try {
-            Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, bytes);
-            std::memcpy(ab.Data(), c->data, bytes);
-            jsCb.Call({
-              ab,
-              Napi::Number::New(env, static_cast<double>(c->frames)),
-              Napi::Number::New(env, static_cast<double>(c->channels)),
-            });
-          } catch (...) {}
-          std::free(c->data);
-          delete c;
-        });
-      if (status != napi_ok) {
-        std::free(copy);
-        delete chunk;
-        g_dropCount.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t need = static_cast<uint32_t>(frames) * static_cast<uint32_t>(inCh);
+    if (need <= static_cast<uint32_t>(MAX_INPUT_CH) * 512u) {
+      const uint32_t w = g_pcmWpos.load(std::memory_order_relaxed);
+      const uint32_t r = g_pcmRpos.load(std::memory_order_acquire);
+      if (w - r < static_cast<uint32_t>(PCM_RING_SLOTS)) {
+        PcmSlot& slot = g_pcmRing[w & (PCM_RING_SLOTS - 1)];
+        slot.frames   = static_cast<uint32_t>(frames);
+        slot.channels = static_cast<uint32_t>(inCh);
+        slot.gen      = streamGen;
+        std::memcpy(slot.data, procIn, static_cast<size_t>(need) * sizeof(float));
+        g_pcmWpos.store(w + 1, std::memory_order_release);
+      } else {
+        g_dropCount.fetch_add(1, std::memory_order_relaxed);  // worker fell behind
       }
     }
   }
 
-  // ── A4 Opus encoder ───────────────────────────────────────────────────────
-  // Accumulate deinterleaved per-channel PCM in pre-allocated accumBuf (no
-  // alloc in the hot path). When a full Opus frame is ready, malloc a copy and
-  // ship to the JS thread (g_opusTsfn) for encoding.
+  // ── A4 Opus encoder (RT → worker via encode ring) ─────────────────────────
+  // Accumulate deinterleaved per-channel PCM in pre-allocated accumBuf, then copy
+  // each full frame into the SPSC encode ring. No malloc, no opus_encode here —
+  // the worker thread (drainEncodeRing) does the encoding (§1.5, §9.A.1).
   const int opusNumCh = g_opusNumCh.load(std::memory_order_acquire);
-  if (in && inCh > 0 && opusNumCh > 0 && g_opusTsfnAlive.load(std::memory_order_acquire)) {
+  if (in && inCh > 0 && opusNumCh > 0) {
     const int64_t tsUs = timeInfo
         ? static_cast<int64_t>(timeInfo->currentTime * 1e6)
         : 0;
@@ -670,63 +911,24 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
         st.accumBuf[st.accumCount++] = procIn[f * inCh + ch];
 
         if (st.accumCount >= st.frameSize) {
-          // Full Opus frame — ship to JS thread for encoding.
-          const size_t pcmBytes = static_cast<size_t>(st.frameSize) * sizeof(float);
-          float* pcmCopy = static_cast<float*>(std::malloc(pcmBytes));
-          if (pcmCopy) {
-            std::memcpy(pcmCopy, st.accumBuf, pcmBytes);
-            OpusEncJob* job = new OpusEncJob{
-              ch,
-              st.sequence++,
-              tsUs,
-              pcmCopy,
-              st.frameSize,
-              st.enc,  // §2.1: snapshot — survives closeStream/reinit without reading global
-            };
-            napi_status s = g_opusTsfn.NonBlockingCall(job,
-              [](Napi::Env env, Napi::Function jsCb, OpusEncJob* j) {
-                // Consumed from queue — decrement fill tracker immediately.
-                g_opusTsfnFill.fetch_sub(1, std::memory_order_relaxed);
-
-                // §2.1: use snapshotted encoder pointer, but validate it against the
-                // current global before use.
-                // - closeStream: cleanupOpusState() frees the encoder and sets the
-                //   global to nullptr. j->enc is a dangling pointer; the global ≠
-                //   j->enc → skip, preventing use-after-free.
-                // - reinit: global is now enc_new ≠ enc_old (j->enc) → skip,
-                //   preventing old PCM from corrupting the new encoder's state.
-                // - normal path: global == j->enc → encode.
-                OpusEncoder* enc = j->enc;
-                if (enc && g_opusCh[j->channelIndex].enc == enc) {
-                  unsigned char encoded[OPUS_MAX_PACKET];
-                  int encodedLen = opus_encode_float(enc, j->pcm, j->frameSize,
-                                                     encoded, OPUS_MAX_PACKET);
-                  if (encodedLen > 0) {
-                    try {
-                      Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, encodedLen);
-                      std::memcpy(ab.Data(), encoded, encodedLen);
-                      jsCb.Call({
-                        ab,
-                        Napi::Number::New(env, j->channelIndex),
-                        Napi::Number::New(env, static_cast<double>(j->sequence)),
-                        Napi::BigInt::New(env, j->timestampUs),
-                      });
-                    } catch (...) {}
-                  }
-                }
-
-                std::free(j->pcm);
-                delete j;
-              });
-
-            if (s == napi_ok) {
-              g_opusTsfnFill.fetch_add(1, std::memory_order_relaxed);
-            } else {
-              // Queue full (napi_queue_full) or TSFN closing — drop frame.
-              std::free(pcmCopy);
-              delete job;
-              g_dropCount.fetch_add(1, std::memory_order_relaxed);
-            }
+          // Full Opus frame — copy into the encode ring for the worker thread.
+          // Advance sequence per frame boundary even on drop, so the receiver
+          // sees a gap (→ PLC) rather than a silent time discontinuity.
+          const uint32_t seq = st.sequence++;
+          const uint32_t w   = g_encWpos.load(std::memory_order_relaxed);
+          const uint32_t r   = g_encRpos.load(std::memory_order_acquire);
+          if (w - r < static_cast<uint32_t>(ENC_RING_SLOTS)) {
+            EncodeSlot& slot = g_encRing[w & (ENC_RING_SLOTS - 1)];
+            slot.channelIndex = ch;
+            slot.sequence     = seq;
+            slot.timestampUs  = tsUs;
+            slot.frameSize    = st.frameSize;
+            slot.gen          = streamGen;
+            std::memcpy(slot.pcm, st.accumBuf,
+                        static_cast<size_t>(st.frameSize) * sizeof(float));
+            g_encWpos.store(w + 1, std::memory_order_release);
+          } else {
+            g_dropCount.fetch_add(1, std::memory_order_relaxed);  // worker fell behind
           }
           st.accumCount = 0;
         }
@@ -903,6 +1105,15 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   g_streamInputChannels.store(inputChannels, std::memory_order_release);
   g_streamOutputChannels.store(outputChannels, std::memory_order_release);
 
+  // E5: bump the stream generation under g_opusMx so the worker thread (which
+  // reads g_streamGen while holding the same mutex) is guaranteed to observe the
+  // new value and therefore discard any stale frames left in the rings from a
+  // previous stream — including across a reinit that reuses an encoder pointer.
+  {
+    std::lock_guard<std::mutex> lk(g_opusMx);
+    g_streamGen.fetch_add(1, std::memory_order_relaxed);
+  }
+
 #ifdef KGB_WITH_VST
   // Preallocate the VST insert-chain scratch for the worst case (largest buffer
   // size × input channels), so the RT callback never allocates. Freed in
@@ -962,6 +1173,10 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
     if (bitrate < 500) bitrate = 500;
     if (bitrate > 512000) bitrate = 512000;
 
+    // E5: create the encoders + opus TSFN under g_opusMx so the worker thread
+    // (which validates and uses g_opusCh[].enc under the same mutex) never sees a
+    // half-constructed encoder table or races create/destroy.
+    std::lock_guard<std::mutex> lk(g_opusMx);
     const int numOpusCh = std::min(inputChannels, MAX_INPUT_CH);
     for (int ch = 0; ch < numOpusCh; ch++) {
       int opusErr = OPUS_OK;
@@ -1014,6 +1229,7 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
       &PaCallback,
       nullptr);
   if (err != paNoError) {
+    std::lock_guard<std::mutex> lk(g_opusMx);  // serialise codec/TSFN teardown vs worker
     g_tsfnAlive.store(false, std::memory_order_release);
     g_pcmTsfn.Release();
     if (hasOpusCb) {
@@ -1031,6 +1247,7 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   if (err != paNoError) {
     Pa_CloseStream(g_stream);
     g_stream = nullptr;
+    std::lock_guard<std::mutex> lk(g_opusMx);  // serialise codec/TSFN teardown vs worker
     g_tsfnAlive.store(false, std::memory_order_release);
     g_pcmTsfn.Release();
     if (hasOpusCb) {
@@ -1060,10 +1277,8 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
 Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
 
-  // Mark TSFNs dead before stopping the stream so callbacks stop enqueueing.
-  const bool pcmWasAlive  = g_tsfnAlive.exchange(false, std::memory_order_acq_rel);
-  const bool opusWasAlive = g_opusTsfnAlive.exchange(false, std::memory_order_acq_rel);
-
+  // Stop the RT callback FIRST so it can no longer write the SPSC rings or read
+  // the per-peer rings, then tear down codec state that the worker shares.
   if (g_stream) {
     // §8.A.3: Pa_AbortStream terminates immediately without waiting for buffers
     // to drain — Pa_StopStream can block indefinitely with a hung ASIO driver,
@@ -1094,13 +1309,28 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   g_monoScratch = nullptr;
 #endif
 
+  // E5: coordinate codec/TSFN teardown with the worker thread. Under g_opusMx
+  // the worker is either idle or about to re-check the alive flags; once we set
+  // them false + Release here, the worker (next time it locks) skips all delivery
+  // and codec use. The RT callback is already stopped (above), so destroying
+  // peer decoders/encoders cannot race the audio thread.
+  std::lock_guard<std::mutex> lk(g_opusMx);
+
+  const bool pcmWasAlive  = g_tsfnAlive.exchange(false, std::memory_order_acq_rel);
+  const bool opusWasAlive = g_opusTsfnAlive.exchange(false, std::memory_order_acq_rel);
+
+  // Discard any inbound packets queued for the worker — they belong to the
+  // stream being torn down.
+  g_decodeQueue.clear();
+
   if (pcmWasAlive) {
     g_pcmTsfn.Release();
   }
 
-  // Destroy encoders BEFORE releasing opus TSFN. Any pending lambdas in the
-  // TSFN queue will see enc=nullptr and skip encoding without crashing.
-  // (JS thread is single-threaded: closeStream and TSFN lambdas cannot interleave.)
+  // Destroy encoders BEFORE releasing opus TSFN. The worker validates enc against
+  // the current global under this same mutex, so after cleanupOpusState() it sees
+  // nullptr and skips. Any pending TSFN lambdas (already enqueued) still run on
+  // the JS event loop and only touch their own payload — they never re-encode.
   //
   // g_opusTsfnFill is NOT reset here: pending lambdas still run after Release()
   // and each does fetch_sub(1). Resetting to 0 before they drain would push the
@@ -1110,8 +1340,8 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
     g_opusTsfn.Release();
   }
 
-  // A4b: destroy all peer decoders (Pa_StopStream above guarantees the RT
-  // callback is no longer running, so peer rings are no longer accessed).
+  // A4b: destroy all peer decoders. RT is stopped (above) and the worker is
+  // serialised by g_opusMx, so peer rings/decoders are no longer accessed.
   cleanupDecoderState();
 
   return env.Undefined();
@@ -1220,8 +1450,10 @@ Napi::Value GetStats(const Napi::CallbackInfo& info) {
   return r;
 }
 
-// ─── A4b: PushInboundOpus ─────────────────────────────────────────────────────
-// JS-thread entry point for inbound Opus packets from remote peers.
+// ─── A4b / E5: PushInboundOpus ────────────────────────────────────────────────
+// JS-thread entry point for inbound Opus packets from remote peers. The actual
+// decoding (jitter buffer + opus_decode_float) runs on the worker thread (§1.5);
+// this only copies the packet and hands it off.
 // Signature: pushInboundOpus(peerId, channelId, sequence, timestampUs, payload)
 //   peerId, channelId : string  — form the per-decoder key
 //   sequence          : uint32  — monotonic counter from the remote encoder
@@ -1251,35 +1483,25 @@ Napi::Value PushInboundOpus(const Napi::CallbackInfo& info) {
   if (g_streamOutputChannels.load(std::memory_order_acquire) == 0)
     return env.Undefined();
 
-  const std::string key = peerId + "/" + channelId;
-  PeerDecState* peer = findOrCreatePeer(key);
-  if (!peer) return env.Undefined(); // too many peers or decoder create failed
-
-  // Initialise sequence tracking on first packet from this peer.
-  if (!peer->seqInit) {
-    peer->nextSeq = sequence;
-    peer->seqInit = true;
-  }
-
-  // Drop late arrivals.  Signed int32 subtraction handles the common uint32
-  // wrap-around case correctly up to a distance of 2^31-1 in either direction.
-  // Sequences more than 2^31 steps ahead of nextSeq are mis-classified as late
-  // (negative signed distance) and silently dropped; at 20 ms/frame this
-  // threshold is ~497 days of continuous streaming — well outside normal use.
-  if (static_cast<int32_t>(sequence - peer->nextSeq) < 0)
-    return env.Undefined();
-
-  // Buffer packet in jitter heap.
+  // Empty payload (zero-length ArrayBuffer or detached buffer where Data()→null):
+  // an empty packet would advance nextSeq over a silent slot in the decoder,
+  // desynchronising it. Drop it here; the jitter PLC path conceals the gap.
   const uint8_t* data = static_cast<const uint8_t*>(payload.Data());
   const size_t   len  = payload.ByteLength();
-  // Empty payload (zero-length ArrayBuffer or detached buffer where Data()→null)
-  // would store an empty vector, then opus_decode_float(dec, ptr, 0, ...) returns
-  // OPUS_INVALID_PACKET and nextSeq would advance over a silent slot — silently
-  // desynchronising the decoder.  Drop it here; the jitter PLC path will conceal.
   if (len == 0) return env.Undefined();
-  peer->jitter.emplace(sequence, std::vector<uint8_t>(data, data + len));
 
-  decodeAndFlush(peer);
+  // Hand the packet to the worker thread (off the JS event loop). ArrayBuffer
+  // data must be read on the JS thread, so copy into the queue item here.
+  std::lock_guard<std::mutex> lk(g_opusMx);
+  if (g_decodeQueue.size() >= DECODE_QUEUE_MAX) {
+    // Worker overwhelmed (e.g. a stall): drop newest rather than grow unbounded.
+    g_dropCount.fetch_add(1, std::memory_order_relaxed);
+    return env.Undefined();
+  }
+  g_decodeQueue.push_back(InboundPkt{
+      peerId + "/" + channelId, sequence,
+      std::vector<uint8_t>(data, data + len)});
+  g_opusCv.notify_one();
   return env.Undefined();
 }
 
@@ -1304,6 +1526,12 @@ Napi::Value SetRemoteChannelGain(const Napi::CallbackInfo& info) {
   if (gain > 4.0f)     gain = 4.0f;
 
   const std::string key = peerId + "/" + channelId;
+
+  // E5: hold g_opusMx so the slot scan + pending-gain stash are atomic against
+  // the worker's findOrCreatePeer (which also reads g_pendingGains and publishes
+  // new peer slots). Without it, a gain set in the instant a peer is being
+  // created could be lost (stashed in pending after the peer already drained it).
+  std::lock_guard<std::mutex> lk(g_opusMx);
 
   // Fast path: PeerDecState already exists — update atomically.
   for (int i = 0; i < MAX_PEERS; i++) {
@@ -1638,6 +1866,17 @@ static Napi::Value SetInsertChain(const Napi::CallbackInfo& info) {
 
 // ─── Module init ──────────────────────────────────────────────────────────────
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+  // E5: start the single Opus worker thread (encode/decode/PCM off the RT and JS
+  // threads). Joined on env teardown so a joinable global std::thread never trips
+  // std::terminate at static-destruction time.
+  g_opusThreadRun.store(true, std::memory_order_release);
+  g_opusThread = std::thread(opusWorkerMain);
+  env.AddCleanupHook([]() {
+    g_opusThreadRun.store(false, std::memory_order_release);
+    g_opusCv.notify_all();
+    if (g_opusThread.joinable()) g_opusThread.join();
+  });
+
   exports.Set("paInit",           Napi::Function::New(env, PaInit));
   exports.Set("paTerminate",      Napi::Function::New(env, PaTerminate));
   exports.Set("getDevices",       Napi::Function::New(env, GetDevices));

@@ -430,6 +430,38 @@ client/electron/nativeAudio/
 
 ---
 
+## 7.1. E5 — реализация worker-thread (2026-06-19)
+
+Спринт **E5** довёл RT-safety до исходного замысла этого ADR (§2 «lock-free SPSC
+ring между audio thread и worker thread», §5 `encoderWorker.cc`/`decoderWorker.cc`)
+и закрыл **AUDIT §9.A.1** (malloc/new в RT-колбэке) и **§1.5** (Opus encode+decode
+на одном JS-потоке utility). Реализовано целиком в `addon.cc` (а не отдельными
+файлами `*.cc` из §5 — единый модуль удобнее для общих atomics):
+
+- Один `std::thread` на процесс (`opusWorkerMain`), запускается в `Init`,
+  join через `env.AddCleanupHook` (joinable-глобал не роняет `std::terminate`).
+- **Encode:** RT-колбэк копирует готовый Opus-фрейм в lock-free SPSC `g_encRing`
+  (без malloc); worker зовёт `opus_encode_float()` и доставляет пакет в JS через
+  `g_opusTsfn`.
+- **PCM tap:** RT пишет сырой блок в SPSC `g_pcmRing`; worker отдаёт его в
+  `g_pcmTsfn` (recorder/VU) — второй malloc из RT тоже убран.
+- **Decode:** `pushInboundOpus` (JS) только кладёт пакет в `g_decodeQueue`; worker
+  гоняет jitter-buffer + `opus_decode_float()` и пишет в per-peer `PeerRing`
+  (RT-потребитель не изменился).
+- **Sync:** `g_opusMx` сериализует использование кодеков воркером против их
+  создания/уничтожения (open/closeStream) и Release TSFN — RT-поток мьютекс не
+  трогает (только lock-free кольца). Поколение потока (`g_streamGen`) в каждом
+  слоте кольца защищает reinit от ABA при переиспользовании указателя энкодера
+  (усиление фикса §2.1).
+- **Верификация (R8):** пересборка `build:asio` (VST+ASIO ON) чистая; live-тест в
+  Electron-ABI duplex WASAPI@48k — `onPcm`/`onOpus` текут, **xrunCount == 0,
+  dropCount == 0**; reinit и loopback-decode (144 пакета → 2 peer-канала)
+  проходят; процесс выходит с кодом 0 (worker join без зависания).
+
+R8 («malloc в callback → xrun») — закрыт.
+
+---
+
 ## 8. Открытые вопросы (для следующих ADR)
 
 - **VST-хостинг** (Phase 2) — JUCE/VST3 SDK будет жить в том же addon или отдельным? Откладывается до Phase 2 kick-off.
