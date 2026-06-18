@@ -101,6 +101,10 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   /** Native monitor gain. 0 = off, 1 = unity. Linear amplitude, capped at 4 (+12 dB). */
   setMonitorGain: (gain) => ipcRenderer.invoke('audio:set-monitor-gain', { gain }),
 
+  /** Native master output gain (scales the whole bus before the limiter).
+   *  0 = silence, 1 = unity. Linear amplitude, capped at 4 (+12 dB). */
+  setMasterGain: (gain) => ipcRenderer.invoke('audio:set-master-gain', { gain }),
+
   /** Pa_GetStreamInfo() snapshot — inputLatency/outputLatency in seconds. */
   getLatency: () => ipcRenderer.invoke('audio:get-latency'),
 

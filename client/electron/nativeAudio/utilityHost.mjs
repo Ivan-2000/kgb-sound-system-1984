@@ -293,6 +293,15 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      case 'setMasterGain': {
+        const a = loadAddon()
+        const gain = Number(opts?.gain)
+        if (!Number.isFinite(gain)) { replyError(id, 'gain must be a finite number'); return }
+        try { a.setMasterGain(gain); reply(id, { ok: true }) }
+        catch (e) { replyError(id, e) }
+        return
+      }
+
       case 'getLatency': {
         try { reply(id, loadAddon().getStreamLatency()) }
         catch { reply(id, { inputLatency: 0, outputLatency: 0, sampleRate: 0 }) }

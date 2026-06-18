@@ -975,6 +975,10 @@ function App() {
 
   const handleMasterVolume = (v: number) => {
     setMasterVolume(v)
+    // Native master gain (real output bus) — remembered by the controller so it
+    // survives device change / engine respawn. mixerEngine is the legacy Web
+    // Audio path (video-only streams), kept but no longer the source of truth.
+    nativeAudioController.setMasterGain(v / 100)
     mixerEngine.setMasterVolume(v / 100)
   }
 

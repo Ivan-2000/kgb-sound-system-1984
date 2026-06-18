@@ -59,6 +59,7 @@ class NativeAudioController {
   private activeOutputChannels = 0
   private inputChannelNames: string[] = []
   private monitorGain = 0
+  private masterGain = 1
   private channelLevels: number[] = []
   private pcmUnsub: (() => void) | null = null
   private inputLatencyMs: number | null = null
@@ -338,6 +339,8 @@ class NativeAudioController {
       // V10: re-push all per-channel VST chains after (re)open — native g_chanChain*
       // tables survive closeStream/openStream but are reset on utility process respawn.
       void useInsertChainStore.getState().resyncAllChains()
+      // Re-apply master gain — native g_masterGain resets to unity on respawn.
+      if (this.masterGain !== 1) void window.nativeAudio?.setMasterGain(this.masterGain)
     } else {
       this.error = result.error ?? 'openStream failed'
       this.inputLatencyMs = null
@@ -436,6 +439,8 @@ class NativeAudioController {
       this.actualSampleRate = result.sampleRate ?? null  // §8.A.1
       // V10: re-push per-channel VST chains after device change / engine respawn.
       void useInsertChainStore.getState().resyncAllChains()
+      // Re-apply master gain — native g_masterGain resets to unity on respawn.
+      if (this.masterGain !== 1) void window.nativeAudio?.setMasterGain(this.masterGain)
     } else {
       // Roll back all settings mutations so callers see a consistent state.
       this.sampleRate = prevSampleRate
@@ -464,6 +469,16 @@ class NativeAudioController {
       void window.nativeAudio.setMonitorGain(gain)
     }
     this.notify()
+  }
+
+  /**
+   * Master output gain (whole bus, before the limiter). Remembered here so it
+   * can be re-pushed after a stream (re)open or engine respawn — the native
+   * g_masterGain global resets to unity on a fresh utility process.
+   */
+  setMasterGain(gain: number): void {
+    this.masterGain = gain
+    void window.nativeAudio?.setMasterGain(gain)
   }
 }
 

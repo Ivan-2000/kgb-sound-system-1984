@@ -65,6 +65,11 @@ static PaStream* g_stream = nullptr;
 static std::atomic<int> g_streamInputChannels{0};
 static std::atomic<int> g_streamOutputChannels{0};
 static std::atomic<float> g_monitorGain{0.0f};
+// Master output gain — scales the whole output bus (monitor + peers + softmix)
+// just before the safety limiter. Default 1.0 (unity). Persists across
+// open/close/reinit so the user's master fader setting is not lost on a device
+// change; resets to unity only on a fresh utility process (engine respawn).
+static std::atomic<float> g_masterGain{1.0f};
 static Napi::ThreadSafeFunction g_pcmTsfn;
 static std::atomic<bool> g_tsfnAlive{false};
 
@@ -841,6 +846,7 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
     // ── Single merged frame loop ───────────────────────────────────────────
     const bool hasMonitor = (in && inCh > 0 && gain > 0.0f);
     const float invInCh   = hasMonitor ? 1.0f / static_cast<float>(inCh) : 0.0f;
+    const float masterGain = g_masterGain.load(std::memory_order_relaxed);
     float peak = 0.0f;
 
     for (unsigned long f = 0; f < frames; f++) {
@@ -866,6 +872,9 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       // Softmix (§1.1)
       if (static_cast<uint32_t>(f) < smTake)
         acc += g_softmixBuf[(smr + static_cast<uint32_t>(f)) & (SOFTMIX_RING_CAP - 1u)];
+
+      // Master fader — scales the whole bus before the safety limiter.
+      acc *= masterGain;
 
       // Write + track peak for §2.2 limiter
       const float absAcc = acc < 0.0f ? -acc : acc;
@@ -1397,6 +1406,23 @@ Napi::Value SetMonitorGain(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// ─── setMasterGain ────────────────────────────────────────────────────────────
+// Scales the whole output bus (monitor + peers + softmix) before the limiter.
+// gain ∈ [0, 4]; 0 = silence, 1 = unity. Persists across stream restarts.
+Napi::Value SetMasterGain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "setMasterGain(gain: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  float gain = static_cast<float>(info[0].As<Napi::Number>().DoubleValue());
+  if (!(gain >= 0.0f)) gain = 0.0f;
+  if (gain > 4.0f)     gain = 4.0f;
+  g_masterGain.store(gain, std::memory_order_relaxed);
+  return env.Undefined();
+}
+
 // ─── getStreamLatency ─────────────────────────────────────────────────────────
 Napi::Value GetStreamLatency(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
@@ -1915,6 +1941,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("closeStream",      Napi::Function::New(env, CloseStream));
   exports.Set("isStreamActive",   Napi::Function::New(env, IsStreamActive));
   exports.Set("setMonitorGain",   Napi::Function::New(env, SetMonitorGain));
+  exports.Set("setMasterGain",    Napi::Function::New(env, SetMasterGain));
   exports.Set("getStreamLatency", Napi::Function::New(env, GetStreamLatency));
   exports.Set("getStats",              Napi::Function::New(env, GetStats));
   exports.Set("pushInboundOpus",       Napi::Function::New(env, PushInboundOpus));

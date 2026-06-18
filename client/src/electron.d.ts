@@ -119,6 +119,8 @@ interface Window {
     closeStream(): Promise<{ ok: boolean }>
     isStreamActive(): Promise<boolean>
     setMonitorGain(gain: number): Promise<{ ok: boolean }>
+    /** Native master output gain (whole bus, before the limiter). 0 = silence, 1 = unity, ≤4. */
+    setMasterGain(gain: number): Promise<{ ok: boolean }>
     getLatency(): Promise<NativeAudioLatency>
     getStats(): Promise<NativeAudioStats>
     onPcm(handler: (msg: {

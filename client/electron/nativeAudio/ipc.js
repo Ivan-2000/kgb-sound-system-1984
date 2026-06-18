@@ -187,6 +187,13 @@ export function setupAudioIPC() {
     catch (e) { return { ok: false, error: e.message } }
   })
 
+  ipcMain.handle('audio:set-master-gain', async (_event, payload) => {
+    const gain = Number(payload?.gain)
+    if (!Number.isFinite(gain)) return { ok: false, error: 'gain must be a finite number' }
+    try { return await sendRequest('setMasterGain', { gain }) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
   ipcMain.handle('audio:get-latency', async () => {
     try { return await sendRequest('getLatency') }
     catch { return { inputLatency: 0, outputLatency: 0, sampleRate: 0 } }
