@@ -122,6 +122,11 @@ interface Window {
     /** Native master output gain (whole bus, before the limiter). 0 = silence, 1 = unity, ≤4. */
     setMasterGain(gain: number): Promise<{ ok: boolean }>
     getLatency(): Promise<NativeAudioLatency>
+    /** E3 §1.1 pt.2: Pa_GetStreamTime() — monotonic seconds since stream open.
+     *  Capture alongside AudioContext.currentTime at transport start to build a
+     *  clock anchor; use at finishRecording to compute accumulated drift and
+     *  convert clip durSec from PA-time to AC-time. Returns 0 if no stream. */
+    getStreamTime(): Promise<number>
     getStats(): Promise<NativeAudioStats>
     onPcm(handler: (msg: {
       kind: 'pcm'
@@ -176,6 +181,25 @@ interface Window {
       /** I1: register the VST insert chain for a logical track ID.
        *  Empty slotIds clears the chain for that track. JS-thread only. */
       setTrackChain(trackId: number, slotIds: number[]): Promise<void>
+      /** Bug #4: register all non-bypassed instrument slots for RT synthesis output.
+       *  The RT audio callback calls process() on each slot every block to drain MIDI
+       *  events and produce PCM, which is mixed into the PortAudio output bus.
+       *  Call this whenever any track's instrument chain changes. Up to 8 slots. */
+      setSynthChain(slotIds: number[]): Promise<{ ok: boolean; error?: string }>
+      /** PDC: read IAudioProcessor::getLatencySamples() for a loaded plugin slot.
+       *  Call after vst.load() resolves. Returns 0 if plugin has no processing delay.
+       *  Use to compensate recording start position: shift clip.startSec back by
+       *  (latencySamples / sampleRate) seconds so the first beat aligns with the grid. */
+      getLatency(slotId: number): Promise<{ ok: boolean; latencySamples: number; error?: string }>
+
+      // Bug #2: user-configurable extra VST3 scan directories.
+      /** Get user-saved extra VST3 scan directories from userData/kgb-settings.json.
+       *  The C++ scan() always searches OS default paths + these extras. */
+      getExtraScanPaths(): Promise<string[]>
+      /** Persist extra scan directories to userData/kgb-settings.json. */
+      setExtraScanPaths(paths: string[]): Promise<{ ok: boolean }>
+      /** Open a native OS folder-picker dialog; returns the path or null if cancelled. */
+      pickScanFolder(): Promise<string | null>
     }
   }
 }

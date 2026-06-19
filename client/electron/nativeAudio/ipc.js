@@ -19,7 +19,8 @@
 
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BrowserWindow, MessageChannelMain, ipcMain, utilityProcess } from 'electron'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { app, BrowserWindow, dialog, MessageChannelMain, ipcMain, utilityProcess } from 'electron'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const UTILITY_ENTRY = join(__dirname, 'utilityHost.mjs')
@@ -127,6 +128,20 @@ function sendRequest(op, opts, transfer) {
   })
 }
 
+// ── Bug #2: VST scan-path persistence ────────────────────────────────────────
+// Persists user-configured extra VST3 scan directories to
+// <userData>/kgb-settings.json.  Uses synchronous fs so settings are always
+// flushed before the app exits.
+function settingsPath() {
+  return join(app.getPath('userData'), 'kgb-settings.json')
+}
+function readSettings() {
+  try { return JSON.parse(readFileSync(settingsPath(), 'utf8')) } catch { return {} }
+}
+function writeSettings(data) {
+  try { writeFileSync(settingsPath(), JSON.stringify(data, null, 2), 'utf8') } catch { /* ignore */ }
+}
+
 // initAudio() — called once at app startup (deferred past Electron COM
 // setup, see main.js setImmediate block). Spawns the utility; PortAudio
 // initializes inside it. Sync signature retained for back-compat.
@@ -197,6 +212,12 @@ export function setupAudioIPC() {
   ipcMain.handle('audio:get-latency', async () => {
     try { return await sendRequest('getLatency') }
     catch { return { inputLatency: 0, outputLatency: 0, sampleRate: 0 } }
+  })
+
+  // E3 §1.1 pt.2: Pa_GetStreamTime() — for AudioContext↔PortAudio drift anchor.
+  ipcMain.handle('audio:get-stream-time', async () => {
+    try { return await sendRequest('getStreamTime') }
+    catch { return 0 }
   })
 
   ipcMain.handle('audio:is-stream-active', async () => {
@@ -282,6 +303,40 @@ export function setupAudioIPC() {
     try { return await sendRequest('vstSetTrackChain', opts) }
     catch (e) { return { ok: false, error: e.message } }
   })
+  ipcMain.handle('vst:get-latency', async (_event, opts) => {
+    try { return await sendRequest('vstGetLatency', opts) }
+    catch (e) { return { ok: true, latencySamples: 0, error: e.message } }
+  })
+  // Bug #4: register VSTi instrument slots for RT synthesis output.
+  ipcMain.handle('vst:set-synth-chain', async (_event, opts) => {
+    try { return await sendRequest('vstSetSynthChain', opts) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
+  // Bug #2: User-configurable extra VST3 scan directories.
+  // Stored in <userData>/kgb-settings.json under key "vstExtraScanPaths".
+  // The C++ scan() always scans OS defaults + these extras (never replaces).
+  ipcMain.handle('vst:get-extra-scan-paths', () => {
+    return readSettings().vstExtraScanPaths ?? []
+  })
+  ipcMain.handle('vst:set-extra-scan-paths', (_event, { paths }) => {
+    const s = readSettings()
+    s.vstExtraScanPaths = Array.isArray(paths)
+      ? paths.filter((p) => typeof p === 'string' && p.length > 0)
+      : []
+    writeSettings(s)
+    return { ok: true }
+  })
+  // Open a native folder-picker dialog; returns the selected path or null.
+  ipcMain.handle('vst:pick-scan-folder', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select VST3 scan folder',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
+
   ipcMain.handle('vst:open-editor', async (_event, opts) => {
     try { return await sendRequest('vstOpenEditor', opts) }
     catch (e) { return { ok: false, error: e.message } }

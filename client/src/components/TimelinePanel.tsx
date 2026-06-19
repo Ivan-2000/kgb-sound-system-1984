@@ -6,6 +6,8 @@ import { exportClipFile, type ExportCodec } from '../timeline/exportClip'
 import { clipAudio } from '../audio/recorder'
 import { PianoRollPanel } from '../pianoRoll/PianoRollPanel'
 import type { PianoNote } from '../pianoRoll/pianoRollStore'
+import { FxChainButton } from './FxChainButton'
+import { useInsertChainStore, targetKey } from '../audio/insertChainStore'
 
 const PX_PER_SEC = 40
 const LANE_H = 48
@@ -450,6 +452,7 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
                     title={armed?.has(t.armKey) ? 'Дизармировать' : 'Армировать для записи'}
                   >R</button>
                 )}
+                <FxChainButton targetKind="track" targetId={t.id} label={t.name} compact />
                 <span className="tl-th-kind">{t.kind}</span>
               </div>
             </div>
@@ -554,6 +557,25 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
         const handleChange = (notes: PianoNote[], bars: number) => {
           st().setClipNotes(openEditorClipId, notes, bars)
         }
+        // Bug #5: keyboard preview — find the track's non-bypassed instrument slot
+        // and send noteOn/Off so clicking a key produces sound.
+        const getVstInstrumentSlot = () => {
+          const chains = useInsertChainStore.getState().chains
+          const trackSlots = chains[targetKey({ kind: 'track', id: edClip.trackId })] ?? []
+          return trackSlots.find((s) => !s.bypass && s.type === 'instrument') ?? null
+        }
+        const handleKeyDown = (pitch: number, velocity: number) => {
+          const v = window.nativeAudio?.vst
+          if (!v) return
+          const slot = getVstInstrumentSlot()
+          if (slot) void v.noteOn(slot.slotId, 0, pitch, velocity)
+        }
+        const handleKeyUp = (pitch: number) => {
+          const v = window.nativeAudio?.vst
+          if (!v) return
+          const slot = getVstInstrumentSlot()
+          if (slot) void v.noteOff(slot.slotId, 0, pitch)
+        }
         return (
           <div className="tl-pr-backdrop" onPointerDown={() => setOpenEditorClipId(null)}>
             <div className="tl-pr-modal" onPointerDown={(e) => e.stopPropagation()}>
@@ -566,6 +588,8 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
                 initialBars={edClip.clipBars ?? 1}
                 clipStartSec={edClip.startSec}
                 onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                onKeyUp={handleKeyUp}
               />
             </div>
           </div>

@@ -39,6 +39,15 @@ class AudioEngine {
   private smPeak = 0
   /** §9.A.4: only run the peak scan when Settings is open (caller toggles via setDiagnosticsActive). */
   private diagActive = false
+  /**
+   * E3 §1.1 pt.2: anchor for AudioContext ↔ PortAudio clock drift correction.
+   * Captured once at each transport start via captureClockAnchor().
+   * acTime = nativeToneContext.currentTime just before the getStreamTime IPC.
+   * paTime = Pa_GetStreamTime() returned by the utility process.
+   * The ~2-5 ms IPC round-trip introduces a constant bias that does not affect
+   * the drift RATE measurement used in computeDriftRatio().
+   */
+  private clockAnchor: { acTime: number; paTime: number } | null = null
 
   constructor() {
     Tone.getTransport().bpm.value = DEFAULT_BPM
@@ -208,6 +217,51 @@ class AudioEngine {
     Tone.getTransport().loop = false
   }
 
+  /**
+   * E3 §1.1 pt.2: capture a paired { acTime, paTime } clock anchor.
+   * Called fire-and-forget from play() so that it doesn't delay transport start.
+   * acTime is sampled BEFORE the async IPC hop; paTime arrives a few ms later.
+   * The mismatch is a constant bias and does not pollute the drift rate.
+   */
+  private async captureClockAnchor(): Promise<void> {
+    if (!window.nativeAudio) return
+    const acTime = nativeToneContext.currentTime
+    try {
+      const paTime = await window.nativeAudio.getStreamTime()
+      if (typeof paTime === 'number' && paTime > 0) {
+        this.clockAnchor = { acTime, paTime }
+      }
+    } catch {
+      // No stream open — anchor stays null; drift correction is skipped.
+    }
+  }
+
+  /**
+   * E3 §1.1 pt.2: compute the AC/PA clock ratio for drift correction.
+   * Returns acElapsed/paElapsed (< 1 if PA ran faster, > 1 if AC ran faster),
+   * or null if the anchor is missing, too fresh, or the ratio looks unreasonable.
+   * Multiply durSec (PA-time) by this ratio to get the AC-time clip duration.
+   */
+  async computeDriftRatio(): Promise<number | null> {
+    if (!this.clockAnchor || !window.nativeAudio) return null
+    const acNow = nativeToneContext.currentTime
+    let paTimeNow: number
+    try {
+      paTimeNow = await window.nativeAudio.getStreamTime()
+    } catch {
+      return null
+    }
+    if (typeof paTimeNow !== 'number' || paTimeNow <= 0) return null
+    const acElapsed = acNow - this.clockAnchor.acTime
+    const paElapsed = paTimeNow - this.clockAnchor.paTime
+    // Require at least 2 s of data and reject wildly wrong ratios (> 1% drift
+    // would be a misconfigured clock, not normal audio drift).
+    if (acElapsed < 2 || paElapsed < 2) return null
+    const ratio = acElapsed / paElapsed
+    if (Math.abs(ratio - 1) > 0.01) return null
+    return ratio
+  }
+
   async play(options: TransportStartOptions = {}) {
     await this.unlock()
 
@@ -217,11 +271,14 @@ class AudioEngine {
 
     Tone.getTransport().start(options.time, options.position)
     this.playing = true
+    // E3 §1.1 pt.2: fire-and-forget — must not delay transport start.
+    void this.captureClockAnchor()
   }
 
   stop() {
     Tone.getTransport().stop()
     this.playing = false
+    this.clockAnchor = null  // reset anchor — next play() captures a fresh one
   }
 
   togglePlayback() {

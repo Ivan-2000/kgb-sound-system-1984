@@ -1576,6 +1576,8 @@ input[type='range'] {
 }
 .pr-key--black { background: #0d0d0d; color: #666; }
 .pr-key--c { color: var(--gold, #c8a84b); border-bottom-color: #2a2a2a; }
+/* Bug #5: visual feedback when a key is clicked/held */
+.pr-key--pressed { background: var(--gold, #c8a84b) !important; color: #000 !important; }
 
 .pr-grid {
   position: relative;

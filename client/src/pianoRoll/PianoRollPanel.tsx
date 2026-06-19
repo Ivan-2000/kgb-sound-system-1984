@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type PointerEvent as RPointerEvent, type M
 import { audioEngine } from '../audio/audioEngine'
 import { STEPS_PER_BAR, DEFAULT_VELOCITY, type PianoNote } from './pianoRollStore'
 
+// Keyboard preview velocity — fixed at a comfortable audition level.
+const PREVIEW_VELOCITY = 100
+
 const ROW_H = 14
 const STEP_W = 18
 const PITCH_HI = 72 // C5 (top row)
@@ -26,9 +29,12 @@ export interface PianoRollPanelProps {
   onChange: (notes: PianoNote[], bars: number) => void
   /** Absolute transport position of the clip start — used to position the playhead. */
   clipStartSec?: number
+  /** Bug #5: keyboard preview callbacks — wired by TimelinePanel to vst.noteOn/Off. */
+  onKeyDown?: (pitch: number, velocity: number) => void
+  onKeyUp?: (pitch: number) => void
 }
 
-export function PianoRollPanel({ initialNotes, initialBars, onChange, clipStartSec = 0 }: PianoRollPanelProps) {
+export function PianoRollPanel({ initialNotes, initialBars, onChange, clipStartSec = 0, onKeyDown, onKeyUp }: PianoRollPanelProps) {
   const [notes, setNotes] = useState<PianoNote[]>(() => initialNotes)
   const [bars, setBarsState] = useState(initialBars)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -44,6 +50,19 @@ export function PianoRollPanel({ initialNotes, initialBars, onChange, clipStartS
   // Live notes ref so drag handlers always see the latest notes without stale closures.
   const notesRef = useRef(notes)
   notesRef.current = notes
+
+  // Bug #5: keyboard preview state.
+  // pressedPitch drives the visual pr-key--pressed highlight; the ref avoids
+  // stale-closure problems inside pointer event handlers (no re-render needed
+  // mid-gesture to track which pitch is currently held).
+  const [pressedPitch, setPressedPitch] = useState<number | null>(null)
+  const pressedPitchRef = useRef<number | null>(null)
+
+  // Bug #5: ensure no note stays stuck on when the modal closes mid-press.
+  useEffect(() => {
+    return () => { if (pressedPitchRef.current !== null) onKeyUp?.(pressedPitchRef.current) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Playhead — follows the global Tone.Transport position relative to this clip.
   useEffect(() => {
@@ -114,6 +133,51 @@ export function PianoRollPanel({ initialNotes, initialBars, onChange, clipStartS
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [selectedId, bars, onChange])
+
+  // Bug #5: keyboard preview handlers — pointer events on the pr-keys container.
+  // Container-level dispatch avoids attaching N individual listeners (one per key row).
+  // Pointer capture ensures move/up are received even when the cursor drifts off the key.
+  const pitchFromKeysY = (clientY: number, el: HTMLDivElement): number | null => {
+    const r = el.getBoundingClientRect()
+    const row = Math.floor((clientY - r.top) / ROW_H)
+    return row >= 0 && row < ROWS ? PITCH_HI - row : null
+  }
+
+  const pressKey = (pitch: number) => {
+    pressedPitchRef.current = pitch
+    setPressedPitch(pitch)
+    onKeyDown?.(pitch, PREVIEW_VELOCITY)
+  }
+
+  const releaseKey = () => {
+    const p = pressedPitchRef.current
+    if (p !== null) {
+      onKeyUp?.(p)
+      pressedPitchRef.current = null
+      setPressedPitch(null)
+    }
+  }
+
+  const onKeysDown = (e: RPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    const pitch = pitchFromKeysY(e.clientY, e.currentTarget)
+    if (pitch === null) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pressKey(pitch)
+  }
+
+  const onKeysMove = (e: RPointerEvent<HTMLDivElement>) => {
+    if (pressedPitchRef.current === null) return
+    const pitch = pitchFromKeysY(e.clientY, e.currentTarget)
+    if (pitch !== null && pitch !== pressedPitchRef.current) {
+      // Glissando: release old key, press new one as user slides across the keyboard.
+      onKeyUp?.(pressedPitchRef.current)
+      pressedPitchRef.current = null
+      pressKey(pitch)
+    }
+  }
+
+  const onKeysUp = () => { releaseKey() }
 
   const cellFromEvent = (clientX: number, clientY: number): { step: number; pitch: number } | null => {
     const el = gridRef.current
@@ -206,13 +270,29 @@ export function PianoRollPanel({ initialNotes, initialBars, onChange, clipStartS
       </div>
 
       <div className="pr-body">
-        <div className="pr-keys" style={{ height: gridH }}>
+        {/* Bug #5: pointer handlers enable keyboard preview (click = note on/off).
+            Container-level dispatch with setPointerCapture so move/up are
+            received even when the cursor drifts outside the element.
+            touch-action:none prevents iOS/Android scroll from eating pointer events. */}
+        <div
+          className="pr-keys"
+          style={{ height: gridH, touchAction: 'none' }}
+          onPointerDown={onKeysDown}
+          onPointerMove={onKeysMove}
+          onPointerUp={onKeysUp}
+          onPointerCancel={onKeysUp}
+        >
           {Array.from({ length: ROWS }, (_, row) => {
             const pitch = PITCH_HI - row
             return (
               <div
                 key={pitch}
-                className={['pr-key', isBlackKey(pitch) ? 'pr-key--black' : '', pitch % 12 === 0 ? 'pr-key--c' : ''].filter(Boolean).join(' ')}
+                className={[
+                  'pr-key',
+                  isBlackKey(pitch) ? 'pr-key--black' : '',
+                  pitch % 12 === 0 ? 'pr-key--c' : '',
+                  pressedPitch === pitch ? 'pr-key--pressed' : '',
+                ].filter(Boolean).join(' ')}
               >
                 {pitch % 12 === 0 || !isBlackKey(pitch) ? noteName(pitch) : ''}
               </div>

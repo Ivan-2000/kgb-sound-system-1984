@@ -111,10 +111,19 @@ void runEditorPump(int ms);
 // editor responsive without blocking IPC.
 void pumpEditorMessages();
 
+// RT block management — call beginRtBlock() before the FIRST processChain() call
+// in a PaCallback, and endRtBlock(numFrames) after the LAST. Consolidates the
+// per-callback generation bump and g_rtInChain flag to a single pair of atomic
+// ops per audio callback instead of one pair per processChain() invocation.
+// Bug #3: reduces LOCK XADD pressure on ASIO/WASAPI RT thread.
+void beginRtBlock();
+void endRtBlock(int numFrames);
+
 // RT-safe: process the ordered insert chain `slotIds[0..count)` over interleaved
 // float audio in place. `numFrames` must be <= the maxBlockSize the slots were
 // loaded with. Empty chain (count == 0) is a no-op passthrough. Only touches the
 // lock-free slot table; never allocates or locks. Call from the audio callback.
+// Must be called between beginRtBlock() and endRtBlock().
 void processChain(const int* slotIds, int count,
                   float* interleaved, int numChannels, int numFrames);
 
@@ -130,6 +139,12 @@ bool setPluginState(int slotId, const std::vector<uint8_t>& data);
 // pitch = MIDI note 0-127, velocity = 0-127 (noteOn), channel = 0-15.
 bool noteOn(int slotId, int channel, int pitch, int velocity);
 bool noteOff(int slotId, int channel, int pitch);
+
+// PDC: return IAudioProcessor::getLatencySamples() for the plugin in `slotId`.
+// Returns 0 if the slot is empty, inactive, or the plugin reports no latency.
+// JS-thread only (no RT-callback safety concerns — reads the slot pointer under
+// a brief acquire load; processChain never writes g_slots).
+int32_t getPluginLatencySamples(int slotId);
 
 // I1: per-track VST insert chain (I1/E4). Stores ordered slotIds for a logical
 // track ID. During live playback the RT callback does not intercept Tone.js

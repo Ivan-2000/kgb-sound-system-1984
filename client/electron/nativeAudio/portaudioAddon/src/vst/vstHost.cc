@@ -36,7 +36,9 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shlobj.h>    // SHGetKnownFolderPath, FOLDERID_*, CoTaskMemFree
 #endif
+#include <algorithm>   // std::find
 
 using namespace Steinberg;
 
@@ -166,11 +168,20 @@ struct PluginSlot {
 // Published with release / read with acquire. unloadPlugin() stores null then
 // waits for the RT thread to pass a buffer boundary before deleting (see below).
 std::atomic<PluginSlot*> g_slots[kMaxSlots] = {};
-// Bumped once per processChain() call; lets unloadPlugin know a full RT callback
-// has elapsed since it nulled a slot (so no callback still holds the pointer).
+// Bumped once per PaCallback via beginRtBlock(); lets unloadPlugin know a full
+// RT callback has elapsed since it nulled a slot (so no in-flight callback
+// still holds the pointer). Bug #3: was bumped per processChain() call —
+// with N per-channel chains that was N+1 LOCK XADD ops per callback.
 std::atomic<uint64_t> g_rtGeneration{0};
-// Set true while inside process()/the RT chain; false otherwise.
+// Set true while inside the RT chain (beginRtBlock → endRtBlock); false otherwise.
 std::atomic<bool> g_rtInChain{false};
+
+// Bug #3: monotonic RT sample counter (RT thread only — no atomic needed).
+// g_rtBlockStart is captured at beginRtBlock() and written to each slot's
+// processContext before process(), so plugins see a steadily advancing
+// projectTimeSamples instead of a stuck 0 that triggers expensive re-init.
+static int64_t g_rtTotalSamples = 0;
+static int64_t g_rtBlockStart   = 0;
 
 // Pull every audio bus the component exposes active, so plugins that gate output
 // on bus activation actually produce sound.
@@ -230,7 +241,15 @@ std::vector<ClassDesc> scan(const std::vector<std::string>& paths) {
   namespace fs = std::filesystem;
   std::vector<ClassDesc> out;
 
-  std::vector<std::string> roots = paths.empty() ? defaultSearchPaths() : paths;
+  // Always start from the OS default paths so every installed plugin is found.
+  // Any caller-supplied paths are appended as extra search roots (deduplicated).
+  // This means passing extra directories from the UI adds to — not replaces —
+  // the standard search locations.
+  std::vector<std::string> roots = defaultSearchPaths();
+  for (const auto& p : paths) {
+    if (std::find(roots.begin(), roots.end(), p) == roots.end())
+      roots.push_back(p);
+  }
   std::vector<std::string> modules;
 
   for (const auto& root : roots) {
@@ -269,7 +288,81 @@ std::vector<ClassDesc> scan(const std::vector<std::string>& paths) {
 }
 
 std::vector<std::string> defaultSearchPaths() {
-  return VST3::Hosting::Module::getModulePaths();
+  // Start with the SDK's own list (covers the three main standard directories:
+  //   C:\Program Files\Common Files\VST3
+  //   C:\Program Files (x86)\Common Files\VST3
+  //   %USERPROFILE%\Documents\VST3
+  std::vector<std::string> paths = VST3::Hosting::Module::getModulePaths();
+
+#ifdef _WIN32
+  namespace fs = std::filesystem;
+
+  // Helper: append a KNOWNFOLDERID-derived path if not already present.
+  auto addKnownFolder = [&](REFKNOWNFOLDERID fid, const wchar_t* suffix) {
+    PWSTR w = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(fid, KF_FLAG_DEFAULT, nullptr, &w))) {
+      std::string s = (fs::path(w) / suffix).string();
+      CoTaskMemFree(w);
+      if (!s.empty() && std::find(paths.begin(), paths.end(), s) == paths.end())
+        paths.push_back(std::move(s));
+    }
+  };
+
+  // Additional standard user-level VST3 directories the SDK may omit.
+  addKnownFolder(FOLDERID_RoamingAppData, L"VST3");               // %APPDATA%\VST3
+  addKnownFolder(FOLDERID_LocalAppData,   L"Programs\\Common\\VST3"); // %LOCALAPPDATA%\...
+
+  // Registry-based paths.  The VST3 spec allows plugin installers to register
+  // custom install directories under HKLM\SOFTWARE\VST3 and HKCU\SOFTWARE\VST3
+  // as named REG_SZ / REG_EXPAND_SZ values.  Without this, plugins installed
+  // outside the three standard directories are invisible to the scanner.
+  auto readRegKey = [&](HKEY hive, LPCWSTR subKey) {
+    HKEY hk = nullptr;
+    REGSAM access = KEY_QUERY_VALUE | KEY_WOW64_64KEY;
+    if (RegOpenKeyExW(hive, subKey, 0, access, &hk) != ERROR_SUCCESS) return;
+
+    DWORD nVals = 0, maxNameLen = 0, maxDataLen = 0;
+    if (RegQueryInfoKeyW(hk, nullptr, nullptr, nullptr, nullptr, nullptr,
+                         nullptr, &nVals, &maxNameLen, &maxDataLen,
+                         nullptr, nullptr) != ERROR_SUCCESS) {
+      RegCloseKey(hk); return;
+    }
+
+    std::wstring nameBuf(maxNameLen + 1, L'\0');
+    std::vector<BYTE> dataBuf(maxDataLen + sizeof(wchar_t));
+
+    for (DWORD i = 0; i < nVals; ++i) {
+      DWORD nameLen = static_cast<DWORD>(nameBuf.size());
+      DWORD dataLen = static_cast<DWORD>(dataBuf.size());
+      DWORD type = 0;
+      std::fill(dataBuf.begin(), dataBuf.end(), 0);
+      if (RegEnumValueW(hk, i, nameBuf.data(), &nameLen, nullptr,
+                        &type, dataBuf.data(), &dataLen) != ERROR_SUCCESS)
+        continue;
+      if (type != REG_SZ && type != REG_EXPAND_SZ) continue;
+
+      // Raw wchar_t string from registry.
+      const wchar_t* raw = reinterpret_cast<const wchar_t*>(dataBuf.data());
+      std::wstring expanded(MAX_PATH * 4, L'\0');
+      DWORD expLen = ExpandEnvironmentStringsW(
+          raw, expanded.data(), static_cast<DWORD>(expanded.size()));
+      if (expLen > 1 && expLen <= static_cast<DWORD>(expanded.size()))
+        expanded.resize(expLen - 1);   // expLen includes null terminator
+      else
+        expanded = raw;
+
+      std::string s = fs::path(expanded).string();
+      if (!s.empty() && std::find(paths.begin(), paths.end(), s) == paths.end())
+        paths.push_back(std::move(s));
+    }
+    RegCloseKey(hk);
+  };
+
+  readRegKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\VST3");
+  readRegKey(HKEY_CURRENT_USER,  L"SOFTWARE\\VST3");
+#endif
+
+  return paths;
 }
 
 // ── Load / unload (V3) ───────────────────────────────────────────────────────
@@ -473,10 +566,11 @@ double getParamNormalized(int slotId, uint32_t paramId) {
 
 void processChain(const int* slotIds, int count,
                   float* interleaved, int numChannels, int numFrames) {
-  g_rtGeneration.fetch_add(1, std::memory_order_acq_rel);
+  // Bug #3: generation bump and g_rtInChain management moved to
+  // beginRtBlock() / endRtBlock() — called once per PaCallback, not once
+  // per processChain() invocation. This removes N extra LOCK XADD ops per
+  // callback when N per-channel chains are active.
   if (count <= 0 || !interleaved || numChannels <= 0 || numFrames <= 0) return;
-
-  g_rtInChain.store(true, std::memory_order_release);
 
   for (int s = 0; s < count; ++s) {
     const int id = slotIds[s];
@@ -551,6 +645,17 @@ void processChain(const int* slotIds, int count,
     pd.symbolicSampleSize = Vst::kSample32;
     pd.processMode = Vst::kRealtime;
 
+    // Bug #3: advance the plugin's time cursor so it sees a monotonically
+    // increasing projectTimeSamples instead of a stuck 0.  A stuck value
+    // causes many plugins (reverbs, synths, modulators) to detect a time
+    // discontinuity and re-initialize their internal state every block,
+    // producing clicks and high CPU load.
+    slot->processContext.projectTimeSamples  = g_rtBlockStart;
+    slot->processContext.continousTimeSamples = static_cast<double>(g_rtBlockStart);
+    slot->processContext.state = Vst::ProcessContext::kPlaying
+                               | Vst::ProcessContext::kContTimeValid
+                               | Vst::ProcessContext::kTempoValid;
+
     if (slot->processor->process(pd) != kResultOk) continue;
 
     // Re-interleave the plugin output back over the stream buffer.
@@ -565,7 +670,21 @@ void processChain(const int* slotIds, int count,
     slot->eventList.clear();
     slot->outputParamChanges.clearQueue();
   }
+}
 
+// ── RT block management (Bug #3) ─────────────────────────────────────────────
+// Call beginRtBlock() once before all processChain() calls in a PaCallback and
+// endRtBlock(numFrames) once after. This consolidates the generation bump and
+// g_rtInChain flag to a single pair of atomic writes per audio callback.
+
+void beginRtBlock() {
+  g_rtBlockStart = g_rtTotalSamples;
+  g_rtGeneration.fetch_add(1, std::memory_order_acq_rel);
+  g_rtInChain.store(true, std::memory_order_release);
+}
+
+void endRtBlock(int numFrames) {
+  g_rtTotalSamples += numFrames;
   g_rtInChain.store(false, std::memory_order_release);
 }
 
@@ -640,6 +759,18 @@ bool getPluginState(int slotId, std::vector<uint8_t>& out) {
   if (!slot || !slot->component) return false;
   WriteStream ws(out);
   return slot->component->getState(&ws) == kResultOk;
+}
+
+// PDC: IAudioProcessor::getLatencySamples() (VST3 SDK §3.7.5).
+// Called from VstGetLatency in addon.cc on the JS thread. The processor
+// pointer is written once on load (JS thread) and cleared on unload (JS
+// thread under processChainVersion fence), so reading it here with acquire
+// is safe — no RT-callback writes to the processor pointer.
+int32_t getPluginLatencySamples(int slotId) {
+  if (slotId < 0 || slotId >= kMaxSlots) return 0;
+  PluginSlot* slot = g_slots[slotId].load(std::memory_order_acquire);
+  if (!slot || !slot->processor) return 0;
+  return static_cast<int32_t>(slot->processor->getLatencySamples());
 }
 
 bool setPluginState(int slotId, const std::vector<uint8_t>& data) {

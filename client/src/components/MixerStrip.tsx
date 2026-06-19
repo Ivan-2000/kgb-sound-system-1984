@@ -16,6 +16,8 @@ export type MixerStripProps = {
   color?: string
   /** Overrides the rendered name (e.g. an inline rename input). */
   nameNode?: ReactNode
+  /** Optional control rendered under the name (e.g. the temporary FX button). */
+  fxNode?: ReactNode
   variant?: 'channel' | 'master'
 
   /** Volume fader, 0–100. */
@@ -47,7 +49,7 @@ function meterBackground(level: number): string {
 }
 
 export function MixerStrip({
-  name, sub, color, nameNode, variant = 'channel',
+  name, sub, color, nameNode, fxNode, variant = 'channel',
   value, onValue, valueLabel,
   level = 0,
   pan, onPan,
@@ -69,6 +71,8 @@ export function MixerStrip({
         {nameNode ?? <span className="mfx-name">{name}</span>}
         {sub && <span className="mfx-sub">{sub}</span>}
       </div>
+
+      {fxNode && <div className="mfx-fx" style={{ display: 'flex', justifyContent: 'center', padding: '2px 0' }}>{fxNode}</div>}
 
       <div className="mfx-body">
         <span className="mfx-meter" aria-hidden="true" title={`Level: ${Math.round(level * 100)}%`}>

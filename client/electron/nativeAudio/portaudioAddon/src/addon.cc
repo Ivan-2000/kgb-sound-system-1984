@@ -689,10 +689,29 @@ static std::atomic<unsigned long> g_vstScratchCap{0};  // capacity in floats
 // Applied per-channel after the global chain so each mixer strip has its own VST.
 static std::atomic<int> g_chanChainSlots[MAX_INPUT_CH][MAX_VST_CHAIN];
 static std::atomic<int> g_chanChainCounts[MAX_INPUT_CH];  // 0 = no chain
+// Bug #3: pre-computed count of non-empty per-channel chains.
+// Written by SetChannelChain (JS thread), read by PaCallback (RT).
+// Lets the RT callback skip the entire per-channel loop in O(1) when no
+// per-channel chains exist, instead of scanning g_chanChainCounts[] per callback.
+static std::atomic<int> g_totalChanChains{0};
 
 // Mono scratch for de-interleave → per-channel process → re-interleave (V6).
 // Allocated in openStream (512 floats), freed in closeStream.
 static float* g_monoScratch = nullptr;
+
+// Bug #4 (I3-fix): VSTi synthesis output chain.
+// Instrument slots that generate audio from MIDI events (noteOn/noteOff) must be
+// called by the RT callback every block — g_trackChains is JS-thread-only and
+// PaCallback never reads it, so synth audio was silently discarded.
+// JS calls setSynthChain(slotIds[]) to populate this table; PaCallback runs each
+// slot with silence as input, accumulates stereo output, and mixes it into out[].
+static const int MAX_SYNTH_SLOTS = 8;
+static std::atomic<int> g_synthSlots[MAX_SYNTH_SLOTS];
+static std::atomic<int> g_synthCount{0};
+// Per-slot stereo scratch (2 × 512 floats) — silence in, synth audio out.
+static float* g_synthScratch = nullptr;
+// Accumulated stereo output summed across all synth slots.
+static float* g_synthMixBuf  = nullptr;
 #endif
 
 // ─── PortAudio RT callback ────────────────────────────────────────────────────
@@ -728,37 +747,49 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
   // Process the captured input through the configured chain into scratch, then
   // route the processed signal downstream via procIn. Empty chain → procIn == in
   // (no copy, no cost). Guarded so an undersized scratch never overruns.
+  //
+  // Bug #3: pre-load the two chain-presence flags once; beginRtBlock/endRtBlock
+  // wrap the entire VST section so the generation bump and g_rtInChain writes
+  // happen once per callback instead of once per processChain() call.
   const float* procIn = in;
+// Bug #4: hasSynth is visible to both the VST block and the output loop below.
 #ifdef KGB_WITH_VST
-  {
-    const int chainCount = g_vstChainCount.load(std::memory_order_acquire);
-    const unsigned long need = frames * static_cast<unsigned long>(inCh);
-    if (in && inCh > 0 && chainCount > 0 && g_vstScratch &&
-        need <= g_vstScratchCap.load(std::memory_order_relaxed)) {
-      int ids[MAX_VST_CHAIN];
-      int n = chainCount < MAX_VST_CHAIN ? chainCount : MAX_VST_CHAIN;
-      for (int i = 0; i < n; i++) ids[i] = g_vstChainSlots[i].load(std::memory_order_relaxed);
-      std::memcpy(g_vstScratch, in, need * sizeof(float));
-      kgb::vst::processChain(ids, n, g_vstScratch, inCh, static_cast<int>(frames));
-      procIn = g_vstScratch;
-    }
-  }
+  const int  g_synthCount_snap = g_synthCount.load(std::memory_order_acquire);
+  const bool hasSynth = g_synthCount_snap > 0 && g_synthScratch && g_synthMixBuf
+                        && out && outCh > 0 && frames <= 512UL;
+#else
+  constexpr bool hasSynth = false;
 #endif
-
-  // ── V6: per-channel chains ────────────────────────────────────────────────
-  // For each physical input channel with a chain: de-interleave → process mono
-  // → re-interleave. Runs after the global chain so both can coexist.
-  // All downstream paths (monitor/PCM/Opus) already use procIn, so they see the
-  // post-chain signal automatically (V8).
 #ifdef KGB_WITH_VST
   {
-    bool anyPerChan = false;
-    for (int ch = 0; ch < inCh && ch < MAX_INPUT_CH; ch++) {
-      if (g_chanChainCounts[ch].load(std::memory_order_acquire) > 0) {
-        anyPerChan = true; break;
+    const int  vstGlobalCount = g_vstChainCount.load(std::memory_order_acquire);
+    // Bug #3: O(1) check via pre-computed counter instead of O(inCh) acquire loop.
+    const bool anyChanChain   = g_totalChanChains.load(std::memory_order_relaxed) > 0;
+    const bool vstActive      = (vstGlobalCount > 0 || anyChanChain) && in && inCh > 0;
+    // Bug #4: include synth in the RT block so MIDI rings are drained.
+    const bool rtNeeded       = vstActive || hasSynth;
+    if (rtNeeded) kgb::vst::beginRtBlock();
+
+    // ── Global insert chain ───────────────────────────────────────────────
+    {
+      const unsigned long need = frames * static_cast<unsigned long>(inCh);
+      if (in && inCh > 0 && vstGlobalCount > 0 && g_vstScratch &&
+          need <= g_vstScratchCap.load(std::memory_order_relaxed)) {
+        int ids[MAX_VST_CHAIN];
+        int n = vstGlobalCount < MAX_VST_CHAIN ? vstGlobalCount : MAX_VST_CHAIN;
+        for (int i = 0; i < n; i++) ids[i] = g_vstChainSlots[i].load(std::memory_order_relaxed);
+        std::memcpy(g_vstScratch, in, need * sizeof(float));
+        kgb::vst::processChain(ids, n, g_vstScratch, inCh, static_cast<int>(frames));
+        procIn = g_vstScratch;
       }
     }
-    if (anyPerChan && g_monoScratch && in && inCh > 0) {
+
+    // ── V6: per-channel chains ────────────────────────────────────────────
+    // For each physical input channel with a chain: de-interleave → process mono
+    // → re-interleave. Runs after the global chain so both can coexist.
+    // All downstream paths (monitor/PCM/Opus) already use procIn, so they see the
+    // post-chain signal automatically (V8).
+    if (anyChanChain && g_monoScratch && in && inCh > 0) {
       // Ensure we have a writable interleaved copy in g_vstScratch.
       if (procIn == in) {
         const unsigned long need = frames * static_cast<unsigned long>(inCh);
@@ -789,6 +820,24 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
         }
       }
     }
+
+    // Bug #4: VSTi synthesis output — run each instrument slot with silence as
+    // input, accumulate stereo output into g_synthMixBuf, then mix it into out[]
+    // in the merged output pass below. This is what makes Piano Roll MIDI audible.
+    if (hasSynth) {
+      std::memset(g_synthMixBuf, 0, frames * 2UL * sizeof(float));
+      for (int s = 0; s < g_synthCount_snap; s++) {
+        const int sid = g_synthSlots[s].load(std::memory_order_relaxed);
+        if (sid < 0 || sid >= kgb::vst::kMaxSlots) continue;
+        // Silence = VSTi generates audio purely from its MIDI ring events.
+        std::memset(g_synthScratch, 0, frames * 2UL * sizeof(float));
+        kgb::vst::processChain(&sid, 1, g_synthScratch, 2, static_cast<int>(frames));
+        for (unsigned long f = 0; f < frames * 2UL; f++)
+          g_synthMixBuf[f] += g_synthScratch[f];
+      }
+    }
+
+    if (rtNeeded) kgb::vst::endRtBlock(static_cast<int>(frames));
   }
 #endif
 
@@ -872,6 +921,17 @@ static int PaCallback(const void* input, void* output, unsigned long frames,
       // Softmix (§1.1)
       if (static_cast<uint32_t>(f) < smTake)
         acc += g_softmixBuf[(smr + static_cast<uint32_t>(f)) & (SOFTMIX_RING_CAP - 1u)];
+
+      // Bug #4: VSTi synthesis — sum stereo output to mono and add to bus.
+      // g_synthMixBuf is stereo-interleaved [L0,R0,L1,R1,...]; we average L+R so
+      // the instrument sits at the same level regardless of mono/stereo output.
+#ifdef KGB_WITH_VST
+      if (hasSynth) {
+        const float sL = g_synthMixBuf[f * 2UL];
+        const float sR = g_synthMixBuf[f * 2UL + 1UL];
+        acc += (sL + sR) * 0.5f;
+      }
+#endif
 
       // Master fader — scales the whole bus before the safety limiter.
       acc *= masterGain;
@@ -1160,6 +1220,11 @@ Napi::Value OpenStream(const Napi::CallbackInfo& info) {
   // V6: mono scratch for per-channel processing (max bufferSize = 512 samples).
   std::free(g_monoScratch);
   g_monoScratch = static_cast<float*>(std::malloc(512 * sizeof(float)));
+  // Bug #4: stereo scratch + accumulation buffer for VSTi synthesis output.
+  std::free(g_synthScratch);
+  g_synthScratch = static_cast<float*>(std::calloc(512 * 2, sizeof(float)));
+  std::free(g_synthMixBuf);
+  g_synthMixBuf  = static_cast<float*>(std::calloc(512 * 2, sizeof(float)));
 #endif
 
   float initialGain = 0.0f;
@@ -1340,6 +1405,11 @@ Napi::Value CloseStream(const Napi::CallbackInfo& info) {
   g_vstScratch = nullptr;
   std::free(g_monoScratch);
   g_monoScratch = nullptr;
+  // Bug #4: free synthesis scratch buffers.
+  std::free(g_synthScratch);
+  g_synthScratch = nullptr;
+  std::free(g_synthMixBuf);
+  g_synthMixBuf  = nullptr;
 #endif
 
   // Discard any inbound packets queued for the worker — they belong to the
@@ -1438,6 +1508,18 @@ Napi::Value GetStreamLatency(const Napi::CallbackInfo& info) {
   r.Set("outputLatency", Napi::Number::New(env, si ? si->outputLatency : 0.0));
   r.Set("sampleRate",    Napi::Number::New(env, si ? si->sampleRate    : 0.0));
   return r;
+}
+
+// ─── E3: getStreamTime ────────────────────────────────────────────────────────
+// Returns Pa_GetStreamTime(g_stream) — monotonic seconds since the stream was
+// opened, on the same clock as PaStreamCallbackTimeInfo::currentTime.
+// Used by the renderer to anchor AudioContext.currentTime against PortAudio
+// time for clock-drift correction of recorded clip positions (§1.1 E3 pt.2).
+// Returns 0.0 if no stream is open.
+Napi::Value GetStreamTime(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  const double t = g_stream ? Pa_GetStreamTime(g_stream) : 0.0;
+  return Napi::Number::New(env, t);
 }
 
 // ─── A4.5: getStats ───────────────────────────────────────────────────────────
@@ -1800,8 +1882,16 @@ static Napi::Value SetChannelChain(const Napi::CallbackInfo& info) {
     g_chanChainSlots[ch][n].store(v.As<Napi::Number>().Int32Value(), std::memory_order_relaxed);
     n++;
   }
+  // Bug #3: keep pre-computed total in sync before publishing the new count.
+  // Load old count (JS-thread-only writes → no data race on the load).
+  const int prevN = g_chanChainCounts[ch].load(std::memory_order_relaxed);
   // Publish count last (release) so RT never reads a stale slot id.
   g_chanChainCounts[ch].store(n, std::memory_order_release);
+  // After the per-channel count is visible to RT, update the summary counter.
+  // RT reads g_totalChanChains with relaxed then falls back to per-channel
+  // acquire loads, so a brief gap between the two stores is safe.
+  if ((prevN > 0) != (n > 0))
+    g_totalChanChains.fetch_add(n > 0 ? 1 : -1, std::memory_order_relaxed);
   return env.Undefined();
 }
 
@@ -1897,6 +1987,55 @@ static Napi::Value VstSetTrackChain(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// vstGetLatency(slotId: number) → number
+// PDC (Plugin Delay Compensation): returns IAudioProcessor::getLatencySamples()
+// for the plugin in `slotId`. Returns 0 if the slot is empty or the plugin
+// reports no latency. JS-thread only — acquires the slot pointer with acquire load
+// (safe since the RT callback never writes to g_slots, only reads).
+#ifdef KGB_WITH_VST
+static Napi::Value VstGetLatency(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "vstGetLatency(slotId:number)").ThrowAsJavaScriptException();
+    return Napi::Number::New(env, 0);
+  }
+  const int slotId = info[0].As<Napi::Number>().Int32Value();
+  if (slotId < 0 || slotId >= kgb::vst::kMaxSlots)
+    return Napi::Number::New(env, 0);
+
+  // g_slots lives in vstHost.cc; access it through the public slot table.
+  // getLatencySamples() is declared on IAudioProcessor (VST3 SDK), and the
+  // processor pointer is stored inside PluginSlot — we read it via the header.
+  // We cannot touch PluginSlot directly from addon.cc (it's internal to
+  // vstHost.cc), so we add a thin wrapper in vstHost.h / vstHost.cc.
+  const int32_t latency = kgb::vst::getPluginLatencySamples(slotId);
+  return Napi::Number::New(env, static_cast<double>(latency));
+}
+#endif  // KGB_WITH_VST
+
+// Bug #4: setSynthChain(slotIds: number[]) → boolean
+// Registers the VSTi instrument slots to call every RT callback for synthesis output.
+// JS calls this whenever a track's instrument chain changes (load/unload/bypass).
+// Lock-free: stores into g_synthSlots[] (relaxed) then publishes count (release).
+static Napi::Value SetSynthChain(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsArray()) {
+    Napi::TypeError::New(env, "setSynthChain(slotIds:number[])").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  Napi::Array arr = info[0].As<Napi::Array>();
+  int n = 0;
+  for (uint32_t i = 0; i < arr.Length() && n < MAX_SYNTH_SLOTS; i++) {
+    Napi::Value v = arr.Get(i);
+    if (!v.IsNumber()) continue;
+    g_synthSlots[n].store(v.As<Napi::Number>().Int32Value(), std::memory_order_relaxed);
+    n++;
+  }
+  // Publish count last (release) so the RT callback never reads a stale slot id.
+  g_synthCount.store(n, std::memory_order_release);
+  return Napi::Boolean::New(env, true);
+}
+
 // setInsertChain(slotIds: number[]) → undefined
 // Sets the ordered input-side global insert chain (all channels together).
 // V6 per-channel chains (setChannelChain) are preferred for per-strip routing.
@@ -1943,6 +2082,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setMonitorGain",   Napi::Function::New(env, SetMonitorGain));
   exports.Set("setMasterGain",    Napi::Function::New(env, SetMasterGain));
   exports.Set("getStreamLatency", Napi::Function::New(env, GetStreamLatency));
+  exports.Set("getStreamTime",    Napi::Function::New(env, GetStreamTime));
   exports.Set("getStats",              Napi::Function::New(env, GetStats));
   exports.Set("pushInboundOpus",       Napi::Function::New(env, PushInboundOpus));
   exports.Set("setRemoteChannelGain",  Napi::Function::New(env, SetRemoteChannelGain));
@@ -1964,6 +2104,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("noteOn",           Napi::Function::New(env, VstNoteOn));
   exports.Set("noteOff",          Napi::Function::New(env, VstNoteOff));
   exports.Set("setTrackChain",    Napi::Function::New(env, VstSetTrackChain));
+  exports.Set("setSynthChain",    Napi::Function::New(env, SetSynthChain));
+  exports.Set("vstGetLatency",    Napi::Function::New(env, VstGetLatency));
   exports.Set("vstEnabled",       Napi::Boolean::New(env, true));
 #else
   exports.Set("vstEnabled",       Napi::Boolean::New(env, false));

@@ -74,6 +74,13 @@ export interface InsertChainState {
   resyncAllChains(): Promise<void>
   /** Drop every loaded plugin (e.g. on stream teardown / engine crash). */
   clearAll(): Promise<void>
+  /**
+   * PDC: sum of IAudioProcessor::getLatencySamples() for all non-bypassed
+   * slots in the 'channel' chain for `channelIdx`.
+   * Returns 0 if the channel has no chain, the VST host is not built, or all
+   * plugins report zero latency.
+   */
+  getChannelChainLatencySamples(channelIdx: number): Promise<number>
 
   /** @deprecated Use insertChainStore channel targets directly. No-op in V6. */
   setActiveInputTarget(target: InsertTarget | null): Promise<void>
@@ -114,6 +121,32 @@ async function syncChain(target: InsertTarget, chains: Record<string, InsertSlot
   if (target.kind === 'track') return syncTrackChain(target, chains)
 }
 
+/**
+ * Bug #4: collect all non-bypassed instrument slots from every track chain and
+ * push them to the native synthesis output chain (setSynthChain).
+ *
+ * The RT callback calls process() on each slot in g_synthSlots[] every audio
+ * block, draining the MIDI ring and generating PCM that is mixed into the
+ * PortAudio output bus. Without this, Piano Roll noteOn/noteOff events reach
+ * the VSTi's SPSC ring but the plugin never produces audio because the RT
+ * callback never calls its process() function.
+ *
+ * Call after any track-chain mutation (addInsert, removeInsert, moveInsert,
+ * setBypass, clearAll).
+ */
+async function syncSynthChain(chains: Record<string, InsertSlot[]>): Promise<void> {
+  const v = vst()
+  if (!v?.setSynthChain) return
+  const ids: number[] = []
+  for (const [key, slots] of Object.entries(chains)) {
+    if (!key.startsWith('track:')) continue
+    for (const s of slots) {
+      if (!s.bypass && s.type === 'instrument') ids.push(s.slotId)
+    }
+  }
+  await v.setSynthChain(ids)
+}
+
 export const useInsertChainStore = create<InsertChainState>((set, get) => ({
   available: [],
   scanning: false,
@@ -133,7 +166,21 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     const v = vst()
     if (!v) { set({ vstAvailable: false, scanError: 'VST host not built' }); return }
     set({ scanning: true, scanError: null })
-    const res = await v.scan(paths)
+
+    // Bug #2: merge caller-supplied paths with user-saved extra scan directories.
+    // The C++ scan() always prepends OS default paths, so these are additive.
+    // If the caller already supplied explicit paths, honour them as-is.
+    let scanPaths = paths ?? []
+    if (scanPaths.length === 0) {
+      try {
+        const saved = await v.getExtraScanPaths()
+        if (Array.isArray(saved)) scanPaths = saved
+      } catch {
+        // getExtraScanPaths unavailable (non-Electron env or first run) — ignore.
+      }
+    }
+
+    const res = await v.scan(scanPaths.length > 0 ? scanPaths : undefined)
     if (res.ok) set({ available: res.plugins ?? [], vstAvailable: true, scanning: false })
     else set({ scanning: false, vstAvailable: false, scanError: res.error ?? 'scan failed' })
   },
@@ -168,6 +215,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     const newChains = { ...get().chains, [key]: [...(get().chains[key] ?? []), slot] }
     set({ chains: newChains })
     await syncChain(target, newChains)
+    if (target.kind === 'track') await syncSynthChain(newChains)
     return slot
   },
 
@@ -182,6 +230,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     set({ chains: newChains })
     // Push updated chain before unloading so the RT callback stops using the slot.
     await syncChain(target, newChains)
+    if (target.kind === 'track') await syncSynthChain(newChains)
     if (v) await v.unload(slot.slotId)
   },
 
@@ -194,6 +243,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     const newChains = { ...get().chains, [key]: chain }
     set({ chains: newChains })
     await syncChain(target, newChains)
+    if (target.kind === 'track') await syncSynthChain(newChains)
   },
 
   setBypass(target, index, bypass) {
@@ -207,6 +257,7 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
     set({ chains: newChains })
     // V6: bypass wiring — exclude bypassed slots from the native chain list.
     void syncChain(target, newChains)
+    if (target.kind === 'track') void syncSynthChain(newChains)
   },
 
   async setParam(target, index, paramId, value) {
@@ -315,6 +366,8 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
         }
       }
       await v.setInsertChain([])
+      // Bug #4: clear synth chain so the RT callback stops running cleared instrument slots.
+      if (v.setSynthChain) await v.setSynthChain([])
       for (const slot of all) await v.unload(slot.slotId)
     }
   },
@@ -322,5 +375,24 @@ export const useInsertChainStore = create<InsertChainState>((set, get) => ({
   /** @deprecated No-op in V6 — per-channel chains are always active. */
   async setActiveInputTarget(_target) {
     // intentional no-op
+  },
+
+  async getChannelChainLatencySamples(channelIdx) {
+    const v = vst()
+    if (!v) return 0
+    const key = targetKey({ kind: 'channel', id: String(channelIdx) })
+    const slots = get().chains[key] ?? []
+    const active = slots.filter((s) => !s.bypass)
+    if (active.length === 0) return 0
+    let total = 0
+    for (const slot of active) {
+      try {
+        const res = await v.getLatency(slot.slotId)
+        if (res.ok && res.latencySamples > 0) total += res.latencySamples
+      } catch {
+        // Plugin may not support getLatencySamples(); treat as 0.
+      }
+    }
+    return total
   },
 }))

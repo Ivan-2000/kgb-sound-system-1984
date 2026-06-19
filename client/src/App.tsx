@@ -30,6 +30,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { SettingsModal } from './components/SettingsModal'
 import { DeviceSetupModal } from './components/DeviceSetupModal'
 import { recorder, clipAudio } from './audio/recorder'
+import { useInsertChainStore } from './audio/insertChainStore'
 import type { SyncEvent } from './protocol/syncProtocol'
 import type { SyncStateSnapshot } from './networking/roomSyncClient'
 import './App.css'
@@ -296,22 +297,57 @@ function App() {
     const channelIdx = Number(key.slice(6))
     const result = await recorder.stopAsync(channelIdx)
     if (!result) return
-    const realDur = Math.max(0.2, result.durSec)
+    let realDur = Math.max(0.2, result.durSec)
     const store = timelineStore
-    // T5: full round-trip compensation. The musician plays along with a mix
-    // they hear OUTPUT-latency late, and their signal lands INPUT-latency
-    // late — shift the clip back by both so replay lines up with the drums.
     const snap = nativeAudioController.getSnapshot()
-    const latencySec = ((snap.inputLatencyMs ?? 0) + (snap.outputLatencyMs ?? 0)) / 1000
+
+    // §5.1 FIX: only input latency shifts the ADC capture timestamp.
+    // Output latency affects what the musician *hears* but not when PCM samples
+    // actually arrive from the ADC — do NOT add outputLatencyMs here.
+    const inputLatencySec = (snap.inputLatencyMs ?? 0) / 1000
+
+    // PDC (Plugin Delay Compensation): the recorded PCM has already passed
+    // through the VST insert chain on this channel. Each non-bypassed plugin
+    // adds its own processing delay (getLatencySamples). The first beat of the
+    // recording appears vstLatencySec *into* the clip relative to the true
+    // capture time, so shift the clip start back by that amount.
+    const actualSR = snap.actualSampleRate ?? snap.sampleRate ?? 48000
+    const vstLatencySamples = await useInsertChainStore.getState()
+      .getChannelChainLatencySamples(channelIdx)
+    const vstLatencySec = vstLatencySamples / actualSR
+
+    const totalLatencySec = inputLatencySec + vstLatencySec
+
+    // E3 §1.1 pt.2: correct durSec from PA-time to AC-time.
+    // result.durSec = framesSeen / actualSampleRate — measured in PortAudio
+    // hardware time. If PA and AC clocks diverge (different OS audio subsystems,
+    // e.g. ASIO for input, DirectSound for Web Audio output), the clip's audio
+    // content length in AC-time differs by the accumulated drift.
+    // computeDriftRatio() returns acElapsed/paElapsed; multiplying durSec
+    // converts the PA-measured duration to the equivalent AC timeline span.
+    // Correction is skipped when the stream is not open, anchor is absent,
+    // recording is too short to measure (<2 s), or drift exceeds 1% (sanity guard).
+    const driftRatio = await audioEngine.computeDriftRatio()
+    if (driftRatio !== null) {
+      realDur = Math.max(0.2, realDur * driftRatio)
+    }
+
     const currentClip = store?.getState().clips.find((c) => c.id === result.clipId)
-    const startSec = currentClip
-      ? Math.max(0, currentClip.startSec - latencySec)
-      : undefined
-    const patch = { proxy: false, durSec: realDur, ...(startSec !== undefined && { startSec }) }
+    const rawStartSec = currentClip?.startSec ?? 0
+
+    // §5.2 FIX: separate local startSec (hardware + VST compensation applied)
+    // from the peer broadcast startSec (raw, no machine-specific offsets).
+    // Peers have different hardware latencies and must not inherit ours.
+    const localStartSec = Math.max(0, rawStartSec - totalLatencySec)
+    const peerStartSec  = rawStartSec
+
+    const localPatch = { proxy: false, durSec: realDur, startSec: localStartSec }
+    const peerPatch  = { proxy: false, durSec: realDur, startSec: peerStartSec }
+
     // peaks stay local-only (not in the sync patch — peers get the WAV file).
-    store?.getState().updateClip(result.clipId, { ...patch, peaks: result.peaks })
+    store?.getState().updateClip(result.clipId, { ...localPatch, peaks: result.peaks })
     if (roomState.roomId && !roomState.isLocalRoom) {
-      sendClipUpdate(result.clipId, patch)
+      sendClipUpdate(result.clipId, peerPatch)          // §5.2: send unshifted position
       const blob = clipAudio.get(result.clipId)
       if (blob) sendClipFileSync(result.clipId, blob)
     }
@@ -1251,6 +1287,15 @@ function App() {
       // T2: start PCM accumulation for local input channels.
       if (clipId && key.startsWith('local:') && window.nativeAudio !== undefined) {
         const channelIdx = Number(key.slice(6))
+        // §5.7 FIX: capture transport position as close as possible to the
+        // recorder.start() subscription so we minimise the JS-tick gap between
+        // the startSec snapshot and the first PCM arriving via onPcm. The clip
+        // was pre-created with armTimelineTrack's reading — update it here with
+        // a fresher reading taken synchronously right before the subscription.
+        const recordStartSec = audioEngine.getTransportSeconds()
+        if (recordStartSec !== armResult?.startSec) {
+          timelineStore?.getState().updateClip(clipId, { startSec: recordStartSec })
+        }
         recorder.start(channelIdx, clipId)
         startLiveWaveform(key, channelIdx, clipId)
       }

@@ -1,6 +1,6 @@
 import * as Tone from 'tone'
 import { createTimelineStore } from './timelineStore'
-import { scheduleMidiClips } from './midiPlayer'
+import { scheduleMidiClips, clearMidiClipSchedule } from './midiPlayer'
 import { scheduleAudioClips, clearAudioClipSchedule } from './audioClipPlayer'
 
 /**
@@ -21,4 +21,5 @@ Tone.getTransport().on('start', () => {
 })
 Tone.getTransport().on('stop', () => {
   clearAudioClipSchedule()
+  clearMidiClipSchedule()
 })

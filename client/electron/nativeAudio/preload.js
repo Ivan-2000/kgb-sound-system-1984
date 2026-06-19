@@ -108,6 +108,13 @@ contextBridge.exposeInMainWorld('nativeAudio', {
   /** Pa_GetStreamInfo() snapshot — inputLatency/outputLatency in seconds. */
   getLatency: () => ipcRenderer.invoke('audio:get-latency'),
 
+  /** E3 §1.1 pt.2: Pa_GetStreamTime() — monotonic seconds since stream open.
+   *  Capture alongside AudioContext.currentTime at transport start to anchor
+   *  the two clock domains; use both snapshots in finishRecording to compute
+   *  drift and correct clip durSec from PA-time to AC-time. Returns 0 if no
+   *  stream is open. */
+  getStreamTime: () => ipcRenderer.invoke('audio:get-stream-time'),
+
   isStreamActive: () => ipcRenderer.invoke('audio:is-stream-active'),
 
   /** Subscribe to PCM frames. Handler receives { kind:'pcm', streamId, frames, channels, payload:ArrayBuffer, latency? }.
@@ -278,5 +285,33 @@ contextBridge.exposeInMainWorld('nativeAudio', {
     /** I1: register the VST insert chain for a logical track ID. */
     setTrackChain: (trackId, slotIds) =>
       ipcRenderer.invoke('vst:set-track-chain', { trackId, slotIds }),
+
+    /** Bug #4: register all non-bypassed instrument slots across all tracks for
+     *  RT synthesis output. The RT callback calls process() on each slot every
+     *  audio block, draining MIDI note events and generating PCM. Without this,
+     *  Piano Roll MIDI is queued but never rendered.
+     *  @param {number[]} slotIds  Up to 8 instrument slot IDs.
+     *  @returns {Promise<{ok:boolean, error?:string}>} */
+    setSynthChain: (slotIds) =>
+      ipcRenderer.invoke('vst:set-synth-chain', { slotIds }),
+
+    /** PDC: read IAudioProcessor::getLatencySamples() for a loaded plugin slot.
+     *  Returns latencySamples (integer ≥ 0). Call after vst.load() resolves.
+     *  @returns {Promise<{ok:boolean, latencySamples:number, error?:string}>} */
+    getLatency: (slotId) => ipcRenderer.invoke('vst:get-latency', { slotId }),
+
+    // Bug #2: user-configurable extra VST3 scan directories.
+    /** Retrieve user-saved extra scan directories from userData settings.
+     *  @returns {Promise<string[]>} */
+    getExtraScanPaths: () => ipcRenderer.invoke('vst:get-extra-scan-paths'),
+
+    /** Persist user's extra scan directories to userData settings.
+     *  @param {string[]} paths
+     *  @returns {Promise<{ok:boolean}>} */
+    setExtraScanPaths: (paths) => ipcRenderer.invoke('vst:set-extra-scan-paths', { paths }),
+
+    /** Open a native OS folder-picker dialog.
+     *  @returns {Promise<string|null>}  Selected directory path, or null if cancelled. */
+    pickScanFolder: () => ipcRenderer.invoke('vst:pick-scan-folder'),
   },
 })

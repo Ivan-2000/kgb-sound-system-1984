@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { nativeAudioController } from '../audio/nativeAudioController'
 import { MixerStrip } from './MixerStrip'
+import { FxChainButton } from './FxChainButton'
 
 type LocalMixerStripProps = {
   channelIndex: number
@@ -108,6 +109,7 @@ export function LocalMixerStrip({ channelIndex, label, deviceId, sendEnabled, on
     <MixerStrip
       name={displayLabel}
       nameNode={nameNode}
+      fxNode={<FxChainButton targetKind="channel" targetId={String(channelIndex)} label={displayLabel} />}
       sub={`In ${channelIndex + 1}`}
       value={gain}
       onValue={setGain}

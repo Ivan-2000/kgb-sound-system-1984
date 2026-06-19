@@ -308,6 +308,15 @@ process.parentPort.on('message', (event) => {
         return
       }
 
+      // E3 §1.1 pt.2: Pa_GetStreamTime() — monotonic seconds since stream open.
+      // Renderer captures this alongside AudioContext.currentTime at transport
+      // start to build a clock anchor for recording drift correction.
+      case 'getStreamTime': {
+        try { reply(id, loadAddon().getStreamTime?.() ?? 0) }
+        catch { reply(id, 0) }
+        return
+      }
+
       case 'isStreamActive': {
         try { reply(id, !!loadAddon().isStreamActive()) } catch { reply(id, false) }
         return
@@ -502,6 +511,28 @@ process.parentPort.on('message', (event) => {
         try {
           a.setTrackChain(Number(opts?.trackId), Array.isArray(opts?.slotIds) ? opts.slotIds : [])
           reply(id, { ok: true })
+        } catch (e) { replyError(id, e) }
+        return
+      }
+
+      // Bug #4: setSynthChain — register VSTi instrument slots for RT synthesis output.
+      case 'vstSetSynthChain': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: true }); return }
+        try {
+          a.setSynthChain(Array.isArray(opts?.slotIds) ? opts.slotIds : [])
+          reply(id, { ok: true })
+        } catch (e) { replyError(id, e) }
+        return
+      }
+
+      // PDC: IAudioProcessor::getLatencySamples() for a loaded plugin slot.
+      case 'vstGetLatency': {
+        const a = loadAddon()
+        if (!a.vstEnabled) { reply(id, { ok: true, latencySamples: 0 }); return }
+        try {
+          const latencySamples = a.vstGetLatency(Number(opts?.slotId))
+          reply(id, { ok: true, latencySamples: latencySamples ?? 0 })
         } catch (e) { replyError(id, e) }
         return
       }
