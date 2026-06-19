@@ -199,3 +199,10 @@ contextBridge.exposeInMainWorld('nativeAudio', {
    *  (posted into the audio MessagePort) vs failed (port missing/closed). */
   getSoftmixDiag: () => ({ sent: softmixSent, failed: softmixFailed }),
 })
+
+// Debug-only, separate global from nativeAudio on purpose: this is consumed
+// only by client/src/debug/collectors/procs.ts, which treats its absence as
+// "shim not applied" rather than an error. See client/src/debug/README.md.
+contextBridge.exposeInMainWorld('kgbDebug', {
+  getProcessMetrics: () => ipcRenderer.invoke('debug:get-process-metrics'),
+})

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session } from 'electron'
+import { app, BrowserWindow, session, ipcMain } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setupAudioIPC, initAudio, terminateAudio, logDevicesAtStartup } from './nativeAudio/ipc.js'
@@ -41,6 +41,19 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   setupAudioIPC()
+
+  // Debug-only: per-process CPU/RAM for the debug HUD's "procs" tab
+  // (client/src/debug/collectors/procs.ts). app.getAppMetrics() already
+  // breaks down main/renderer/utility/GPU — no extra bookkeeping needed here.
+  ipcMain.handle('debug:get-process-metrics', () =>
+    app.getAppMetrics().map((m) => ({
+      pid: m.pid,
+      type: m.type,
+      name: m.name,
+      cpuPercent: m.cpu.percentCPUUsage,
+      memoryKB: m.memory?.workingSetSize ?? 0,
+    })),
+  )
 
   // Allow microphone and camera access inside the renderer (getUserMedia)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {

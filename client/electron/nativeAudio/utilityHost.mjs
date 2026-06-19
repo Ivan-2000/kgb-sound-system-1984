@@ -49,6 +49,23 @@ let audioDataPort = null      // MessagePortMain owned utility-side, port2 is in
 let softmixReceived = 0
 let softmixPeak = 0
 let pcmStreamId = 0
+
+// Debug-only instrumentation: cadence of the onPcm/onOpus JS-thread callbacks.
+// Both run on this same utility-process JS thread alongside IPC dispatch and
+// opus decode (AUDIT.md §1.5) — a widening interval here is the symptom of
+// that single-thread bottleneck becoming visible under load. Decaying max
+// mirrors softmixPeak above (polled by the HUD, never reset on read).
+const pcmCadence = { lastNs: 0n, emaMs: 0, maxMs: 0 }
+const opusCadence = { lastNs: 0n, emaMs: 0, maxMs: 0 }
+function tickCadence(cadence) {
+  const now = process.hrtime.bigint()
+  if (cadence.lastNs !== 0n) {
+    const deltaMs = Number(now - cadence.lastNs) / 1e6
+    cadence.emaMs = cadence.emaMs === 0 ? deltaMs : cadence.emaMs * 0.9 + deltaMs * 0.1
+    cadence.maxMs = Math.max(deltaMs, cadence.maxMs * 0.98)
+  }
+  cadence.lastNs = now
+}
 let firstChunkSent = false    // attach Pa_GetStreamInfo() latency to the FIRST PCM frame only
 let paInitialized = false
 
@@ -178,6 +195,7 @@ function doOpenStream(opts, port1) {
   // MessagePortMain[] in its transfer list (Electron limitation; see
   // ipc.js history before A3.5c, and commit 17b1299).
   const onPcm = (arrayBuffer, frames, channels) => {
+    tickCadence(pcmCadence)
     if (!audioDataPort) return
     const message = {
       kind: 'pcm',
@@ -203,6 +221,7 @@ function doOpenStream(opts, port1) {
   // and survives structured-clone over MessagePortMain unchanged.
   const onOpus = hasOpus
     ? (payload, channelIndex, sequence, timestampUs) => {
+        tickCadence(opusCadence)
         if (!audioDataPort) return
         try {
           audioDataPort.postMessage({
@@ -317,7 +336,15 @@ process.parentPort.on('message', (event) => {
         let stats
         try { stats = loadAddon().getStats() }
         catch { stats = { xrunCount: 0, dropCount: 0, bufferFillPct: 0, cpuLoad: 0 } }
-        reply(id, { ...stats, softmixReceived, softmixPeak })
+        reply(id, {
+          ...stats,
+          softmixReceived,
+          softmixPeak,
+          pcmIntervalMsAvg: Math.round(pcmCadence.emaMs * 10) / 10,
+          pcmIntervalMsMax: Math.round(pcmCadence.maxMs * 10) / 10,
+          opusIntervalMsAvg: Math.round(opusCadence.emaMs * 10) / 10,
+          opusIntervalMsMax: Math.round(opusCadence.maxMs * 10) / 10,
+        })
         return
       }
 

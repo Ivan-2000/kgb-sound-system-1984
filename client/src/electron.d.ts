@@ -71,6 +71,13 @@ interface NativeAudioStats {
   softmixReceived?: number
   /** Max |sample| in received softmix PCM since the previous getStats (read-and-reset). */
   softmixPeak?: number
+  /** Debug-only (utilityHost.mjs cadence instrumentation): avg/max ms between
+   *  consecutive onPcm/onOpus JS-thread callbacks. Present only if the utility
+   *  build includes the instrumentation — absent otherwise. */
+  pcmIntervalMsAvg?: number
+  pcmIntervalMsMax?: number
+  opusIntervalMsAvg?: number
+  opusIntervalMsMax?: number
 }
 
 interface Window {
