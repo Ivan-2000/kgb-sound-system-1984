@@ -15,11 +15,23 @@ import { scheduleAudioClips, clearAudioClipSchedule } from './audioClipPlayer'
  */
 export const timelineStore = createTimelineStore()
 
-Tone.getTransport().on('start', () => {
+// §8.C.1: named handlers registered once. Under Vite HMR this module can re-run,
+// which would stack a second pair of listeners on the (global) Transport and
+// double-schedule clips on every start. Remove them on hot-dispose.
+const onTransportStart = () => {
   scheduleMidiClips(timelineStore)
   scheduleAudioClips(timelineStore)
-})
-Tone.getTransport().on('stop', () => {
+}
+const onTransportStop = () => {
   clearAudioClipSchedule()
   clearMidiClipSchedule()
-})
+}
+Tone.getTransport().on('start', onTransportStart)
+Tone.getTransport().on('stop', onTransportStop)
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    Tone.getTransport().off('start', onTransportStart)
+    Tone.getTransport().off('stop', onTransportStop)
+  })
+}

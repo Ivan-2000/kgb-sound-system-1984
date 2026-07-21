@@ -88,8 +88,12 @@ class Metronome {
       if (this.enabled && this.soundEnabled) {
         this.playClick(beat === 0, time)
       }
-      this.currentBeat = beat
-      this.emitChange()
+      // §5.4: never write React state from inside the audio callback. Tone.Draw
+      // runs this on the animation frame nearest `time`, off the audio thread.
+      Tone.getDraw().schedule(() => {
+        this.currentBeat = beat
+        this.emitChange()
+      }, time)
     }, beatDuration)
   }
 
