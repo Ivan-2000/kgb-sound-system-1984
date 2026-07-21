@@ -819,6 +819,11 @@ function App() {
 
   const handleBpmChange = async (nextBpm: number) => {
     if (roomState.roomId && !roomState.isHost) return
+    // §5.8: a tempo change mid-recording detaches captured audio (measured in
+    // seconds) from the musical grid. Block it while a local take is in progress
+    // and revert the input. (Cross-user mid-record tempo change needs server-side
+    // record-state tracking — deferred.)
+    if (armed.size > 0) { setBpmText(String(bpm)); return }
     const safeBpm = audioEngine.setBpm(nextBpm)
     setBpm(safeBpm)
     await emitSyncEvent({ type: 'bpm_change', payload: { bpm: safeBpm } })
