@@ -29,22 +29,25 @@ export function scheduleMidiClips(store: TimelineStoreApi): void {
   const dm = drumMachine
   const v = vst()
 
+  const transport = Tone.getTransport()
   const { clips, tracks } = store.getState()
-  const bpm = Tone.getTransport().bpm.value
-  const sixteenthSec = 60 / (bpm * 4)
+  // §5.18: schedule notes at musical TICK positions so they stay locked to the
+  // beat grid and reflow when the project tempo changes (MIDI is musical time,
+  // not seconds). Expressing offsets in ticks makes the grid-lock explicit.
+  const ticksPerSixteenth = transport.PPQ / 4
   const chains = useInsertChainStore.getState().chains
 
   for (const clip of clips) {
     if (clip.kind !== 'midi' || !clip.notes?.length) continue
+    const clipStartTicks = transport.toTicks(clip.startSec)
+    const tickAt = (step: number) => `${Math.round(clipStartTicks + step * ticksPerSixteenth)}i`
 
     for (const note of clip.notes) {
       const drumTrack = DRUM_PITCH_MAP[note.pitch]
       if (drumTrack) {
-        // Drum path — unchanged
-        const absTime = clip.startSec + note.startStep * sixteenthSec
-        const id = Tone.getTransport().schedule((time) => {
+        const id = transport.schedule((time) => {
           dm.triggerVoice(drumTrack, note.velocity, time)
-        }, absTime)
+        }, tickAt(note.startStep))
         scheduledEventIds.push(id)
         continue
       }
@@ -58,15 +61,12 @@ export function scheduleMidiClips(store: TimelineStoreApi): void {
       if (!vstSlot) continue
 
       const slotId = vstSlot.slotId
-      const noteOnTime  = clip.startSec + note.startStep * sixteenthSec
-      const noteOffTime = clip.startSec + (note.startStep + (note.lengthSteps ?? 1)) * sixteenthSec
-
-      const onId = Tone.getTransport().schedule((_time) => {
+      const onId = transport.schedule(() => {
         void v.noteOn(slotId, 0, note.pitch, note.velocity)
-      }, noteOnTime)
-      const offId = Tone.getTransport().schedule((_time) => {
+      }, tickAt(note.startStep))
+      const offId = transport.schedule(() => {
         void v.noteOff(slotId, 0, note.pitch)
-      }, noteOffTime)
+      }, tickAt(note.startStep + (note.lengthSteps ?? 1)))
       scheduledEventIds.push(onId, offId)
     }
   }

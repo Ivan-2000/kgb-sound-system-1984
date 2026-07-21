@@ -137,6 +137,8 @@ class RoomManager {
       // §5.3: stored clip audio for late-joiner hydration. clipId → { data, senderId }.
       clipFiles: new Map(),
       clipFilesBytes: 0,
+      // §5.8: socketIds with a recording in progress. While non-empty, tempo is locked.
+      recordingSockets: new Set(),
     }
 
     room.participants.set(hostSocketId, {
@@ -182,6 +184,7 @@ class RoomManager {
 
     const participant = room.participants.get(socketId)
     room.participants.delete(socketId)
+    room.recordingSockets.delete(socketId) // §5.8: a leaver no longer holds a record-lock
     this.socketToRoom.delete(socketId)
 
     if (room.participants.size === 0) {
@@ -369,6 +372,19 @@ class RoomManager {
     const room = this.rooms.get(roomId)
     if (!room) return []
     return [...room.clipFiles.entries()].map(([clipId, f]) => ({ clipId, data: f.data, senderId: f.senderId }))
+  }
+
+  // §5.8: mark/unmark a socket as recording; tempo is locked while any are set.
+  setRecording(roomId, socketId, recording) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+    if (recording) room.recordingSockets.add(socketId)
+    else room.recordingSockets.delete(socketId)
+  }
+
+  isAnyRecording(roomId) {
+    const room = this.rooms.get(roomId)
+    return room ? room.recordingSockets.size > 0 : false
   }
 }
 

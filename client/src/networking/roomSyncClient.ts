@@ -449,6 +449,12 @@ class RoomSyncClient {
     return response.rev // §5.5: server-assigned clip revision, if any
   }
 
+  // §5.8: tell the server whether this client is recording (locks room tempo).
+  async sendRecordState(recording: boolean): Promise<void> {
+    const response = await this.emitWithAck('record:set', { recording })
+    if (!response.ok) throw new Error(response.error || 'RECORD_STATE_FAILED')
+  }
+
   async sendHostMute(targetSocketId: string) {
     return new Promise<boolean>((resolve, reject) => {
       this.socket.emit('host_mute', { targetSocketId }, (response: { ok: boolean; muted?: boolean; error?: string }) => {

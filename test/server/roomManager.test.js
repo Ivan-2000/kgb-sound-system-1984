@@ -167,3 +167,24 @@ describe('§5.3 stored clip audio (late-joiner hydration)', () => {
     expect(files[0].data.length).toBe(50)
   })
 })
+
+describe('§5.8 record-state tempo lock', () => {
+  it('tracks recording sockets and reports any-recording', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    expect(rm.isAnyRecording(room.id)).toBe(false)
+    rm.setRecording(room.id, 'host1', true)
+    expect(rm.isAnyRecording(room.id)).toBe(true)
+    rm.setRecording(room.id, 'host1', false)
+    expect(rm.isAnyRecording(room.id)).toBe(false)
+  })
+  it('clears a leaver record-lock', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    rm.joinRoom(room.id, 'g1', 'G')
+    rm.setRecording(room.id, 'g1', true)
+    expect(rm.isAnyRecording(room.id)).toBe(true)
+    rm.leaveRoom('g1')
+    expect(rm.isAnyRecording(room.id)).toBe(false)
+  })
+})

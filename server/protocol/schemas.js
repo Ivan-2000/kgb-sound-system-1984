@@ -196,6 +196,11 @@ const clipFileMetaSchema = z.object({
   clipId: z.string().trim().min(1).max(64),
 })
 
+// §5.8: a client announces whether it currently has a recording in progress.
+const recordStateSchema = z.object({
+  recording: z.boolean(),
+})
+
 module.exports = {
   createRoomSchema,
   joinRoomSchema,
@@ -208,4 +213,5 @@ module.exports = {
   hostTargetSchema,
   channelMetaSchema,
   clipFileMetaSchema,
+  recordStateSchema,
 }

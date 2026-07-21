@@ -10,6 +10,7 @@ const {
   hostTargetSchema,
   channelMetaSchema,
   clipFileMetaSchema,
+  recordStateSchema,
 } = require('../protocol/schemas')
 
 const RATE_WINDOW_MS = 60_000
@@ -202,6 +203,13 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
+      // §5.8: while anyone in the room is recording, the tempo is locked — a mid-
+      // record tempo change detaches captured audio from the grid for everyone.
+      if (parsed.data.type === 'bpm_change' && roomManager.isAnyRecording(roomId)) {
+        ack?.({ ok: false, error: 'RECORDING_IN_PROGRESS' })
+        return
+      }
+
       // §3.1 ownership (B): a guest may edit/remove only clips they created; the
       // host may touch any. clip_add is always allowed (creates its own clip).
       // Drum steps stay collaborative (single shared pattern, LWW).
@@ -251,6 +259,23 @@ function registerSocketHandlers(io, roomManager) {
       socket.to(roomId).emit('clip:file', { clipId: meta.data.clipId, senderId: socket.id, data: rawPayload.data })
       // §5.3: keep a copy so a late joiner can hydrate this clip's audio.
       roomManager.storeClipFile(roomId, meta.data.clipId, rawPayload.data, socket.id)
+      ack?.({ ok: true })
+    })
+
+    // §5.8: a client announces its recording state; while any client in the room
+    // is recording, bpm_change is rejected for everyone (see room:event handler).
+    socket.on('record:set', (rawPayload, ack) => {
+      const parsed = recordStateSchema.safeParse(rawPayload)
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
+        return
+      }
+      const roomId = roomManager.getRoomIdBySocket(socket.id)
+      if (!roomId) {
+        ack?.({ ok: false, error: 'ROOM_REQUIRED' })
+        return
+      }
+      roomManager.setRecording(roomId, socket.id, parsed.data.recording)
       ack?.({ ok: true })
     })
 

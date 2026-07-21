@@ -184,6 +184,8 @@ function App() {
   const [armed, setArmed] = useState<ReadonlySet<string>>(() => new Set())
   // Rapid-click guard: keys currently mid-arm (between click and microtask cleanup).
   const pendingArmRef = useRef(new Set<string>())
+  // §5.8: last record-state we told the server, to emit only on change.
+  const recordingStateRef = useRef(false)
   const [hostPassword, setHostPassword] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
   const [maxParticipants, setMaxParticipants] = useState(8)
@@ -296,6 +298,7 @@ function App() {
     stopLiveWaveform(key)
     const channelIdx = Number(key.slice(6))
     const result = await recorder.stopAsync(channelIdx)
+    syncRecordingState() // §5.8: release the tempo lock once capture stops
     if (!result) return
     let realDur = Math.max(0.2, result.durSec)
     const store = timelineStore
@@ -710,7 +713,7 @@ function App() {
   const emitSyncEvent = async (
     partial: Omit<SyncEvent, 'timestamp' | 'eventId'> & { timestamp?: number },
   ) => {
-    if (!roomState.roomId) return
+    if (!roomState.roomId) return true
 
     const logicalTimestamp = partial.timestamp ?? nextLogicalTimestamp()
 
@@ -720,8 +723,20 @@ function App() {
         timestamp: logicalTimestamp,
         eventId: `${roomState.username ?? 'user'}-${logicalTimestamp}`,
       } as SyncEvent)
+      return true
     } catch (error) {
       setNetworkError(error instanceof Error ? error.message : 'SYNC_EVENT_REJECTED')
+      return false
+    }
+  }
+
+  // §5.8: report whether any local recording is active (server locks tempo while so).
+  const syncRecordingState = () => {
+    const isRec = recorder.getActiveChannels().length > 0
+    if (isRec === recordingStateRef.current) return
+    recordingStateRef.current = isRec
+    if (roomState.roomId && !roomState.isLocalRoom) {
+      void roomSyncClient.sendRecordState(isRec).catch(() => { /* best-effort */ })
     }
   }
 
@@ -826,9 +841,17 @@ function App() {
     // and revert the input. (Cross-user mid-record tempo change needs server-side
     // record-state tracking — deferred.)
     if (armed.size > 0) { setBpmText(String(bpm)); return }
+    const prevBpm = audioEngine.getBpm()
     const safeBpm = audioEngine.setBpm(nextBpm)
     setBpm(safeBpm)
-    await emitSyncEvent({ type: 'bpm_change', payload: { bpm: safeBpm } })
+    const ok = await emitSyncEvent({ type: 'bpm_change', payload: { bpm: safeBpm } })
+    if (!ok) {
+      // §5.8: the server rejected it (e.g. RECORDING_IN_PROGRESS elsewhere in the
+      // room). Revert the optimistic local tempo so we don't diverge.
+      audioEngine.setBpm(prevBpm)
+      setBpm(prevBpm)
+      setBpmText(String(prevBpm))
+    }
   }
 
   const handleMetronomeToggle = async () => {
@@ -1308,6 +1331,7 @@ function App() {
           timelineStore?.getState().updateClip(clipId, { startSec: recordStartSec })
         }
         recorder.start(channelIdx, clipId)
+        syncRecordingState() // §5.8: lock room tempo while recording
         startLiveWaveform(key, channelIdx, clipId)
       }
       // T4: broadcast the new proxy clip to peers

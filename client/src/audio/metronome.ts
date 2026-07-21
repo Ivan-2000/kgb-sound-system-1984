@@ -82,9 +82,13 @@ class Metronome {
       // Position-locked: derive the beat from the transport position at `time`
       // (not a self-incrementing counter) — keeps the click phase-locked to the
       // drums and timeline regardless of where playback starts.
-      const beatSec = Tone.Time(beatDuration).toSeconds()
-      const posSec = Tone.getTransport().getSecondsAtTime(time)
-      const beat = Math.max(0, Math.round(posSec / beatSec)) % this.timeSignature.beats
+      // §5.16: derive the beat from musical ticks (tempo-independent), not from
+      // seconds/beatSec — the latter is wrong during a BPM ramp because posSec was
+      // accrued at the old tempo while beatSec uses the new one.
+      const transport = Tone.getTransport()
+      const ticksPerBeat = transport.PPQ * (4 / this.timeSignature.division)
+      const beatIndex = Math.round(transport.getTicksAtTime(time) / ticksPerBeat)
+      const beat = ((beatIndex % this.timeSignature.beats) + this.timeSignature.beats) % this.timeSignature.beats
       if (this.enabled && this.soundEnabled) {
         this.playClick(beat === 0, time)
       }

@@ -166,3 +166,29 @@ describe('§5.3 late-joiner clip audio replay', () => {
     expect(got.length).toBe(0)
   })
 })
+
+describe('§5.8 tempo lock while recording', () => {
+  let h, host, guest, roomId
+  beforeEach(async () => {
+    h = makeHarness()
+    host = h.connect('host1')
+    roomId = (await host.send('room:create', { username: 'Host' })).roomId
+    guest = h.connect('guestA')
+    await guest.send('room:join', { roomId, username: 'A' })
+  })
+
+  it('rejects host bpm_change while a guest is recording', async () => {
+    const ack = await guest.send('record:set', { recording: true })
+    expect(ack.ok).toBe(true)
+    const res = await host.send('room:event', evt('bpm_change', { bpm: 140 }, 'e-bpm'))
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('RECORDING_IN_PROGRESS')
+  })
+
+  it('allows bpm_change once recording stops', async () => {
+    await guest.send('record:set', { recording: true })
+    await guest.send('record:set', { recording: false })
+    const res = await host.send('room:event', evt('bpm_change', { bpm: 140 }, 'e-bpm'))
+    expect(res.ok).toBe(true)
+  })
+})
