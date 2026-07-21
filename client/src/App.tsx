@@ -22,7 +22,7 @@ import { timelineStore } from './timeline/timelineSingleton'
 import { TimelinePanel } from './components/TimelinePanel'
 import {
   sendClipAdd, sendClipUpdate, sendClipFile as sendClipFileSync,
-  applyClipAdd, applyClipUpdate, applyClipRemove, applyClipFile,
+  applyClipAdd, applyClipUpdate, applyClipRemove, applyClipFile, hydrateClipRevs,
 } from './timeline/timelineSync'
 import { usePianoRollStore } from './pianoRoll/pianoRollStore'
 import { participantColor } from './utils/participantColor'
@@ -1079,6 +1079,8 @@ function App() {
         const trackId = tl.ensureTrack(clip.trackKey, { name: clip.trackName, kind: clip.trackKind, color: clip.trackColor })
         tl.addClipWithId({ id: clip.id, trackId, startSec: clip.startSec, durSec: clip.durSec, label: clip.label, kind: clip.kind, proxy: clip.proxy })
       }
+      // §5.5: seed LWW watermarks so late in-flight events can't revert hydrated state.
+      hydrateClipRevs(Object.values(clipState))
     }
 
     // The drum singleton already exists (created at import), so the room's

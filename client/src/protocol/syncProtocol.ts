@@ -29,6 +29,8 @@ export const syncEventBaseSchema = z.object({
   eventId: z.string().trim().min(1),
   // Injected by server when relaying — never sent by client
   senderId: z.string().optional(),
+  // §5.5: server-assigned monotonic revision for clip LWW (server-only field).
+  rev: z.number().optional(),
 })
 
 export const stepToggleEventSchema = syncEventBaseSchema.extend({

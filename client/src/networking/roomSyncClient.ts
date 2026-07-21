@@ -29,7 +29,7 @@ type SyncStateSnapshot = {
   timelineClips?: Record<string, Record<string, {
     id: string; trackKey: string; trackName: string; trackKind: 'audio' | 'midi'
     trackColor?: string; startSec: number; durSec: number; label: string
-    kind: 'audio' | 'midi'; proxy?: boolean
+    kind: 'audio' | 'midi'; proxy?: boolean; rev?: number
   }>>
 }
 
@@ -90,6 +90,7 @@ type AckResponse = {
   inviteLink?: string
   participants?: RoomParticipant[]
   syncState?: SyncStateSnapshot | null
+  rev?: number
 }
 
 type RtcSignalAck = {
@@ -445,6 +446,7 @@ class RoomSyncClient {
 
     const response = await this.emitWithAck('room:event', parsed.data)
     if (!response.ok) throw new Error(response.error || 'SYNC_EVENT_REJECTED')
+    return response.rev // §5.5: server-assigned clip revision, if any
   }
 
   async sendHostMute(targetSocketId: string) {

@@ -107,3 +107,35 @@ describe('§3.1 clip ownership (model B)', () => {
     expect(rm.getClipOwner(room.id, 'tl1', 'nope')).toBeNull()
   })
 })
+
+describe('§5.5 clip LWW revisions', () => {
+  it('stamps a monotonic rev on add and bumps it on update', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    const r1 = rm.applySyncEvent(room.id, clipAdd('c1', 'host1'), 'host1')
+    const r2 = rm.applySyncEvent(room.id, clipAdd('c2', 'host1'), 'host1')
+    expect(r1.rev).toBe(1)
+    expect(r2.rev).toBe(2)
+    const upd = rm.applySyncEvent(room.id, {
+      type: 'clip_update', payload: { timelineNodeId: 'tl1', clipId: 'c1', patch: { startSec: 3 } },
+    }, 'host1')
+    expect(upd.rev).toBe(3) // newest wins
+  })
+
+  it('exposes rev in the snapshot for late joiners', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    rm.applySyncEvent(room.id, clipAdd('c1', 'host1'), 'host1')
+    const ss = rm.getSyncState(room.id)
+    expect(ss.timelineClips.tl1.c1.rev).toBe(1)
+  })
+
+  it('returns no rev for clip_remove and for updates to missing clips', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    const rem = rm.applySyncEvent(room.id, { type: 'clip_remove', payload: { timelineNodeId: 'tl1', clipId: 'x' } }, 'host1')
+    const miss = rm.applySyncEvent(room.id, { type: 'clip_update', payload: { timelineNodeId: 'tl1', clipId: 'x', patch: {} } }, 'host1')
+    expect(rem).toBeUndefined()
+    expect(miss).toBeUndefined()
+  })
+})

@@ -205,14 +205,16 @@ function registerSocketHandlers(io, roomManager) {
         }
       }
 
-      roomManager.applySyncEvent(roomId, parsed.data, socket.id)
+      const applied = roomManager.applySyncEvent(roomId, parsed.data, socket.id)
+      const rev = applied?.rev // §5.5: server-assigned clip revision, if any
 
       io.to(roomId).except(socket.id).emit('room:event', {
         ...parsed.data,
         senderId: socket.id,
+        ...(rev !== undefined ? { rev } : {}),
       })
 
-      ack?.({ ok: true })
+      ack?.({ ok: true, ...(rev !== undefined ? { rev } : {}) })
     })
 
     // Binary WAV relay (T4): sender emits { clipId, data: ArrayBuffer }, server

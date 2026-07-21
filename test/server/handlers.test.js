@@ -102,3 +102,34 @@ describe('§3.1 clip ownership (model B)', () => {
     expect(res.ok).toBe(true)
   })
 })
+
+describe('§5.5 rev in ack and broadcast', () => {
+  let h, host, guest, roomId
+  beforeEach(async () => {
+    h = makeHarness()
+    host = h.connect('host1')
+    roomId = (await host.send('room:create', { username: 'Host' })).roomId
+    guest = h.connect('guestA')
+    await guest.send('room:join', { roomId, username: 'A' })
+  })
+
+  it('acks the sender with the server-assigned rev', async () => {
+    const res = await guest.send('room:event', evt('clip_add', clip('c1'), 'e1'))
+    expect(res.ok).toBe(true)
+    expect(res.rev).toBe(1)
+  })
+
+  it('includes rev in the relayed broadcast', async () => {
+    await guest.send('room:event', evt('clip_add', clip('c1'), 'e1'))
+    const relayed = h.emitted.filter((e) => e.event === 'room:event' && e.payload.type === 'clip_add')
+    expect(relayed.length).toBe(1)
+    expect(relayed[0].payload.rev).toBe(1)
+    expect(relayed[0].except).toBe('guestA') // not echoed to sender
+  })
+
+  it('omits rev for non-clip events', async () => {
+    const res = await host.send('room:event', evt('transport_play', { step: 0 }, 'e2'))
+    expect(res.ok).toBe(true)
+    expect(res.rev).toBeUndefined()
+  })
+})

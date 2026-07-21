@@ -129,6 +129,8 @@ class RoomManager {
       maxParticipants,
       participants: new Map(),
       syncState: createInitialSyncState(),
+      // §5.5: monotonic per-room revision for clip LWW (immune to client clock skew).
+      clipRev: 0,
     }
 
     room.participants.set(hostSocketId, {
@@ -318,15 +320,19 @@ class RoomManager {
       // Bound growth: ignore new clip ids past the cap (updates to existing ids pass).
       if (!(clip.id in tl) && Object.keys(tl).length >= MAX_CLIPS_PER_TIMELINE) return
       // §3.1 ownership (B): first writer owns the clip; re-adds keep the owner.
-      tl[clip.id] = { ...clip, trackKey, trackName, trackKind, trackColor, ownerId: tl[clip.id]?.ownerId ?? senderId }
-      return
+      // §5.5: stamp a fresh monotonic rev so peers can LWW-order this write.
+      const rev = ++room.clipRev
+      tl[clip.id] = { ...clip, trackKey, trackName, trackKind, trackColor, ownerId: tl[clip.id]?.ownerId ?? senderId, rev }
+      return { rev }
     }
 
     if (event.type === 'clip_update') {
       const { timelineNodeId, clipId, patch } = event.payload
       const c = s.timelineClips[timelineNodeId]?.[clipId]
-      if (c) Object.assign(c, patch)
-      return
+      if (!c) return
+      Object.assign(c, patch)
+      c.rev = ++room.clipRev // §5.5
+      return { rev: c.rev }
     }
 
     if (event.type === 'clip_remove') {
