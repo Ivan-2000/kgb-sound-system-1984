@@ -356,9 +356,11 @@ function App() {
   // Phase 2: sync sendEnabled with stream lifecycle — default ch 0 on open, clear on close
   useEffect(() => {
     if (!nativeSnapshot.streamActive) {
-      // Stop any in-progress recordings when the stream closes.
+      // §5.12: finalise in-progress takes (save + broadcast the clip) instead of
+      // dropping them via stopAll() — a stream close mid-record must not lose audio.
+      // Both stop paths (transport Stop and this one) now converge on finishRecording.
       stopLiveWaveform()
-      recorder.stopAll()
+      for (const idx of recorder.getActiveChannels()) void finishRecording(`local:${idx}`)
       setArmed(new Set())
       setSendEnabled(new Set())
       nativeRtcManager.clearSendChannels()

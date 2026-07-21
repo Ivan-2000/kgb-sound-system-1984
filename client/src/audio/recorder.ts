@@ -65,7 +65,13 @@ class Recorder {
   /** Begin accumulating PCM for the given input channel index.
    *  Kicks off async worker init; PCM chunks will be queued. */
   start(channelIdx: number, clipId: string): void {
-    if (this.active.has(channelIdx)) this.stop(channelIdx)
+    if (this.active.has(channelIdx)) {
+      // §5.13: the orchestration (toggleArmed) finalises a take before re-arming,
+      // so we shouldn't reach here with a live channel. If we do, warn instead of
+      // silently orphaning the previous take's clip.
+      console.warn('[recorder] start() on an already-recording channel', channelIdx, '— stopping previous take')
+      this.stop(channelIdx)
+    }
 
     let donePromise: Promise<ArrayBuffer> | null = null
     let fallbackChunks: Int16Array[] | null = null
@@ -153,6 +159,9 @@ class Recorder {
   stop(channelIdx: number): void { void this.stopAsync(channelIdx) }
 
   isRecording(channelIdx: number): boolean { return this.active.has(channelIdx) }
+
+  /** Channel indices with an in-progress recording — for finalize-on-close (§5.12). */
+  getActiveChannels(): number[] { return [...this.active.keys()] }
 
   getLive(channelIdx: number): { clipId: string; durSec: number; peaks: number[] } | null {
     const rec = this.active.get(channelIdx)
