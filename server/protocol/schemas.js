@@ -5,6 +5,8 @@ const usernameSchema = z
   .trim()
   .min(1)
   .max(32)
+  // §3.7: reject control chars (newlines, NUL, etc.) in display names.
+  .refine((v) => ![...v].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f), { message: 'no control characters' })
 
 const roomIdSchema = z.uuid()
 
@@ -162,7 +164,11 @@ const clientEventSchema = z.discriminatedUnion('type', [
 
 const rtcSignalSchema = z.object({
   targetSocketId: z.string().min(1),
-  signal: z.unknown(),
+  // §8.B.1: opaque signaling blob (SDP offer/answer/renegotiate, ICE candidate,
+  // or {_kgbAudio} native wrapper). Require an object — rejects scalars/arrays that
+  // can't be a valid simple-peer signal — while preserving every key. Size is bounded
+  // by io.maxHttpBufferSize; frequency by the dedicated signalLimiter in the handler.
+  signal: z.record(z.string(), z.unknown()),
 })
 
 const pingSchema = z.object({

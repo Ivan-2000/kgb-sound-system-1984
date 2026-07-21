@@ -17,7 +17,6 @@ export const syncEventTypeSchema = z.enum([
   'swing_change',
   'pattern_switch',
   'chain_set',
-  'channel_meta',
   'clip_add',
   'clip_update',
   'clip_remove',

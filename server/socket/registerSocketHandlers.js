@@ -14,6 +14,9 @@ const {
 
 const RATE_WINDOW_MS = 60_000
 const MAX_EVENTS_PER_WINDOW = 240
+// rtc:signal is bursty (ICE trickle, renegotiation) — its own, more generous
+// budget so signaling isn't starved by the shared event limiter (AUDIT §8.B.1).
+const MAX_SIGNALS_PER_WINDOW = 600
 // Upper bound on a relayed clip WAV (AUDIT §3.2). Matches io maxHttpBufferSize.
 const MAX_CLIP_BYTES = 16 * 1024 * 1024
 
@@ -22,7 +25,7 @@ function buildInviteLink(shortCode) {
   return baseUrl ? `${baseUrl}/join/${shortCode}` : null
 }
 
-function createRateLimiter() {
+function createRateLimiter(maxEvents = MAX_EVENTS_PER_WINDOW, windowMs = RATE_WINDOW_MS) {
   const map = new Map()
 
   return {
@@ -33,12 +36,12 @@ function createRateLimiter() {
       if (!current || now >= current.resetAt) {
         map.set(socketId, {
           count: 1,
-          resetAt: now + RATE_WINDOW_MS,
+          resetAt: now + windowMs,
         })
         return true
       }
 
-      if (current.count >= MAX_EVENTS_PER_WINDOW) {
+      if (current.count >= maxEvents) {
         return false
       }
 
@@ -53,6 +56,7 @@ function createRateLimiter() {
 
 function registerSocketHandlers(io, roomManager) {
   const rateLimiter = createRateLimiter()
+  const signalLimiter = createRateLimiter(MAX_SIGNALS_PER_WINDOW)
 
   io.on('connection', (socket) => {
     socket.on('room:create', (rawPayload, ack) => {
@@ -238,6 +242,10 @@ function registerSocketHandlers(io, roomManager) {
 
     // Relay WebRTC signaling data between peers in the same room
     socket.on('rtc:signal', (rawPayload, ack) => {
+      if (!signalLimiter.consume(socket.id)) {
+        ack?.({ ok: false, error: 'RATE_LIMITED' })
+        return
+      }
       const parsed = rtcSignalSchema.safeParse(rawPayload)
       if (!parsed.success) {
         ack?.({ ok: false, error: 'INVALID_PAYLOAD' })
@@ -417,7 +425,8 @@ function registerSocketHandlers(io, roomManager) {
       const roomId = roomManager.getRoomIdBySocket(socket.id)
       if (!roomId) return
 
-      io.to(roomId).emit('participant:rtt', {
+      // §8.B.2: don't echo the sender its own RTT (N² traffic); peers only.
+      socket.to(roomId).emit('participant:rtt', {
         socketId: socket.id,
         rtt: parsed.data.rtt,
       })
@@ -426,6 +435,7 @@ function registerSocketHandlers(io, roomManager) {
     socket.on('disconnect', () => {
       const leaveResult = roomManager.leaveRoom(socket.id)
       rateLimiter.clear(socket.id)
+      signalLimiter.clear(socket.id)
 
       if (!leaveResult) {
         return
