@@ -58,6 +58,14 @@ function registerSocketHandlers(io, roomManager) {
   const rateLimiter = createRateLimiter()
   const signalLimiter = createRateLimiter(MAX_SIGNALS_PER_WINDOW)
 
+  // §5.3: replay stored clip audio to a freshly-joined socket so late joiners
+  // hear previously-recorded clips (metadata already arrived via the snapshot).
+  const replayClipFiles = (socket, roomId) => {
+    for (const f of roomManager.getClipFiles(roomId)) {
+      socket.emit('clip:file', { clipId: f.clipId, senderId: f.senderId ?? 'server', data: f.data })
+    }
+  }
+
   io.on('connection', (socket) => {
     socket.on('room:create', (rawPayload, ack) => {
       if (!rateLimiter.consume(socket.id)) {
@@ -120,6 +128,7 @@ function registerSocketHandlers(io, roomManager) {
       })
 
       ack?.({ ok: true, roomId: parsed.data.roomId, participants, syncState })
+      replayClipFiles(socket, parsed.data.roomId) // §5.3
     })
 
     // Join by 4-char short code (user-friendly alternative to UUID join)
@@ -160,6 +169,7 @@ function registerSocketHandlers(io, roomManager) {
       })
 
       ack?.({ ok: true, roomId: room.id, participants, syncState })
+      replayClipFiles(socket, room.id) // §5.3
     })
 
     socket.on('room:event', (rawEvent, ack) => {
@@ -239,6 +249,8 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
       socket.to(roomId).emit('clip:file', { clipId: meta.data.clipId, senderId: socket.id, data: rawPayload.data })
+      // §5.3: keep a copy so a late joiner can hydrate this clip's audio.
+      roomManager.storeClipFile(roomId, meta.data.clipId, rawPayload.data, socket.id)
       ack?.({ ok: true })
     })
 

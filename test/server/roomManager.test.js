@@ -139,3 +139,31 @@ describe('§5.5 clip LWW revisions', () => {
     expect(miss).toBeUndefined()
   })
 })
+
+describe('§5.3 stored clip audio (late-joiner hydration)', () => {
+  it('stores and returns clip files with their sender', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    expect(rm.storeClipFile(room.id, 'c1', Buffer.from('WAVDATA'), 'host1')).toBe(true)
+    const files = rm.getClipFiles(room.id)
+    expect(files.length).toBe(1)
+    expect(files[0]).toMatchObject({ clipId: 'c1', senderId: 'host1' })
+    expect(files[0].data.toString()).toBe('WAVDATA')
+  })
+  it('drops stored audio when the clip is removed', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    rm.storeClipFile(room.id, 'c1', Buffer.alloc(10), 'host1')
+    rm.applySyncEvent(room.id, { type: 'clip_remove', payload: { timelineNodeId: 'tl1', clipId: 'c1' } }, 'host1')
+    expect(rm.getClipFiles(room.id).length).toBe(0)
+  })
+  it('re-storing the same clipId replaces without double-counting bytes', () => {
+    const rm = new RoomManager()
+    const room = rm.createRoom('host1', 'H')
+    rm.storeClipFile(room.id, 'c1', Buffer.alloc(100), 'host1')
+    rm.storeClipFile(room.id, 'c1', Buffer.alloc(50), 'host1')
+    const files = rm.getClipFiles(room.id)
+    expect(files.length).toBe(1)
+    expect(files[0].data.length).toBe(50)
+  })
+})

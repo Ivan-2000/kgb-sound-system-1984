@@ -77,6 +77,20 @@ export function hydrateClipRevs(clips: Array<{ id: string; rev?: number }>): voi
   for (const c of clips) markRev(c.id, c.rev)
 }
 
+/** §5.3/§5.15: apply any buffered clip:file whose clip now exists. Late joiners
+ *  get clips via the snapshot (not applyClipAdd), so call this after hydration. */
+export function flushPendingClipFiles(): void {
+  if (pendingFiles.size === 0) return
+  const tl = timelineStore.getState()
+  for (const [clipId, blob] of pendingFiles) {
+    if (tl.clips.some((c) => c.id === clipId)) {
+      pendingFiles.delete(clipId)
+      clipAudio.set(clipId, blob)
+      timelineStore.getState().updateClip(clipId, { proxy: false })
+    }
+  }
+}
+
 // ── Receive handlers (called from App.tsx sync listener) ─────────────────────
 
 export function applyClipAdd(event: ClipAddEvent): void {

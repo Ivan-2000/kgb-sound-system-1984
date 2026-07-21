@@ -133,3 +133,36 @@ describe('§5.5 rev in ack and broadcast', () => {
     expect(res.rev).toBeUndefined()
   })
 })
+
+describe('§5.3 late-joiner clip audio replay', () => {
+  it('replays stored clip files to a newly joined socket', async () => {
+    const h = makeHarness()
+    const host = h.connect('host1')
+    const roomId = (await host.send('room:create', { username: 'Host' })).roomId
+    // host records + uploads a clip's WAV
+    const up = await host.send('clip:file', { clipId: 'c1', data: Buffer.from('WAVDATA') })
+    expect(up.ok).toBe(true)
+
+    // a late joiner connects after the recording exists
+    const late = h.connect('lateGuest')
+    await late.send('room:join', { roomId, username: 'Late' })
+
+    const got = h.emitted.filter((e) => e.event === 'clip:file' && e.direct && e.room === 'lateGuest')
+    expect(got.length).toBe(1)
+    expect(got[0].payload.clipId).toBe('c1')
+    expect(Buffer.from(got[0].payload.data).toString()).toBe('WAVDATA')
+  })
+
+  it('does not replay a clip whose file was removed', async () => {
+    const h = makeHarness()
+    const host = h.connect('host1')
+    const roomId = (await host.send('room:create', { username: 'Host' })).roomId
+    await host.send('clip:file', { clipId: 'c1', data: Buffer.from('WAVDATA') })
+    await host.send('room:event', evt('clip_remove', { timelineNodeId: 'tl1', clipId: 'c1' }, 'e-rm'))
+
+    const late = h.connect('lateGuest')
+    await late.send('room:join', { roomId, username: 'Late' })
+    const got = h.emitted.filter((e) => e.event === 'clip:file' && e.direct && e.room === 'lateGuest')
+    expect(got.length).toBe(0)
+  })
+})

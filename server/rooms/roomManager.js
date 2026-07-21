@@ -5,6 +5,9 @@ const MAX_PATTERNS = 8
 const DEFAULT_VELOCITY = 100
 // Cap clips per timeline to bound room-state growth (AUDIT §3.4).
 const MAX_CLIPS_PER_TIMELINE = 1000
+// §5.3: cap total stored clip audio per room (late-joiner hydration) to bound
+// server memory. Over the cap, new recordings are relayed live but not stored.
+const MAX_ROOM_CLIP_BYTES = 128 * 1024 * 1024
 
 // Constant-time room-password check (AUDIT §3.5: avoid timing side-channel).
 // Passwords are ephemeral in-memory only — not persisted, not hashed.
@@ -131,6 +134,9 @@ class RoomManager {
       syncState: createInitialSyncState(),
       // §5.5: monotonic per-room revision for clip LWW (immune to client clock skew).
       clipRev: 0,
+      // §5.3: stored clip audio for late-joiner hydration. clipId → { data, senderId }.
+      clipFiles: new Map(),
+      clipFilesBytes: 0,
     }
 
     room.participants.set(hostSocketId, {
@@ -338,7 +344,31 @@ class RoomManager {
     if (event.type === 'clip_remove') {
       const { timelineNodeId, clipId } = event.payload
       if (s.timelineClips[timelineNodeId]) delete s.timelineClips[timelineNodeId][clipId]
+      // §5.3: drop stored audio for the removed clip too.
+      const f = room.clipFiles.get(clipId)
+      if (f) { room.clipFilesBytes -= f.data.length; room.clipFiles.delete(clipId) }
     }
+  }
+
+  // §5.3: store a clip's WAV for late-joiner hydration, bounded by MAX_ROOM_CLIP_BYTES.
+  // Returns true if stored, false if the room is over its memory budget.
+  storeClipFile(roomId, clipId, buffer, senderId) {
+    const room = this.rooms.get(roomId)
+    if (!room) return false
+    const prev = room.clipFiles.get(clipId)
+    const prevSize = prev ? prev.data.length : 0
+    const nextBytes = room.clipFilesBytes - prevSize + buffer.length
+    if (nextBytes > MAX_ROOM_CLIP_BYTES) return false
+    room.clipFiles.set(clipId, { data: buffer, senderId })
+    room.clipFilesBytes = nextBytes
+    return true
+  }
+
+  // §5.3: all stored clip files for a room (for replay to a joining socket).
+  getClipFiles(roomId) {
+    const room = this.rooms.get(roomId)
+    if (!room) return []
+    return [...room.clipFiles.entries()].map(([clipId, f]) => ({ clipId, data: f.data, senderId: f.senderId }))
   }
 }
 
