@@ -9,13 +9,16 @@
     "build": "npm --prefix client run build",
     "build-win": "npm --prefix client run build-win",
     "start": "npm --prefix client run start",
-    "lint": "npm --prefix client run lint"
+    "lint": "npm --prefix client run lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "socket.io": "^4.8.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "concurrently": "^10.0.3"
+    "concurrently": "^10.0.3",
+    "vitest": "^4.1.10"
   }
 }

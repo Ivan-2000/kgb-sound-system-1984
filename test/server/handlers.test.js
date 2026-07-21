@@ -1,0 +1,104 @@
+// N1 — socket handler authorization (AUDIT §3.1 host-gating + clip ownership).
+// Uses the real RoomManager with a minimal fake Socket.IO server.
+import { describe, it, expect, beforeEach } from 'vitest'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { RoomManager } = require('../../server/rooms/roomManager.js')
+const { registerSocketHandlers } = require('../../server/socket/registerSocketHandlers.js')
+
+function makeHarness() {
+  const rm = new RoomManager()
+  const emitted = []
+  const sink = (room, except) => ({
+    emit: (event, payload) => emitted.push({ room, except, event, payload }),
+  })
+  const io = {
+    _connect: null,
+    on(ev, cb) { if (ev === 'connection') this._connect = cb },
+    to(room) { return { except: (id) => sink(room, id), emit: (event, payload) => emitted.push({ room, except: null, event, payload }) } },
+    sockets: { sockets: new Map() },
+  }
+  registerSocketHandlers(io, rm)
+
+  function connect(id) {
+    const handlers = {}
+    const socket = {
+      id,
+      on(ev, cb) { handlers[ev] = cb },
+      join() {},
+      to(room) { return sink(room, id) },
+      emit(event, payload) { emitted.push({ room: id, except: null, event, payload, direct: true }) },
+      disconnect() {},
+    }
+    io.sockets.sockets.set(id, socket)
+    io._connect(socket)
+    const send = (ev, payload) => new Promise((resolve) => {
+      const h = handlers[ev]
+      if (!h) return resolve({ ok: false, error: 'NO_HANDLER' })
+      h(payload, resolve)
+    })
+    return { socket, send }
+  }
+  return { rm, emitted, connect }
+}
+
+const evt = (type, payload, id = 'e') => ({ type, payload, timestamp: 1, eventId: id })
+const clip = (id) => ({
+  timelineNodeId: 'tl1', trackKey: 't', trackName: 'T', trackKind: 'audio',
+  clip: { id, startSec: 0, durSec: 1, label: 'x', kind: 'audio' },
+})
+
+describe('§3.1 host-gating of transport events', () => {
+  let h, host, guest, roomId
+  beforeEach(async () => {
+    h = makeHarness()
+    host = h.connect('host1')
+    const res = await host.send('room:create', { username: 'Host' })
+    roomId = res.roomId
+    guest = h.connect('guestA')
+    await guest.send('room:join', { roomId, username: 'A' })
+  })
+
+  it('rejects transport_play from a guest', async () => {
+    const res = await guest.send('room:event', evt('transport_play', { step: 0 }))
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('HOST_AUTHORITY_REQUIRED')
+  })
+  it('allows transport_play from the host', async () => {
+    const res = await host.send('room:event', evt('transport_play', { step: 0 }))
+    expect(res.ok).toBe(true)
+  })
+})
+
+describe('§3.1 clip ownership (model B)', () => {
+  let h, host, guestA, guestB, roomId
+  beforeEach(async () => {
+    h = makeHarness()
+    host = h.connect('host1')
+    roomId = (await host.send('room:create', { username: 'Host' })).roomId
+    guestA = h.connect('guestA')
+    guestB = h.connect('guestB')
+    await guestA.send('room:join', { roomId, username: 'A' })
+    await guestB.send('room:join', { roomId, username: 'B' })
+    await guestA.send('room:event', evt('clip_add', clip('c1'), 'e-add'))
+  })
+
+  it('lets a guest add their own clip', () => {
+    expect(h.rm.getClipOwner(roomId, 'tl1', 'c1')).toBe('guestA')
+  })
+  it("blocks a guest from removing another guest's clip", async () => {
+    const res = await guestB.send('room:event', evt('clip_remove', { timelineNodeId: 'tl1', clipId: 'c1' }, 'e-rm'))
+    expect(res.ok).toBe(false)
+    expect(res.error).toBe('NOT_CLIP_OWNER')
+    expect(h.rm.getClipOwner(roomId, 'tl1', 'c1')).toBe('guestA') // untouched
+  })
+  it('lets the owner remove their own clip', async () => {
+    const res = await guestA.send('room:event', evt('clip_remove', { timelineNodeId: 'tl1', clipId: 'c1' }, 'e-rm'))
+    expect(res.ok).toBe(true)
+    expect(h.rm.getClipOwner(roomId, 'tl1', 'c1')).toBeNull()
+  })
+  it('lets the host remove anyone’s clip', async () => {
+    const res = await host.send('room:event', evt('clip_remove', { timelineNodeId: 'tl1', clipId: 'c1' }, 'e-rm'))
+    expect(res.ok).toBe(true)
+  })
+})
