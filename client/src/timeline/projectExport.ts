@@ -4,7 +4,7 @@
 import * as Tone from 'tone'
 import type { TimelineStoreApi } from './timelineStore'
 import { drumMachine } from '../drumMachine/drumSingleton'
-import { useInsertChainStore, targetKey, type InsertTarget } from '../audio/insertChainStore'
+import { useInsertChainStore, type InsertTarget } from '../audio/insertChainStore'
 
 const FORMAT_VERSION = 1
 

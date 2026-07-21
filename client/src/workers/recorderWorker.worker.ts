@@ -51,7 +51,6 @@ async function closeEntry(clipId: string, sampleRate: number): Promise<ArrayBuff
   try { await root.removeEntry(`rec-${clipId}.pcm`) } catch { /* ignore */ }
 
   // raw contains Int16 mono PCM; encode as WAV
-  const n = raw.byteLength / 2  // number of samples
   const wav = new ArrayBuffer(44 + byteLen)
   const v = new DataView(wav)
   const wr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i)) }
