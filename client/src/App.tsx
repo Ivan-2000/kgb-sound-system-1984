@@ -293,6 +293,16 @@ function App() {
   // into the clip, apply latency compensation, sync the result to peers.
   // Called from disarm AND from transport Stop (stop ends recording, DAW-style).
   // §9.D.1: async because stopAsync() may stream-flush to OPFS.
+  // §5.8: report whether any local recording is active (server locks tempo while so).
+  const syncRecordingState = () => {
+    const isRec = recorder.getActiveChannels().length > 0
+    if (isRec === recordingStateRef.current) return
+    recordingStateRef.current = isRec
+    if (roomState.roomId && !roomState.isLocalRoom) {
+      void roomSyncClient.sendRecordState(isRec).catch(() => { /* best-effort */ })
+    }
+  }
+
   const finishRecording = async (key: string): Promise<void> => {
     if (!key.startsWith('local:') || window.nativeAudio === undefined) return
     stopLiveWaveform(key)
@@ -727,16 +737,6 @@ function App() {
     } catch (error) {
       setNetworkError(error instanceof Error ? error.message : 'SYNC_EVENT_REJECTED')
       return false
-    }
-  }
-
-  // §5.8: report whether any local recording is active (server locks tempo while so).
-  const syncRecordingState = () => {
-    const isRec = recorder.getActiveChannels().length > 0
-    if (isRec === recordingStateRef.current) return
-    recordingStateRef.current = isRec
-    if (roomState.roomId && !roomState.isLocalRoom) {
-      void roomSyncClient.sendRecordState(isRec).catch(() => { /* best-effort */ })
     }
   }
 
