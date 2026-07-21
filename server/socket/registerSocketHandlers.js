@@ -188,7 +188,20 @@ function registerSocketHandlers(io, roomManager) {
         return
       }
 
-      roomManager.applySyncEvent(roomId, parsed.data)
+      // §3.1 ownership (B): a guest may edit/remove only clips they created; the
+      // host may touch any. clip_add is always allowed (creates its own clip).
+      // Drum steps stay collaborative (single shared pattern, LWW).
+      if (room.hostSocketId !== socket.id &&
+          (parsed.data.type === 'clip_update' || parsed.data.type === 'clip_remove')) {
+        const { timelineNodeId, clipId } = parsed.data.payload
+        const owner = roomManager.getClipOwner(roomId, timelineNodeId, clipId)
+        if (owner && owner !== socket.id) {
+          ack?.({ ok: false, error: 'NOT_CLIP_OWNER' })
+          return
+        }
+      }
+
+      roomManager.applySyncEvent(roomId, parsed.data, socket.id)
 
       io.to(roomId).except(socket.id).emit('room:event', {
         ...parsed.data,

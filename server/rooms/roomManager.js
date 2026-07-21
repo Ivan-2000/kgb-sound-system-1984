@@ -194,6 +194,12 @@ class RoomManager {
   getRoom(roomId) { return this.rooms.get(roomId) }
   getRoomIdBySocket(socketId) { return this.socketToRoom.get(socketId) || null }
 
+  // §3.1 (B): who created a given clip, or null if unknown/no owner recorded.
+  getClipOwner(roomId, timelineNodeId, clipId) {
+    const room = this.rooms.get(roomId)
+    return room?.syncState?.timelineClips?.[timelineNodeId]?.[clipId]?.ownerId ?? null
+  }
+
   toggleMuted(roomId, socketId) {
     const room = this.rooms.get(roomId)
     if (!room) return null
@@ -235,7 +241,7 @@ class RoomManager {
     }
   }
 
-  applySyncEvent(roomId, event) {
+  applySyncEvent(roomId, event, senderId = null) {
     const room = this.rooms.get(roomId)
     if (!room) return
     const s = room.syncState
@@ -311,7 +317,8 @@ class RoomManager {
       const tl = s.timelineClips[timelineNodeId]
       // Bound growth: ignore new clip ids past the cap (updates to existing ids pass).
       if (!(clip.id in tl) && Object.keys(tl).length >= MAX_CLIPS_PER_TIMELINE) return
-      tl[clip.id] = { ...clip, trackKey, trackName, trackKind, trackColor }
+      // §3.1 ownership (B): first writer owns the clip; re-adds keep the owner.
+      tl[clip.id] = { ...clip, trackKey, trackName, trackKind, trackColor, ownerId: tl[clip.id]?.ownerId ?? senderId }
       return
     }
 
