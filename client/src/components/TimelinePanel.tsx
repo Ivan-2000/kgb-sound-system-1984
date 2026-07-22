@@ -552,8 +552,11 @@ export function TimelinePanel({ store, isPlaying = false, isStarting = false, on
       )}
 
       {openEditorClipId && (() => {
+        // §5.19: a missing clip just renders nothing — never setState during
+        // render (that spammed "update a component while rendering another").
+        // The stale id is harmless (clip ids are unique; it can't wrongly reopen).
         const edClip = st().clips.find((c) => c.id === openEditorClipId)
-        if (!edClip) { setOpenEditorClipId(null); return null }
+        if (!edClip) return null
         const handleChange = (notes: PianoNote[], bars: number) => {
           st().setClipNotes(openEditorClipId, notes, bars)
         }

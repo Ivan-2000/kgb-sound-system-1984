@@ -268,15 +268,21 @@ function App() {
   // so the timeline shows a running oscillogram (DAW-style).
   const liveRecRef = useRef(new Map<string, { channelIdx: number; clipId: string }>())
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const liveTickRef = useRef(0)
   const startLiveWaveform = (key: string, channelIdx: number, clipId: string) => {
     liveRecRef.current.set(key, { channelIdx, clipId })
     liveTimerRef.current ??= setInterval(() => {
       const store = timelineStore
       if (!store) return
+      // §5.11: update the cheap durSec every tick (smooth clip growth) but throttle
+      // the growing peaks array (heavy: array copy + canvas redraw) to ~every 600ms.
+      const writePeaks = (liveTickRef.current++ % 4) === 0
       for (const rec of liveRecRef.current.values()) {
         const live = recorder.getLive(rec.channelIdx)
         if (!live || live.clipId !== rec.clipId) continue
-        store.getState().updateClip(rec.clipId, { durSec: Math.max(0.5, live.durSec), peaks: live.peaks })
+        store.getState().updateClip(rec.clipId, writePeaks
+          ? { durSec: Math.max(0.5, live.durSec), peaks: live.peaks }
+          : { durSec: Math.max(0.5, live.durSec) })
       }
     }, 150)
   }
@@ -288,6 +294,8 @@ function App() {
       liveTimerRef.current = null
     }
   }
+  // §8.C.3: the live-waveform interval must not outlive the component.
+  useEffect(() => () => stopLiveWaveform(), [])
 
   // Finalise one recording: stop the recorder, write real duration + waveform
   // into the clip, apply latency compensation, sync the result to peers.
@@ -1150,6 +1158,10 @@ function App() {
   // Singletons (drum/timeline) live the whole session — no dispose, just clear.
   useEffect(() => {
     if (!inRoom) {
+      // §8.C.3: stop capture + the live timer explicitly (clips are about to be
+      // cleared; don't rely on the stream-close effect, which won't fire here).
+      stopLiveWaveform()
+      recorder.stopAll()
       usePanelStore.getState().reset()
       timelineStore.getState().clear()
       usePianoRollStore.getState().clear()
